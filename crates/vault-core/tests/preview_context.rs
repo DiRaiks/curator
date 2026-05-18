@@ -171,9 +171,23 @@ fn external_runner_prompt_contains_required_sections() {
     // Resolved output_file appears too.
     assert!(p.contains("02_projects/sample-project/security/threat-model.md"));
 
-    // Output-contract directives.
-    assert!(p.contains("Do not modify vault files directly"));
-    assert!(p.contains("Return the complete proposed Markdown content"));
+    // Output-contract directives: the embedded runner trusts the agent
+    // to write directly into the git-tracked vault. The legacy "do not
+    // modify" / "return proposed content" wording is intentionally gone.
+    assert!(
+        p.contains("You may write\nto vault files directly")
+            || p.contains("write to vault files directly"),
+        "prompt should permit direct vault writes (git is the review surface)"
+    );
+    assert!(
+        !p.contains("Do not modify vault files directly"),
+        "legacy 'do not modify' directive must be removed"
+    );
+    assert!(
+        !p.contains("Return the complete proposed Markdown content"),
+        "legacy 'return proposed content' phrasing must be removed"
+    );
+    assert!(p.contains("Primary output target"));
     assert!(p.contains("## Questions for developer"));
     assert!(p.contains("## Access requests"));
     assert!(p.contains("Repository/project needed:"));

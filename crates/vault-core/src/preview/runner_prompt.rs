@@ -274,31 +274,31 @@ pub(super) fn build_external_runner_prompt(
 
     out.push_str("## Output contract\n\n");
     out.push_str(
-        "Do not modify vault files directly unless the user explicitly asks.\nDo not use MCP write tools.\nDo not overwrite files.\n\n",
+        "The vault is a git-tracked Markdown knowledge base. You may write\nto vault files directly — the user reviews your changes via `git diff`\nand commits manually, so finalized content belongs on disk, not in a\nchat reply. The vault root is shown in the project section above.\n\n",
     );
     if let Some(o) = resolved_output_file {
         let _ = writeln!(
             out,
-            "Return the complete proposed Markdown content for:\n\n  `{}/{}`\n",
+            "Primary output target — write or update:\n\n  `{}/{}`\n",
             vroot, o
         );
     } else {
         out.push_str(
-            "Return the complete proposed Markdown content as your response.\n",
+            "No primary output file was configured for this workflow. Write to the most appropriate path under the project vault folder, following vault conventions.\n",
         );
     }
     out.push('\n');
     out.push_str(
-        "If the output file does not exist: create a complete new Markdown document with valid YAML frontmatter following vault conventions.\n\n",
+        "If the target file does not exist: create it with valid YAML frontmatter following vault conventions.\n\n",
     );
     out.push_str(
-        "If the output file exists: preserve useful existing structure where possible.\n\n",
+        "If it exists: edit in place, preserving useful existing structure.\n\n",
     );
     out.push_str(
-        "If information is unclear, do not invent facts. Include a section:\n\n  ## Questions for developer\n\n",
+        "If information is unclear, do not invent facts. Add a section\n`## Questions for developer` at the bottom of the file (or in a\nsibling note if you didn't write a primary file) so the question lives\nalongside the work.\n\n",
     );
     out.push_str(
-        "If another repository is needed, include a section:\n\n  ## Access requests\n\n  Use the format:\n\n  - Repository/project needed:\n  - Why it is needed:\n  - Evidence that suggests this relationship:\n  - What question it would answer:\n\n",
+        "If another repository is needed, add an `## Access requests` section using the format:\n\n  - Repository/project needed:\n  - Why it is needed:\n  - Evidence that suggests this relationship:\n  - What question it would answer:\n\n",
     );
     out.push_str("Cite source paths when making claims.\n");
 

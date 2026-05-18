@@ -345,6 +345,22 @@ function renderClaudeStreamLine(raw: string): RenderedLine[] {
       if (result) out.push({ kind: "stdout", text: result });
       return out;
     }
+    case "rate_limit_event": {
+      // Top-level rate-limit pings — too chatty to show inline and
+      // they're not actionable to the user mid-run.
+      const info = obj["rate_limit_info"];
+      if (isRecord(info)) {
+        const status = readString(info, "status");
+        if (status && status !== "allowed") {
+          return [{ kind: "stderr", text: `⚠ rate limit: ${status}` }];
+        }
+      }
+      return [];
+    }
+    case "stream_event":
+      // Internal stream-level event (e.g. partial-message deltas in newer
+      // claude versions). Not interesting at this rendering level.
+      return [];
     default:
       return [{ kind: "stdout", text: raw }];
   }
@@ -367,6 +383,19 @@ function renderMessageContent(
       case "text": {
         const text = readString(block, "text");
         if (text) out.push({ kind: "stdout", text });
+        break;
+      }
+      case "thinking": {
+        // Extended-thinking blocks are verbose chain-of-thought — render
+        // a tiny one-line marker so the user sees "the agent is thinking"
+        // without flooding the panel. First ~120 chars of the content
+        // are enough to confirm something is happening.
+        const text = readString(block, "thinking") ?? "";
+        const head = truncate(text.replace(/\s+/g, " ").trim(), 120);
+        out.push({
+          kind: "system",
+          text: head === "" ? `🧠 thinking…` : `🧠 ${head}`,
+        });
         break;
       }
       case "tool_use": {
