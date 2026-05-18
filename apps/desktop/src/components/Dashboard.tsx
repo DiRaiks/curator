@@ -88,6 +88,51 @@ function computePrivacyState(_result: ScanResult): {
   return { state: "protected" };
 }
 
+interface VaultFormatPillProps {
+  hasVaultConfig: boolean;
+  vaultFormatVersion: string | null;
+  vaultFormatSupported: boolean;
+}
+
+function VaultFormatPill({
+  hasVaultConfig,
+  vaultFormatVersion,
+  vaultFormatSupported,
+}: VaultFormatPillProps) {
+  let label: string;
+  let ok: boolean;
+  let tooltip: string;
+
+  if (!hasVaultConfig) {
+    label = "format: none";
+    ok = false;
+    tooltip =
+      "Vault has no .vault/config.yml. Add the file with `version: \"1\"` to lock the format contract.";
+  } else if (!vaultFormatVersion) {
+    label = "format: ?";
+    ok = false;
+    tooltip =
+      ".vault/config.yml has no parseable `version:` field. Add `version: \"1\"`.";
+  } else if (!vaultFormatSupported) {
+    label = `format: ${vaultFormatVersion} (too new)`;
+    ok = false;
+    tooltip = `Vault declares format ${vaultFormatVersion}, which is newer than this IDE supports. Some fields may not be read correctly.`;
+  } else {
+    label = `format: ${vaultFormatVersion}`;
+    ok = true;
+    tooltip = `Vault format ${vaultFormatVersion} declared in .vault/config.yml.`;
+  }
+
+  return (
+    <span
+      className={"pill " + (ok ? "pill--ok" : "pill--warn")}
+      title={tooltip}
+    >
+      {label}
+    </span>
+  );
+}
+
 interface TabButtonProps {
   active: boolean;
   onClick: () => void;
@@ -347,6 +392,11 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
         </div>
         <div className="dashboard__meta">
           <PrivacyBadge state={privacy.state} reason={privacy.reason} />
+          <VaultFormatPill
+            hasVaultConfig={result.hasVaultConfig}
+            vaultFormatVersion={result.vaultFormatVersion}
+            vaultFormatSupported={result.vaultFormatSupported}
+          />
           <StatusPill ok={result.hasMeta} label="meta" title="00_meta/" />
           <StatusPill ok={result.hasGit} label="git" title=".git/" />
           <span className="pill">{result.markdownFiles.length} md files</span>

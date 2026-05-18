@@ -55,6 +55,16 @@ pub struct ScanResult {
     pub has_about_me: bool,
     pub has_meta_readme: bool,
     pub has_git: bool,
+    /// Whether `.vault/config.yml` exists.
+    pub has_vault_config: bool,
+    /// The `version:` field from `.vault/config.yml` exactly as declared,
+    /// or `None` when the file is missing / has no version / is unparseable.
+    pub vault_format_version: Option<String>,
+    /// `true` when the vault's declared major version is ≤ the IDE's supported
+    /// major. `false` when the vault is newer than the IDE understands.
+    /// `true` when no version is declared (lenient default — diagnostic
+    /// surfaces the "version missing" warning separately).
+    pub vault_format_supported: bool,
     pub markdown_files: Vec<MarkdownFile>,
     pub zones: Vec<Zone>,
     pub artifacts: Vec<WorkflowArtifact>,

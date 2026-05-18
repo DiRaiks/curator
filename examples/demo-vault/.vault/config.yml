@@ -1,0 +1,5 @@
+# Vault format contract. Bump the major when the on-disk format changes in
+# a breaking way (zone conventions, frontmatter schema, artifact discovery
+# rules). Older IDE builds will surface a warning when they encounter a
+# newer major than they support.
+version: "1"

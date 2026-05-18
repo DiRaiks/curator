@@ -80,6 +80,13 @@ export interface ScanResult {
   hasAboutMe: boolean;
   hasMetaReadme: boolean;
   hasGit: boolean;
+  hasVaultConfig: boolean;
+  /** `version:` field from `.vault/config.yml` as declared, or `null`. */
+  vaultFormatVersion: string | null;
+  /** `false` when the vault declares a major version newer than the IDE
+   *  supports. `true` when the version is missing (lenient default — the
+   *  missing-version warning lives in `diagnostics`). */
+  vaultFormatSupported: boolean;
   markdownFiles: MarkdownFile[];
   zones: Zone[];
   artifacts: WorkflowArtifact[];

@@ -23,6 +23,9 @@
 mod types;
 pub use types::*;
 
+mod config;
+pub use config::VAULT_FORMAT_VERSION_MAJOR;
+
 mod util;
 mod frontmatter;
 mod scope;

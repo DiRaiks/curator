@@ -16,6 +16,7 @@ use crate::artifacts::{
     discover_claude_commands, discover_claude_rules, discover_claude_skills, discover_projects,
     discover_vault_skills, kind_sort_index,
 };
+use crate::config::{read_vault_config, VAULT_FORMAT_VERSION_MAJOR};
 use crate::frontmatter::{
     fm_bool, fm_string, parse_frontmatter_from_head, FRONTMATTER_HEAD_BYTES,
 };
@@ -59,6 +60,13 @@ pub fn scan_vault(root: &Path) -> Result<ScanResult, ScanError> {
     let has_about_me = root.join("00_meta").join("ABOUT_ME.md").is_file();
     let has_meta_readme = root.join("00_meta").join("README.md").is_file();
     let has_git = root.join(".git").exists();
+
+    let config = read_vault_config(root);
+    let vault_format_supported = match config.declared_major {
+        Some(major) => major <= VAULT_FORMAT_VERSION_MAJOR,
+        None => true, // lenient default when missing — separate diagnostic covers it
+    };
+    emit_vault_config_diagnostics(&config, vault_format_supported, &mut diagnostics);
 
     let mut missing_fm_total: usize = 0;
     let mut missing_fm_emitted: usize = 0;
@@ -251,12 +259,57 @@ pub fn scan_vault(root: &Path) -> Result<ScanResult, ScanError> {
         has_about_me,
         has_meta_readme,
         has_git,
+        has_vault_config: config.exists,
+        vault_format_version: config.raw_version,
+        vault_format_supported,
         markdown_files,
         zones,
         artifacts,
         projects,
         diagnostics,
     })
+}
+
+fn emit_vault_config_diagnostics(
+    config: &crate::config::VaultConfigInfo,
+    supported: bool,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    const CONFIG_PATH: &str = ".vault/config.yml";
+    if !config.exists {
+        diagnostics.push(Diagnostic {
+            level: DiagnosticLevel::Warning,
+            message: format!(
+                "{CONFIG_PATH} missing — vault format version cannot be determined; add `version: \"{VAULT_FORMAT_VERSION_MAJOR}\"` to lock the contract"
+            ),
+            path: Some(CONFIG_PATH.into()),
+        });
+        return;
+    }
+    match (&config.raw_version, config.declared_major) {
+        (None, _) => diagnostics.push(Diagnostic {
+            level: DiagnosticLevel::Warning,
+            message: format!(
+                "{CONFIG_PATH} has no `version:` field; add `version: \"{VAULT_FORMAT_VERSION_MAJOR}\"` to lock the contract"
+            ),
+            path: Some(CONFIG_PATH.into()),
+        }),
+        (Some(raw), None) => diagnostics.push(Diagnostic {
+            level: DiagnosticLevel::Error,
+            message: format!(
+                "{CONFIG_PATH} `version: \"{raw}\"` is not a parseable major version"
+            ),
+            path: Some(CONFIG_PATH.into()),
+        }),
+        (Some(raw), Some(major)) if !supported => diagnostics.push(Diagnostic {
+            level: DiagnosticLevel::Warning,
+            message: format!(
+                "vault format `{raw}` (major {major}) is newer than this IDE supports (major {VAULT_FORMAT_VERSION_MAJOR}); some fields may not be read correctly"
+            ),
+            path: Some(CONFIG_PATH.into()),
+        }),
+        _ => {}
+    }
 }
 
 pub(crate) fn is_pruned(entry: &walkdir::DirEntry) -> bool {
