@@ -35,6 +35,9 @@ const WARNING_LABEL: Record<WarningKind, string> = {
 interface ContextPreviewPanelProps {
   preview: ContextPreview;
   homeDir: string | null;
+  /** Absolute path of the active vault. Forwarded to `start_run` so the
+   *  Run button can spawn the local CLI without re-resolving paths. */
+  vaultRoot: string;
   isRefreshing?: boolean;
   /** Create a Markdown file at the given vault-relative path and open it in
    *  the editor. Optional — if omitted, the Create-output-stub affordance is
@@ -49,6 +52,7 @@ interface ContextPreviewPanelProps {
 export function ContextPreviewPanel({
   preview,
   homeDir,
+  vaultRoot,
   isRefreshing = false,
   onCreateAndOpenFile,
   sourceRepoInspection,
@@ -66,6 +70,9 @@ export function ContextPreviewPanel({
       <ExternalRunnerPromptCard
         prompt={preview.externalRunnerPrompt}
         unresolvedPlaceholders={preview.unresolvedPlaceholders}
+        vaultRoot={vaultRoot}
+        projectSlug={preview.projectSlug}
+        promptId={preview.promptId}
       />
       <SourceRepoCard
         sourceRepo={preview.sourceRepo}

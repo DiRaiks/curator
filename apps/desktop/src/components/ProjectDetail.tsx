@@ -247,6 +247,7 @@ export function ProjectDetail({
             <ContextPreviewPanel
               preview={preview}
               homeDir={homeDir}
+              vaultRoot={vaultRoot}
               isRefreshing={previewLoading}
               onCreateAndOpenFile={onCreateAndOpenFile}
               sourceRepoInspection={inspection}

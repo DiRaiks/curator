@@ -14,6 +14,7 @@ import { FileTree } from "./FileTree";
 import { NewFileDialog } from "./NewFileDialog";
 import { ProjectDetail } from "./ProjectDetail";
 import { ProjectList } from "./ProjectList";
+import { RunPanel } from "./RunPanel";
 import { ZoneList } from "./ZoneList";
 
 interface DashboardProps {
@@ -610,6 +611,8 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
           )}
         </main>
       </div>
+
+      <RunPanel />
 
       {pendingAction && openFile && isDirty && (
         <ConfirmDirtyDialog
