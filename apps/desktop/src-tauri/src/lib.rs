@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::thread;
 
@@ -53,6 +53,28 @@ fn create_markdown_file(
     relative_path: String,
 ) -> Result<String, String> {
     vault_core::create_markdown_file(&PathBuf::from(vault_root), &relative_path)
+        .map_err(|e| e.to_string())
+}
+
+/// Promote an agent-produced draft into its `proposed_destination`.
+/// Returns the new vault-relative path on success.
+#[tauri::command]
+fn promote_draft(
+    vault_root: String,
+    draft_path: String,
+) -> Result<String, String> {
+    vault_core::promote_draft(&PathBuf::from(vault_root), &draft_path)
+        .map_err(|e| e.to_string())
+}
+
+/// Delete a draft from the vault. Idempotent on `NotFound`? No — the UI
+/// can show the rescan stale-state, so we surface NotFound as an error.
+#[tauri::command]
+fn discard_draft(
+    vault_root: String,
+    draft_path: String,
+) -> Result<(), String> {
+    vault_core::discard_draft(&PathBuf::from(vault_root), &draft_path)
         .map_err(|e| e.to_string())
 }
 
@@ -160,8 +182,16 @@ fn lock_recovering<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 struct RunStartedPayload {
     project_slug: String,
     prompt_id: String,
+    /// Absolute canonicalized vault root. The frontend stashes this so a
+    /// later `resume_run` call doesn't have to re-derive it from the
+    /// (now-stale) original input.
+    vault_root: String,
     workdir: String,
     runner: &'static str,
+    /// True when this run is a resume of a prior session (`--resume`).
+    /// The frontend keeps prior output buffer + session state visible
+    /// across resumes; a fresh start resets them.
+    resume: bool,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -212,49 +242,139 @@ fn start_run(
     app: AppHandle,
     state: State<'_, RunState>,
 ) -> Result<(), String> {
-    // Canonicalize vault root up front so symlinks can't redirect
-    // `--add-dir` at sensitive locations.
-    let vault_path = PathBuf::from(&vault_root).canonicalize().map_err(|e| {
-        format!("vault root not accessible: {}: {e}", vault_root)
-    })?;
-
+    let vault_path = canonicalize_vault_root(&vault_root)?;
     let preview = vault_core::preview_context(&vault_path, &project_slug, &prompt_id)
         .map_err(|e| e.to_string())?;
+    let (workdir, additional_dirs) =
+        resolve_workdir(&vault_path, preview.source_repo.local_path.as_deref());
 
-    // Resolve workdir: project `local_path` if set + accessible + safe,
-    // else fall back to the vault root.
-    let workdir = match preview.source_repo.local_path.as_deref() {
-        Some(declared) => {
-            let candidate = PathBuf::from(declared);
-            // Try to canonicalize. If that fails (path missing / not a
-            // dir / permission), silently fall back to the vault root —
-            // a missing repo is not an error; the agent just runs in the
-            // vault.
-            match vault_core::runner::validate_workdir(&candidate) {
-                Ok(safe) => safe,
-                Err(_) => vault_path.clone(),
-            }
-        }
-        None => vault_path.clone(),
+    spawn_and_pump(SpawnArgs {
+        vault_path,
+        workdir,
+        additional_dirs,
+        prompt: preview.external_runner_prompt.clone(),
+        runtime_input,
+        resume_session_id: None,
+        project_slug,
+        prompt_id,
+        app,
+        state: &state,
+    })
+}
+
+/// Continue an existing Claude session — `claude --resume <session_id>`.
+/// The prompt slot carries the user's reply (next conversation turn),
+/// not a fresh task description; claude already has the prior context
+/// cached under the session id. Cwd and `--add-dir` are re-derived from
+/// the same `(project, prompt)` pair so tool access keeps working.
+#[tauri::command]
+fn resume_run(
+    vault_root: String,
+    project_slug: String,
+    prompt_id: String,
+    session_id: String,
+    reply: String,
+    app: AppHandle,
+    state: State<'_, RunState>,
+) -> Result<(), String> {
+    if session_id.trim().is_empty() {
+        return Err("session id is required to resume a run".into());
+    }
+    if reply.trim().is_empty() {
+        return Err("reply text is required to resume a run".into());
+    }
+    let vault_path = canonicalize_vault_root(&vault_root)?;
+    let preview = vault_core::preview_context(&vault_path, &project_slug, &prompt_id)
+        .map_err(|e| e.to_string())?;
+    let (workdir, additional_dirs) =
+        resolve_workdir(&vault_path, preview.source_repo.local_path.as_deref());
+
+    spawn_and_pump(SpawnArgs {
+        vault_path,
+        workdir,
+        additional_dirs,
+        prompt: reply,
+        runtime_input: None,
+        resume_session_id: Some(session_id),
+        project_slug,
+        prompt_id,
+        app,
+        state: &state,
+    })
+}
+
+fn canonicalize_vault_root(raw: &str) -> Result<PathBuf, String> {
+    PathBuf::from(raw)
+        .canonicalize()
+        .map_err(|e| format!("vault root not accessible: {raw}: {e}"))
+}
+
+/// Pick the cwd for the agent + the `--add-dir` list. Repo cwd when the
+/// project's `local_path` is set + accessible + safe; vault root as
+/// fallback. When cwd is the repo, the vault is added explicitly so the
+/// agent can read KB; when cwd is already the vault, nothing extra.
+fn resolve_workdir(
+    vault_path: &Path,
+    local_path: Option<&str>,
+) -> (PathBuf, Vec<PathBuf>) {
+    let workdir = match local_path {
+        Some(declared) => match vault_core::runner::validate_workdir(&PathBuf::from(declared)) {
+            Ok(safe) => safe,
+            Err(_) => vault_path.to_path_buf(),
+        },
+        None => vault_path.to_path_buf(),
     };
-
-    // The fallback path (vault_path) is already canonicalized above; the
-    // repo path is canonicalized by validate_workdir. The final cwd we
-    // pass to the subprocess is always canonical + safe.
-
-    // If cwd is the repo, expose the vault root so the agent can also read
-    // its notes. If cwd is already the vault, no extra dir is needed.
     let additional_dirs = if workdir == vault_path {
         Vec::new()
     } else {
-        vec![vault_path.clone()]
+        vec![vault_path.to_path_buf()]
     };
+    (workdir, additional_dirs)
+}
+
+/// Inputs to `spawn_and_pump`. Grouped as a struct because the function
+/// runs both code paths (`start_run` + `resume_run`) and a 9-arg call
+/// site is unreadable.
+struct SpawnArgs<'s> {
+    vault_path: PathBuf,
+    workdir: PathBuf,
+    additional_dirs: Vec<PathBuf>,
+    prompt: String,
+    runtime_input: Option<String>,
+    resume_session_id: Option<String>,
+    project_slug: String,
+    prompt_id: String,
+    app: AppHandle,
+    state: &'s State<'s, RunState>,
+}
+
+/// Shared core of `start_run` / `resume_run`: build the `RunRequest`,
+/// claim the run slot atomically, spawn the subprocess, kick off the
+/// emit-pump thread.
+fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
+    let SpawnArgs {
+        vault_path,
+        workdir,
+        additional_dirs,
+        prompt,
+        runtime_input,
+        resume_session_id,
+        project_slug,
+        prompt_id,
+        app,
+        state,
+    } = args;
+
+    // Capture the resume flag before constructing the request so it
+    // survives the move into `Runner::start`.
+    let is_resume = resume_session_id.is_some();
 
     let req = vault_core::runner::RunRequest {
         workdir: workdir.clone(),
         additional_dirs,
-        prompt: preview.external_runner_prompt.clone(),
+        prompt,
         runtime_input,
+        resume_session_id,
     };
 
     // Hold the RunState lock across the spawn so the "is_some" check and
@@ -285,8 +405,10 @@ fn start_run(
         RunStartedPayload {
             project_slug,
             prompt_id,
+            vault_root: vault_path.to_string_lossy().to_string(),
             workdir: workdir.to_string_lossy().to_string(),
             runner: "claude-code",
+            resume: is_resume,
         },
     );
 
@@ -389,9 +511,12 @@ pub fn run() {
             read_markdown_file,
             write_markdown_file,
             create_markdown_file,
+            promote_draft,
+            discard_draft,
             start_vault_watch,
             stop_vault_watch,
             start_run,
+            resume_run,
             stop_run,
             get_run_status
         ])

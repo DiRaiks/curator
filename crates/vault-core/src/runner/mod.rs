@@ -90,6 +90,12 @@ pub struct RunRequest {
     /// input` section by the caller, not the runner — keep the runner
     /// dumb about prompt shape.
     pub runtime_input: Option<String>,
+    /// When set, the runner resumes an existing conversation by id —
+    /// `claude --resume <id>` — and `prompt` is treated as the next user
+    /// message in that conversation rather than a fresh task description.
+    /// Cwd and `additional_dirs` must match the original session for tool
+    /// access to keep working.
+    pub resume_session_id: Option<String>,
 }
 
 /// Streaming event from an active run. Consumers should treat unknown

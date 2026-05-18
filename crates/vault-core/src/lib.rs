@@ -42,7 +42,8 @@ pub use source_repo::{inspect_source_repo, SourceRepoInspection, TopLevelEntry};
 
 mod markdown_io;
 pub use markdown_io::{
-    create_markdown_file, read_markdown_file, write_markdown_file, MarkdownFileError,
+    create_markdown_file, discard_draft, promote_draft, read_markdown_file, write_markdown_file,
+    MarkdownFileError,
 };
 
 pub mod watch;

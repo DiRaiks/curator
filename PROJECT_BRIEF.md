@@ -2,83 +2,155 @@
 
 ## What this is
 
-Vault Workflow IDE is a **desktop workflow tool for Markdown vaults**. It is not
-a code editor. It opens a local folder of Markdown files that follows a simple
-convention (`.vault/`, `02_projects/`, skills, etc.), and surfaces the structure
-so the user can navigate projects and skills inside the vault.
+A **memory-augmented agentic workspace**. You work on projects (code +
+knowledge), an embedded AI runner does the heavy lifting, and your
+vault accumulates reusable patterns / decisions / findings so each
+next task starts from more context than the last.
+
+Unlike Claude desktop / Cursor / Zed agent, the value compounds over
+time — the vault is your persistent memory across sessions and
+projects. The IDE itself is the curation surface that makes that
+memory navigable.
+
+Target user: someone who works across many projects and wants
+accumulated knowledge to outlive individual chat sessions. Security
+researchers, audit firms, internal sec teams, and consultants /
+contractors are the strongest fits.
 
 ## Tech stack
 
-- Tauri (v2) — desktop shell, no backend server, no cloud
+- Tauri v2 — desktop shell, no backend server, no cloud
 - React + TypeScript + Vite — frontend
-- Rust — vault scanning / parsing (`crates/vault-core`)
-- Local filesystem only
+- Rust — vault-core (scanning, watching, runner abstraction)
+- Local filesystem only; no telemetry; no cloud sync
 
 ## Repository layout
 
-- `apps/desktop/` — Tauri app
-  - `src/` — React + TypeScript frontend
-  - `src-tauri/` — Tauri Rust shell (re-exports `vault-core` via a `scan_vault` command)
-- `crates/vault-core/` — Rust crate that does the actual scan/parse work
-- `examples/demo-vault/` — sample vault used by the "Open Demo Vault" button
-- `docs/` — architecture notes
-
-## Vault convention (what the scanner looks for)
-
-- `.vault/config.yml` — vault config (presence detected, not parsed in MVP)
-- `.vault/skills/*.skill.md` — skill files with YAML frontmatter
-- `02_projects/<slug>/_index.md` — project index files
-- all `*.md` files anywhere in the vault
-
-## Scan result shape
-
-```ts
-type ScanResult = {
-  vaultRoot: string;
-  configExists: boolean;
-  markdownFiles: string[];          // paths relative to vault root
-  skills: Skill[];
-  projects: Project[];
-  diagnostics: Diagnostic[];
-};
-
-type Skill = {
-  id: string;
-  title: string;
-  version: string | null;
-  status: string | null;
-  order: number | null;
-  outputFile: string | null;
-  path: string;                     // relative to vault root
-};
-
-type Project = {
-  slug: string;
-  path: string;                     // relative to vault root
-  indexFile: string;                // relative to vault root
-};
-
-type Diagnostic = {
-  level: "info" | "warning" | "error";
-  message: string;
-  path: string | null;              // relative to vault root if applicable
-};
+```
+apps/desktop/
+  src/                 # React + TS frontend
+  src-tauri/           # Tauri Rust shell (wires vault-core into commands)
+crates/vault-core/
+  src/
+    scan.rs            # vault scan entry point
+    watch.rs           # notify-based filesystem watcher
+    config.rs          # .vault/config.yml + format-version policy
+    artifacts/         # artifact discovery + parsing (per kind)
+    preview/           # run plan + runner-agnostic prompt builder
+    runner/            # CLI runner abstraction + ClaudeCode impl
+    markdown_io.rs     # vault-rooted read / write / create / promote / discard
+    source_repo.rs     # read-only repo inspection (git status, detected files)
+    scope.rs           # privacy-zone classification
+    frontmatter.rs     # YAML helpers
+    types.rs           # serializable data types
+examples/demo-vault/   # sample vault used by "Open Demo Vault"
+docs/                  # architecture notes
 ```
 
-## MVP scope (this slice)
+## Vault convention
 
-1. Tauri + React + TS app scaffolded.
-2. Rust command `scan_vault(path: string)` returns `ScanResult`.
-3. `scan_vault` walks the folder, detects the items above, parses skill
-   frontmatter, and surfaces basic diagnostics.
-4. UI:
-   - Welcome screen with "Open Vault" + "Open Demo Vault"
-   - Dashboard with left file tree, project list, skill list, diagnostics panel
+| What                                  | Where                                                   |
+| ------------------------------------- | ------------------------------------------------------- |
+| vault config (parsed)                 | `.vault/config.yml` — declares `version:`               |
+| projects                              | `02_projects/<slug>/_index.md`                          |
+| zones (privacy classification)        | top-level folders + frontmatter `scope:`                |
+| vault-skills                          | `.vault/skills/*.skill.md`                              |
+| agent-prompts                         | `00_meta/agent-tasks/prompts/*.md`                      |
+| claude-skills                         | `00_meta/_claude/skills/<name>/SKILL.md`                |
+| claude-agents                         | `00_meta/_claude/agents/*.md`                           |
+| claude-commands                       | `00_meta/_claude/commands/*.md`                         |
+| claude-rules                          | `00_meta/_claude/rules/*.md`                            |
+| agent-produced drafts                 | `01_inbox/_drafts/*.md` (by convention)                 |
 
-## Out of scope (do NOT add)
+## Core capabilities (current)
 
-AI calls, Claude/Codex runner, git integration, code-repo connector,
-Markdown editor, graph view, benchmark runner, arbitrary shell execution,
-plugin system, auth, cloud sync.
+1. **Vault scan + watch** — Rust scanner produces a `ScanResult`
+   (projects, artifacts, zones, drafts, diagnostics); a `notify`-based
+   watcher fires `vault:changed` events on debounced file activity.
+2. **Markdown editor** — CodeMirror 6 source mode + `react-markdown`
+   preview with GFM. Frontmatter renders as an editable form (or
+   read-only metadata in preview). Wikilinks (`[[target]]`,
+   `[[target|alias]]`) navigate by path or filename stem.
+3. **Embedded CLI runner** — spawns `claude -p <prompt>
+   --output-format stream-json --verbose --permission-mode acceptEdits
+   --add-dir <vault>` with cwd set to the project repo (validated via
+   a deny-list of sensitive paths). Streams events to a Run panel.
+   Supports `--resume <session_id>` for back-and-forth conversation.
+4. **All artifact kinds runnable** — skills, commands, agents,
+   vault-skills, and agent-prompts are all invokable. Only
+   `claude-rule` is read-only (rules are policy fragments, not
+   stand-alone tasks).
+5. **Drafts workflow (inbox-to-review)** — agents propose reusable
+   knowledge notes by writing into `01_inbox/_drafts/` with
+   `status: draft-from-agent` + `proposed_destination`. User curates
+   via the Drafts tab: Promote moves the file to the proposed
+   destination and rewrites frontmatter (`status: promoted`,
+   `promoted_from: <draft path>`); Discard deletes it.
+6. **Source-repo inspection** — read-only snapshot (git branch /
+   dirty / commit / detected files / top-level listing) for the
+   project's declared `local_path`.
+7. **Vault format versioning** — `.vault/config.yml` declares
+   `version:`; IDE warns when the vault is newer than it supports.
 
-Keep scope small. Working vertical slice over broad abstractions.
+## Scan result shape (current; see `crates/vault-core/src/types.rs`)
+
+```ts
+interface ScanResult {
+  vaultRoot: string;
+  homeDir: string | null;
+  hasMeta: boolean;
+  hasAgentsMd: boolean;
+  hasAboutMe: boolean;
+  hasMetaReadme: boolean;
+  hasGit: boolean;
+  hasVaultConfig: boolean;
+  vaultFormatVersion: string | null;
+  vaultFormatSupported: boolean;
+  markdownFiles: MarkdownFile[];
+  zones: Zone[];
+  artifacts: WorkflowArtifact[];
+  projects: Project[];
+  drafts: Draft[];
+  diagnostics: Diagnostic[];
+}
+```
+
+## Out of scope (deliberate, current)
+
+- Multi-vault workspaces (one vault open at a time)
+- Branch / multi-tab conversation management
+- Built-in tool whitelisting per-artifact (uses `~/.claude/settings.json`
+  for now; per-artifact `--allowed-tools` is a tracked follow-up)
+- Cloud sync, telemetry, multi-user features
+- Embedded vector retrieval (frontmatter / wikilink-based for now)
+
+## What's next on the roadmap
+
+Tracked separately, but the major pieces in flight:
+
+- **Recommendations engine** — rule-based hints in ProjectDetail
+  ("no domain.md yet — try the `01-domain` skill", "git changes
+  since last KB entry — try `session-reflect`", etc.)
+- **CVE feed integration** — pluggable feed sources, match against
+  project deps, surface as actionable suggestions
+- **Per-zone agent access toggles** — opt-in expansion of agent
+  read/write into personal zones via `.vault/config.yml`
+- **Tool whitelisting from `claude-agent.tools[]` frontmatter** + an
+  Approve-tools dialog for dangerous capabilities
+- **Conversation persistence** — keep the last N session transcripts
+  on disk so reopening the IDE restores context
+
+## Design principles
+
+- **Vault is git-tracked source of truth** — IDE never auto-commits;
+  user reviews via `git diff`. This is the entire safety model for
+  agent writes.
+- **Curation, not auto-promote** — agents propose knowledge into
+  `01_inbox/_drafts/`; promotion to permanent zones is always a
+  human decision.
+- **Skills are first-class** — they're versioned content in the
+  vault, not hard-coded behaviour. Any user can fork / customize /
+  share via git.
+- **No cloud, no telemetry, no auth** — single-user desktop tool.
+- **Boring, governed dependencies** — see `AGENTS.md` and
+  `CONTRIBUTING.md` for the supply-chain policy.

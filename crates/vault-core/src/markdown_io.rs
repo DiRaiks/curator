@@ -192,3 +192,263 @@ fn canonicalize_existing_ancestor(path: &Path) -> Result<PathBuf, MarkdownFileEr
         }
     }
 }
+
+// ---------- Draft promotion ----------
+
+/// Promote an agent-produced draft into its proposed destination.
+///
+/// Reads the draft, strips the `status: draft-from-agent` /
+/// `proposed_destination` / `source_run` marker fields, rewrites the
+/// frontmatter, and writes the result at the destination. The original
+/// draft file is deleted on success.
+///
+/// Both source and destination paths go through full vault-rooted
+/// validation (same rules as `write_markdown_file`). The destination
+/// must not already exist — promoting onto a real file would silently
+/// destroy whatever was there.
+///
+/// Returns the vault-relative path the draft landed at.
+pub fn promote_draft(
+    vault_root: &Path,
+    draft_path: &str,
+) -> Result<String, MarkdownFileError> {
+    // Load + parse the draft.
+    let abs_draft = validate_md_path(vault_root, draft_path)?;
+    if !abs_draft.is_file() {
+        return Err(MarkdownFileError::NotFound(draft_path.to_string()));
+    }
+    let content = std::fs::read_to_string(&abs_draft)?;
+
+    let (raw_fm, body) = split_frontmatter(&content).ok_or_else(|| {
+        MarkdownFileError::InvalidPath(
+            "draft has no YAML frontmatter; cannot promote".into(),
+        )
+    })?;
+
+    let mut map: serde_yaml_ng::Mapping = serde_yaml_ng::from_str(raw_fm)
+        .map_err(|e| MarkdownFileError::InvalidPath(format!("yaml parse failed: {e}")))?;
+
+    // Extract the proposed destination — required to promote.
+    let dest_key = serde_yaml_ng::Value::String("proposed_destination".into());
+    let dest_value = map.remove(&dest_key).ok_or_else(|| {
+        MarkdownFileError::InvalidPath(
+            "draft has no `proposed_destination` field; cannot promote".into(),
+        )
+    })?;
+    let dest_rel = dest_value
+        .as_str()
+        .ok_or_else(|| {
+            MarkdownFileError::InvalidPath(
+                "`proposed_destination` must be a string".into(),
+            )
+        })?
+        .to_string();
+
+    // Drop the marker fields. `status` is replaced with `promoted` for
+    // an audit trail; `source_run` is kept (it points back at the run
+    // that produced this note) but no longer needed as a draft signal.
+    let status_key = serde_yaml_ng::Value::String("status".into());
+    map.insert(
+        status_key,
+        serde_yaml_ng::Value::String("promoted".into()),
+    );
+    // Record what the draft was previously at — useful in commit logs.
+    let provenance_key = serde_yaml_ng::Value::String("promoted_from".into());
+    map.insert(
+        provenance_key,
+        serde_yaml_ng::Value::String(draft_path.to_string()),
+    );
+
+    // Serialize the new frontmatter and stitch the file back together.
+    let new_fm = serde_yaml_ng::to_string(&map)
+        .map_err(|e| MarkdownFileError::InvalidPath(format!("yaml serialize failed: {e}")))?;
+    let new_content = format!("---\n{}---\n{}", new_fm, body);
+
+    // Resolve and validate the destination. We require it to NOT exist —
+    // promotion is never an overwrite; the user must rename/discard if
+    // they want a different target.
+    let abs_dest = validate_md_path(vault_root, &dest_rel)?;
+    if abs_dest.exists() {
+        return Err(MarkdownFileError::AlreadyExists(dest_rel));
+    }
+    if let Some(parent) = abs_dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&abs_dest, &new_content)?;
+
+    // Delete the draft only after the destination was written
+    // successfully — if anything above failed, the draft stays intact.
+    std::fs::remove_file(&abs_draft)?;
+
+    Ok(dest_rel)
+}
+
+/// Delete a draft from the vault. Same path validation as the other
+/// markdown_io entry points; rejects writes into forbidden zones so a
+/// stray "discard" can't be tricked into deleting a system file.
+pub fn discard_draft(
+    vault_root: &Path,
+    draft_path: &str,
+) -> Result<(), MarkdownFileError> {
+    let abs = validate_md_path(vault_root, draft_path)?;
+    if !abs.is_file() {
+        return Err(MarkdownFileError::NotFound(draft_path.to_string()));
+    }
+    std::fs::remove_file(&abs)?;
+    Ok(())
+}
+
+/// Split a Markdown document at its YAML frontmatter delimiters.
+/// Returns `(yaml_block_contents, body)` if the document starts with a
+/// `---` fence and has a closing one; `None` otherwise. The yaml block
+/// does NOT include the trailing newline before the closing `---`.
+fn split_frontmatter(content: &str) -> Option<(&str, &str)> {
+    let after_open = content
+        .strip_prefix("---\n")
+        .or_else(|| content.strip_prefix("---\r\n"))?;
+    if let Some(idx) = after_open.find("\n---\n") {
+        let yaml = &after_open[..idx];
+        let body = &after_open[(idx + 5)..];
+        return Some((yaml, body));
+    }
+    if let Some(idx) = after_open.find("\n---\r\n") {
+        let yaml = &after_open[..idx];
+        let body = &after_open[(idx + 6)..];
+        return Some((yaml, body));
+    }
+    None
+}
+
+#[cfg(test)]
+mod draft_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn temp_vault(tag: &str) -> PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("vw-draft-{tag}-{pid}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_draft(vault: &Path, path: &str, fm: &str, body: &str) {
+        let abs = vault.join(path);
+        std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+        std::fs::write(&abs, format!("---\n{fm}---\n{body}")).unwrap();
+    }
+
+    #[test]
+    fn promote_moves_file_and_strips_marker_fields() {
+        let vault = temp_vault("promote-ok");
+        write_draft(
+            &vault,
+            "01_inbox/_drafts/reentrancy-pattern.md",
+            "title: Reentrancy in wcKeyCrops\nstatus: draft-from-agent\nproposed_destination: 03_areas/patterns/reentrancy/wcKeyCrops.md\nsource_run: run-abc-123\nproject: subgraph\n",
+            "# Reentrancy\n\nThe pattern observed was…\n",
+        );
+
+        let dest = promote_draft(&vault, "01_inbox/_drafts/reentrancy-pattern.md")
+            .expect("promote");
+        assert_eq!(dest, "03_areas/patterns/reentrancy/wcKeyCrops.md");
+
+        // Original draft is gone.
+        assert!(!vault
+            .join("01_inbox/_drafts/reentrancy-pattern.md")
+            .exists());
+
+        // Destination has the body and stripped/rewritten frontmatter.
+        let promoted = std::fs::read_to_string(
+            vault.join("03_areas/patterns/reentrancy/wcKeyCrops.md"),
+        )
+        .unwrap();
+        assert!(promoted.contains("# Reentrancy"));
+        assert!(!promoted.contains("proposed_destination"));
+        assert!(promoted.contains("status: promoted"));
+        assert!(promoted.contains("promoted_from: 01_inbox/_drafts/reentrancy-pattern.md"));
+        // Non-marker fields are preserved.
+        assert!(promoted.contains("project: subgraph"));
+        assert!(promoted.contains("source_run: run-abc-123"));
+
+        let _ = std::fs::remove_dir_all(&vault);
+    }
+
+    #[test]
+    fn promote_refuses_to_overwrite_existing_destination() {
+        let vault = temp_vault("promote-collision");
+        write_draft(
+            &vault,
+            "01_inbox/_drafts/x.md",
+            "status: draft-from-agent\nproposed_destination: 03_areas/patterns/x.md\n",
+            "draft body",
+        );
+        write_draft(
+            &vault,
+            "03_areas/patterns/x.md",
+            "title: existing\n",
+            "existing body",
+        );
+
+        let err = promote_draft(&vault, "01_inbox/_drafts/x.md")
+            .expect_err("must reject overwrite");
+        assert!(matches!(err, MarkdownFileError::AlreadyExists(_)));
+
+        // Draft survives — promotion was atomic-failed.
+        assert!(vault.join("01_inbox/_drafts/x.md").exists());
+        // Existing destination untouched.
+        let existing = std::fs::read_to_string(vault.join("03_areas/patterns/x.md"))
+            .unwrap();
+        assert!(existing.contains("existing body"));
+
+        let _ = std::fs::remove_dir_all(&vault);
+    }
+
+    #[test]
+    fn promote_errors_when_destination_is_missing() {
+        let vault = temp_vault("promote-no-dest");
+        write_draft(
+            &vault,
+            "01_inbox/_drafts/no-dest.md",
+            "status: draft-from-agent\n",
+            "body",
+        );
+        let err = promote_draft(&vault, "01_inbox/_drafts/no-dest.md")
+            .expect_err("must reject");
+        assert!(matches!(err, MarkdownFileError::InvalidPath(_)));
+        // Draft survives.
+        assert!(vault.join("01_inbox/_drafts/no-dest.md").exists());
+        let _ = std::fs::remove_dir_all(&vault);
+    }
+
+    #[test]
+    fn discard_deletes_the_draft() {
+        let vault = temp_vault("discard");
+        write_draft(
+            &vault,
+            "01_inbox/_drafts/y.md",
+            "status: draft-from-agent\nproposed_destination: 03_areas/y.md\n",
+            "body",
+        );
+        discard_draft(&vault, "01_inbox/_drafts/y.md").expect("discard");
+        assert!(!vault.join("01_inbox/_drafts/y.md").exists());
+        let _ = std::fs::remove_dir_all(&vault);
+    }
+
+    #[test]
+    fn discard_refuses_forbidden_paths() {
+        let vault = temp_vault("discard-forbidden");
+        // Even an existing file under a forbidden subtree must be
+        // rejected by path validation.
+        std::fs::create_dir_all(vault.join(".git")).unwrap();
+        std::fs::write(vault.join(".git/HEAD"), "ref: refs/heads/main").unwrap();
+        let err = discard_draft(&vault, ".git/HEAD").expect_err("must reject");
+        assert!(matches!(err, MarkdownFileError::InvalidPath(_)));
+        // .git/HEAD survives.
+        assert!(vault.join(".git/HEAD").exists());
+        let _ = std::fs::remove_dir_all(&vault);
+    }
+}

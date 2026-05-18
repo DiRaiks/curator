@@ -69,7 +69,49 @@ pub struct ScanResult {
     pub zones: Vec<Zone>,
     pub artifacts: Vec<WorkflowArtifact>,
     pub projects: Vec<Project>,
+    /// Markdown notes proposed by an agent run for the user to review and
+    /// promote into a permanent location. See [`Draft`] for the
+    /// frontmatter convention.
+    pub drafts: Vec<Draft>,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// A note an agent produced as a side-output of a run — typically a
+/// reusable pattern, observation, or decision worth keeping — that the
+/// agent itself does NOT promote into a permanent vault zone. The user
+/// reviews and decides where (if anywhere) it lands.
+///
+/// Detection: any markdown file whose frontmatter contains both
+/// `status: draft-from-agent` AND `proposed_destination: <vault-relative
+/// path>`. Convention is to write drafts under `01_inbox/_drafts/` but
+/// detection is location-agnostic.
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Draft {
+    /// Vault-relative path of the draft file itself.
+    pub path: String,
+    /// Human-readable label — frontmatter `title:` if present, else the
+    /// filename stem.
+    pub title: String,
+    /// Where the agent suggests this note should live after promotion
+    /// (vault-relative). Validated on promote, not at scan time.
+    pub proposed_destination: String,
+    /// Optional reason / context line from frontmatter — surfaced in the
+    /// drafts list so the user knows why the agent thought this was
+    /// reusable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Run identifier (or any string) the agent stamped to point back at
+    /// the run that produced this draft. Optional.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_run: Option<String>,
+    /// Project slug the draft is attributed to (frontmatter `project:`),
+    /// if the agent set one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// Frontmatter `created:` value, verbatim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]

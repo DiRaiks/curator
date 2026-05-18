@@ -48,8 +48,16 @@ pub(crate) fn artifact_kind_label(k: &ArtifactKind) -> &'static str {
     }
 }
 
+/// Every artifact kind whose Markdown body is a usable prompt is runnable
+/// via the embedded CLI runner. The only exception is `ClaudeRule` —
+/// rules are policy fragments auto-loaded by Claude Code based on path
+/// globs, not stand-alone tasks the user invokes.
+///
+/// `claude-agent.tools[]` whitelisting is still on the slice-2 TODO list;
+/// running a claude-agent right now uses the user's global Claude Code
+/// settings for tools, same as any other invocation.
 pub(crate) fn artifact_runnable(kind: &ArtifactKind) -> bool {
-    matches!(kind, ArtifactKind::AgentPrompt)
+    !matches!(kind, ArtifactKind::ClaudeRule)
 }
 
 #[cfg(test)]
@@ -57,12 +65,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_agent_prompt_is_runnable() {
+    fn all_kinds_except_rule_are_runnable() {
         assert!(artifact_runnable(&ArtifactKind::AgentPrompt));
-        assert!(!artifact_runnable(&ArtifactKind::VaultSkill));
-        assert!(!artifact_runnable(&ArtifactKind::ClaudeSkill));
-        assert!(!artifact_runnable(&ArtifactKind::ClaudeAgent));
-        assert!(!artifact_runnable(&ArtifactKind::ClaudeCommand));
+        assert!(artifact_runnable(&ArtifactKind::VaultSkill));
+        assert!(artifact_runnable(&ArtifactKind::ClaudeSkill));
+        assert!(artifact_runnable(&ArtifactKind::ClaudeAgent));
+        assert!(artifact_runnable(&ArtifactKind::ClaudeCommand));
+        // Rules are policy fragments, not stand-alone invokables.
         assert!(!artifact_runnable(&ArtifactKind::ClaudeRule));
     }
 }

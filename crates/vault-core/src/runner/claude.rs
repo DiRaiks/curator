@@ -13,6 +13,11 @@
 //!   `--output-format text` would only flush the final response on exit,
 //!   killing the streaming UX.
 //! - `--verbose` — required by `claude` when stream-json is set.
+//! - `--permission-mode acceptEdits` — auto-approves file-edit tools
+//!   (Write/Edit/MultiEdit/NotebookEdit) without prompting; the user
+//!   already authorised the run by clicking Run, and the vault is
+//!   git-tracked so review happens via `git diff`. Other tools (Bash,
+//!   network, etc.) still follow the user's global Claude Code config.
 //! - `--add-dir <dir>` — one per `additional_dirs` entry.
 //!
 //! ## Deliberately NOT passed in slice 1
@@ -79,7 +84,7 @@ impl Runner for ClaudeRunner {
 
 fn build_args(req: &RunRequest) -> Vec<String> {
     let mut args: Vec<String> =
-        Vec::with_capacity(6 + req.additional_dirs.len() * 2);
+        Vec::with_capacity(8 + req.additional_dirs.len() * 2);
     args.push("-p".to_string());
 
     let mut prompt = req.prompt.clone();
@@ -96,6 +101,25 @@ fn build_args(req: &RunRequest) -> Vec<String> {
     args.push("--output-format".to_string());
     args.push("stream-json".to_string());
     args.push("--verbose".to_string());
+
+    // Authorise file-edit tools so claude doesn't hang on a permission
+    // prompt mid-run. The user clicked Run with intent and the vault is
+    // git-tracked; review happens via `git diff` afterwards. Other tools
+    // (Bash, MCP, network) still respect the user's global settings.
+    args.push("--permission-mode".to_string());
+    args.push("acceptEdits".to_string());
+
+    // Resume an existing conversation when the caller asked. Claude keeps
+    // the prior turns under the session id, so `prompt` is treated as the
+    // next user message rather than a fresh task description.
+    if let Some(id) = req
+        .resume_session_id
+        .as_ref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        args.push("--resume".to_string());
+        args.push(id.clone());
+    }
 
     for d in &req.additional_dirs {
         args.push("--add-dir".to_string());
@@ -341,6 +365,7 @@ mod tests {
             additional_dirs: Vec::new(),
             prompt: String::new(),
             runtime_input: None,
+            resume_session_id: None,
         }
     }
 
@@ -590,6 +615,7 @@ mod tests {
             additional_dirs: Vec::new(),
             prompt: "base prompt".into(),
             runtime_input: Some("PR-42".into()),
+            resume_session_id: None,
         };
         let args = build_args(&req);
         // Position 0 is "-p", position 1 is the prompt.
@@ -607,6 +633,7 @@ mod tests {
             additional_dirs: Vec::new(),
             prompt: "p".into(),
             runtime_input: None,
+            resume_session_id: None,
         };
         let args = build_args(&req);
         // stream-json without --verbose is rejected by claude; we must
@@ -614,6 +641,25 @@ mod tests {
         assert!(args.iter().any(|a| a == "stream-json"));
         assert!(args.iter().any(|a| a == "--verbose"));
         assert!(!args.iter().any(|a| a == "text"));
+    }
+
+    #[test]
+    fn permission_mode_accepts_edits() {
+        let req = RunRequest {
+            workdir: std::env::temp_dir(),
+            additional_dirs: Vec::new(),
+            prompt: "p".into(),
+            runtime_input: None,
+            resume_session_id: None,
+        };
+        let args = build_args(&req);
+        // Without this flag, claude prompts on Write/Edit and the run
+        // hangs in non-interactive `-p` mode. Regression guard.
+        let pos = args
+            .iter()
+            .position(|a| a == "--permission-mode")
+            .expect("--permission-mode flag is required");
+        assert_eq!(args.get(pos + 1).map(String::as_str), Some("acceptEdits"));
     }
 
     #[test]
@@ -626,6 +672,7 @@ mod tests {
             ],
             prompt: "p".into(),
             runtime_input: None,
+            resume_session_id: None,
         };
         let args = build_args(&req);
         let pairs: Vec<(&str, &str)> = args
@@ -641,5 +688,47 @@ mod tests {
         assert_eq!(pairs.len(), 2);
         assert!(pairs.iter().any(|(_, v)| *v == "/tmp/vault"));
         assert!(pairs.iter().any(|(_, v)| *v == "/tmp/notes"));
+    }
+
+    #[test]
+    fn resume_session_id_emits_resume_flag() {
+        let req = RunRequest {
+            workdir: std::env::temp_dir(),
+            additional_dirs: Vec::new(),
+            prompt: "follow-up reply".into(),
+            runtime_input: None,
+            resume_session_id: Some("abc-123-xyz".into()),
+        };
+        let args = build_args(&req);
+        let pairs: Vec<(&str, &str)> = args
+            .windows(2)
+            .filter_map(|w| {
+                if w[0] == "--resume" {
+                    Some((w[0].as_str(), w[1].as_str()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].1, "abc-123-xyz");
+        // The prompt slot still carries the user reply.
+        assert_eq!(args[1], "follow-up reply");
+    }
+
+    #[test]
+    fn empty_resume_session_id_does_not_emit_flag() {
+        let req = RunRequest {
+            workdir: std::env::temp_dir(),
+            additional_dirs: Vec::new(),
+            prompt: "p".into(),
+            runtime_input: None,
+            resume_session_id: Some("   ".into()),
+        };
+        let args = build_args(&req);
+        assert!(
+            !args.iter().any(|a| a == "--resume"),
+            "whitespace-only session id should be ignored"
+        );
     }
 }

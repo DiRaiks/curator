@@ -33,8 +33,8 @@ fn vault_skill_fixture_yields_one_vault_skill() {
     assert_eq!(a.id, "intake");
     assert_eq!(a.title, "Intake");
     assert!(
-        !a.runnable,
-        "vault-skill must be runnable: false until a runner exists"
+        a.runnable,
+        "vault-skill should be runnable now that an embedded runner exists",
     );
     assert_eq!(a.version.as_deref(), Some("0.1.0"));
     assert_eq!(a.status.as_deref(), Some("stable"));
