@@ -50,8 +50,8 @@ fn demo_vault_matches_expectations() {
     );
     assert_eq!(
         count_kind(ArtifactKind::ClaudeSkill),
-        1,
-        "expected 1 claude-skill"
+        2,
+        "expected 2 claude-skills (example + session-reflect)"
     );
     assert_eq!(
         count_kind(ArtifactKind::ClaudeAgent),
@@ -69,9 +69,11 @@ fn demo_vault_matches_expectations() {
         "expected 1 claude-rule"
     );
 
-    // Only agent-prompts are runnable.
+    // Everything except `claude-rule` is runnable from the IDE. Rules
+    // are policy fragments auto-loaded by Claude Code based on path
+    // globs — not standalone tasks the user invokes.
     for a in &r.artifacts {
-        let expected = matches!(a.kind, ArtifactKind::AgentPrompt);
+        let expected = !matches!(a.kind, ArtifactKind::ClaudeRule);
         assert_eq!(
             a.runnable, expected,
             "runnable mismatch for artifact {} ({:?})",

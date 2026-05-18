@@ -64,6 +64,25 @@ export async function createMarkdownFile(
   return invoke<string>("create_markdown_file", { vaultRoot, relativePath });
 }
 
+/**
+ * Promote an agent-produced draft into its declared
+ * `proposed_destination`. Returns the new vault-relative path on success.
+ */
+export async function promoteDraft(
+  vaultRoot: string,
+  draftPath: string,
+): Promise<string> {
+  return invoke<string>("promote_draft", { vaultRoot, draftPath });
+}
+
+/** Delete an agent-produced draft from the vault. */
+export async function discardDraft(
+  vaultRoot: string,
+  draftPath: string,
+): Promise<void> {
+  await invoke<void>("discard_draft", { vaultRoot, draftPath });
+}
+
 export async function inspectSourceRepo(
   localPath: string,
 ): Promise<SourceRepoInspection> {
@@ -100,8 +119,13 @@ export async function onVaultChange(
 export interface RunStartedEvent {
   projectSlug: string;
   promptId: string;
+  vaultRoot: string;
   workdir: string;
   runner: string;
+  /** True when this is a `--resume` of a prior session; false for a
+   *  fresh `start_run`. The frontend uses this to decide whether to
+   *  clear the output buffer or append to it. */
+  resume: boolean;
 }
 
 export interface RunLineEvent {
@@ -132,6 +156,25 @@ export async function startRun(args: {
 
 export async function stopRun(): Promise<void> {
   await invoke<void>("stop_run");
+}
+
+/**
+ * Continue a previous Claude session by id. `reply` is the next user
+ * turn — claude already holds the prior conversation history under the
+ * session id, so the payload here is small.
+ *
+ * `vaultRoot`, `projectSlug`, and `promptId` are used only to re-derive
+ * the cwd / `--add-dir` for the spawned process so tool access keeps
+ * matching the original run.
+ */
+export async function resumeRun(args: {
+  vaultRoot: string;
+  projectSlug: string;
+  promptId: string;
+  sessionId: string;
+  reply: string;
+}): Promise<void> {
+  await invoke<void>("resume_run", args);
 }
 
 /**

@@ -22,7 +22,7 @@ use crate::frontmatter::{
 };
 use crate::scope::{compute_scope, scope_label, zone_sort_priority};
 use crate::types::{
-    ArtifactKind, Diagnostic, DiagnosticLevel, MarkdownFile, Project, ScanResult, Scope,
+    ArtifactKind, Diagnostic, DiagnosticLevel, Draft, MarkdownFile, Project, ScanResult, Scope,
     WorkflowArtifact, Zone,
 };
 use crate::util::{detect_home_dir, read_head};
@@ -54,6 +54,7 @@ pub fn scan_vault(root: &Path) -> Result<ScanResult, ScanError> {
     let mut zone_acc: HashMap<String, (Scope, usize)> = HashMap::new();
     let mut artifacts: Vec<WorkflowArtifact> = Vec::new();
     let mut projects: Vec<Project> = Vec::new();
+    let mut drafts: Vec<Draft> = Vec::new();
 
     let has_meta = root.join("00_meta").is_dir();
     let has_agents_md = root.join("00_meta").join("AGENTS.md").is_file();
@@ -154,8 +155,34 @@ pub fn scan_vault(root: &Path) -> Result<ScanResult, ScanError> {
             audience,
             include_in_ai_context,
             note_type,
-            project: project_fm,
+            project: project_fm.clone(),
         });
+
+        // Detect agent-produced drafts: frontmatter must declare both
+        // `status: draft-from-agent` AND `proposed_destination`. Either
+        // alone is just metadata; both together signals "I want this
+        // promoted somewhere, you decide where".
+        if let Some(m) = fm.as_ref() {
+            let is_draft = fm_string(m, "status").as_deref() == Some("draft-from-agent");
+            if is_draft {
+                if let Some(dest) = fm_string(m, "proposed_destination") {
+                    let stem = std::path::Path::new(&rel)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("draft");
+                    let title = fm_string(m, "title").unwrap_or_else(|| stem.to_string());
+                    drafts.push(Draft {
+                        path: rel.clone(),
+                        title,
+                        proposed_destination: dest,
+                        reason: fm_string(m, "reason"),
+                        source_run: fm_string(m, "source_run"),
+                        project: project_fm,
+                        created: fm_string(m, "created"),
+                    });
+                }
+            }
+        }
 
         if let Some(root) = zone_root {
             let counter = zone_acc.entry(root).or_insert((scope.clone(), 0));
@@ -251,6 +278,8 @@ pub fn scan_vault(root: &Path) -> Result<ScanResult, ScanError> {
 
     discover_projects(root, &mut projects, &mut diagnostics);
 
+    drafts.sort_by(|a, b| a.path.cmp(&b.path));
+
     Ok(ScanResult {
         vault_root: root.to_string_lossy().to_string(),
         home_dir: detect_home_dir(),
@@ -266,6 +295,7 @@ pub fn scan_vault(root: &Path) -> Result<ScanResult, ScanError> {
         zones,
         artifacts,
         projects,
+        drafts,
         diagnostics,
     })
 }

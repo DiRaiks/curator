@@ -12,6 +12,7 @@ import { Diagnostics } from "./Diagnostics";
 import { EditorPanel } from "./EditorPanel";
 import { FileTree } from "./FileTree";
 import { NewFileDialog } from "./NewFileDialog";
+import { DraftsList } from "./DraftsList";
 import { ProjectDetail } from "./ProjectDetail";
 import { ProjectList } from "./ProjectList";
 import { RunPanel } from "./RunPanel";
@@ -24,7 +25,13 @@ interface DashboardProps {
   onRescan: () => Promise<void>;
 }
 
-type Tab = "projects" | "artifacts" | "zones" | "diagnostics" | "editor";
+type Tab =
+  | "projects"
+  | "artifacts"
+  | "drafts"
+  | "zones"
+  | "diagnostics"
+  | "editor";
 
 interface OpenFile {
   path: string;
@@ -266,26 +273,59 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
   );
 
   /**
-   * Resolve a wikilink target (the text between `[[…]]`) to a vault file
-   * path and open it. Matches by case-insensitive stem (filename minus
-   * `.md`). Ambiguous matches resolve to the first hit; missing targets
-   * surface in the file-tree error banner so the user knows the click
-   * wasn't silently dropped.
+   * Resolve a wikilink target (the text between `[[…]]`, alias stripped)
+   * to a vault file path and open it.
+   *
+   * Resolution order:
+   *   1. If the target contains `/`, treat it as a vault-relative path.
+   *      Try the path as-is, then with a `.md` suffix appended.
+   *   2. Otherwise (or if the path miss), fall back to case-insensitive
+   *      filename-stem match — Obsidian's default behaviour for bare
+   *      links like `[[Some Note]]`.
+   *
+   * Missing targets surface in the file-tree error banner so the click
+   * isn't silently swallowed.
    */
   const onOpenWikilink = useCallback(
     (target: string) => {
-      const normalized = target.toLowerCase();
-      const match = result.markdownFiles.find((f) => {
+      const trimmed = target.trim();
+      if (trimmed === "") return;
+      const hasSlash = trimmed.includes("/");
+
+      if (hasSlash) {
+        const candidates = trimmed.toLowerCase().endsWith(".md")
+          ? [trimmed]
+          : [trimmed, `${trimmed}.md`];
+        for (const cand of candidates) {
+          const pathHit = result.markdownFiles.find(
+            (f) => f.path.toLowerCase() === cand.toLowerCase(),
+          );
+          if (pathHit) {
+            attemptOpenFile(pathHit.path);
+            return;
+          }
+        }
+      }
+
+      // Stem fallback. Take the last segment of the target and strip
+      // `.md` so both `[[foo]]` and `[[a/b/foo]]` resolve when only a
+      // basename match exists.
+      const stemKey =
+        (trimmed.split("/").pop() ?? trimmed)
+          .replace(/\.md$/i, "")
+          .toLowerCase();
+      const stemHit = result.markdownFiles.find((f) => {
         const stem = (f.path.split("/").pop() ?? "")
           .replace(/\.md$/i, "")
           .toLowerCase();
-        return stem === normalized;
+        return stem === stemKey;
       });
-      if (match) {
-        attemptOpenFile(match.path);
-      } else {
-        setOpenError(`Wikilink not found in vault: [[${target}]]`);
+      if (stemHit) {
+        attemptOpenFile(stemHit.path);
+        return;
       }
+
+      setOpenError(`Wikilink not found in vault: [[${target}]]`);
     },
     [result.markdownFiles, attemptOpenFile],
   );
@@ -500,6 +540,14 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
               count={result.artifacts.length}
             />
             <TabButton
+              id="tab-drafts"
+              controls="panel-drafts"
+              active={effectiveTab === "drafts"}
+              onClick={() => onSelectTab("drafts")}
+              label="Drafts"
+              count={result.drafts.length}
+            />
+            <TabButton
               id="tab-zones"
               controls="panel-zones"
               active={effectiveTab === "zones"}
@@ -560,6 +608,21 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
               className="panel"
             >
               <ArtifactList artifacts={result.artifacts} />
+            </section>
+          )}
+          {effectiveTab === "drafts" && (
+            <section
+              id="panel-drafts"
+              role="tabpanel"
+              aria-labelledby="tab-drafts"
+              className="panel"
+            >
+              <DraftsList
+                vaultRoot={result.vaultRoot}
+                drafts={result.drafts}
+                onRescan={rescanWithTick}
+                onPreview={attemptOpenFile}
+              />
             </section>
           )}
           {effectiveTab === "zones" && (

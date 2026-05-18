@@ -328,7 +328,13 @@ function splitStringWithWikilinks(
   let m: RegExpExecArray | null;
   while ((m = WIKILINK_RE.exec(s)) !== null) {
     if (m.index > last) parts.push(s.slice(last, m.index));
-    const target = m[1].trim();
+    // Obsidian-style aliased wikilink: `[[target|display]]`. The `|`
+    // separates the resolution target from the visible label. Without an
+    // alias, target == display.
+    const full = m[1];
+    const pipe = full.indexOf("|");
+    const target = (pipe >= 0 ? full.slice(0, pipe) : full).trim();
+    const display = (pipe >= 0 ? full.slice(pipe + 1) : full).trim() || target;
     parts.push(
       <button
         key={`wl-${parentKey}-${m.index}`}
@@ -337,7 +343,7 @@ function splitStringWithWikilinks(
         onClick={() => onOpen(target)}
         title={`Open: ${target}`}
       >
-        {target}
+        {display}
       </button>,
     );
     last = m.index + m[0].length;

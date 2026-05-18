@@ -66,6 +66,19 @@ export interface Project {
   defaultBaseBranch: string | null;
 }
 
+export interface Draft {
+  /** Vault-relative path of the draft file. */
+  path: string;
+  /** Frontmatter `title:` or filename stem. */
+  title: string;
+  /** Vault-relative path the draft proposes to live at after promotion. */
+  proposedDestination: string;
+  reason?: string;
+  sourceRun?: string;
+  project?: string;
+  created?: string;
+}
+
 export interface Diagnostic {
   level: DiagnosticLevel;
   message: string;
@@ -91,6 +104,7 @@ export interface ScanResult {
   zones: Zone[];
   artifacts: WorkflowArtifact[];
   projects: Project[];
+  drafts: Draft[];
   diagnostics: Diagnostic[];
 }
 

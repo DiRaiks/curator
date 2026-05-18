@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   getRunStatus,
   onRunEvents,
+  resumeRun,
   stopRun,
   type RunExitEvent,
   type RunStartedEvent,
@@ -43,6 +44,15 @@ export function RunPanel() {
   const [collapsed, setCollapsed] = useState(true);
   const outputRef = useRef<HTMLPreElement | null>(null);
 
+  // Claude session id captured from the first `system init` event in the
+  // stream. Once it's set, the user can resume the conversation via the
+  // Reply box after the run exits. It survives `run:started` of a resumed
+  // run (claude reuses the same session id under `--resume`).
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [replyDraft, setReplyDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [replyError, setReplyError] = useState<string | null>(null);
+
   // Append helper — caps the retained tail at MAX_RETAINED_LINES so a
   // pathological run doesn't blow up the DOM. The backend's own 4 MB cap
   // already bounds total bytes; this is a second-line guard against very
@@ -69,13 +79,19 @@ export function RunPanel() {
         const snapshot = await getRunStatus();
         if (cancelled) return;
         if (snapshot.active) {
+          // Mount-time sync: backend knows a run is alive but the events
+          // we missed contain the real metadata. Fill placeholders; the
+          // Reply box stays disabled until a real `run:started` event
+          // populates `started` with usable vaultRoot/projectSlug/promptId.
           setStatus({
             kind: "running",
             started: {
               projectSlug: "(in progress)",
               promptId: "?",
+              vaultRoot: "",
               workdir: "",
               runner: "claude-code",
+              resume: false,
             },
           });
           setCollapsed(false);
@@ -86,18 +102,40 @@ export function RunPanel() {
 
       const un = await onRunEvents({
         onStarted: (ev) => {
-          // New run: clear any leftover output from the previous one and
-          // surface a header line so the user sees what's actually running.
-          setLines([
-            {
-              kind: "system",
-              text: `▶ start ${ev.runner} · ${ev.projectSlug}/${ev.promptId} · cwd: ${ev.workdir}`,
-            },
-          ]);
+          if (ev.resume) {
+            // Resume: keep the prior conversation buffer, append a
+            // separator so the boundary is visible. Session id stays.
+            setLines((prev) => [
+              ...prev,
+              {
+                kind: "system",
+                text: `▶ resume ${ev.runner} · ${ev.projectSlug}/${ev.promptId}`,
+              },
+            ]);
+          } else {
+            // Fresh run: drop the previous output buffer and the prior
+            // session id (the new stream will emit a new system init
+            // with its own session id).
+            setLines([
+              {
+                kind: "system",
+                text: `▶ start ${ev.runner} · ${ev.projectSlug}/${ev.promptId} · cwd: ${ev.workdir}`,
+              },
+            ]);
+            setSessionId(null);
+          }
+          setReplyDraft("");
+          setReplyError(null);
           setStatus({ kind: "running", started: ev });
           setCollapsed(false);
         },
         onStdout: (ev) => {
+          // Capture the session id once per stream so the Reply box can
+          // resume the conversation after exit. Subsequent system events
+          // in the same run carry the same id; setSessionId is idempotent
+          // on identical values.
+          const sid = extractClaudeSessionId(ev.line);
+          if (sid) setSessionId(sid);
           for (const rendered of renderClaudeStreamLine(ev.line)) {
             appendLine({ kind: rendered.kind, text: rendered.text });
           }
@@ -170,6 +208,43 @@ export function RunPanel() {
       el.scrollHeight - el.scrollTop - el.clientHeight < 24;
     followTail.current = atBottom;
   }, []);
+
+  /**
+   * Reply box is shown only when:
+   * - the run has finished (so we're not racing with claude's stdin), AND
+   * - we captured a session id from the stream (resume target known), AND
+   * - we still know the (project, prompt) we ran against (so the backend
+   *   can re-derive cwd / `--add-dir` for the resumed spawn).
+   */
+  const canReply =
+    status.kind === "exited" &&
+    sessionId !== null &&
+    status.started !== null;
+
+  const onSendReply = useCallback(async () => {
+    if (status.kind !== "exited" || status.started === null || sessionId === null) {
+      return;
+    }
+    const trimmed = replyDraft.trim();
+    if (trimmed === "") return;
+    const started = status.started;
+    setSending(true);
+    setReplyError(null);
+    try {
+      await resumeRun({
+        vaultRoot: started.vaultRoot,
+        projectSlug: started.projectSlug,
+        promptId: started.promptId,
+        sessionId,
+        reply: trimmed,
+      });
+      // `run:started` flips status to "running" and clears replyDraft.
+    } catch (err) {
+      setReplyError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSending(false);
+    }
+  }, [status, sessionId, replyDraft]);
 
   const onStop = useCallback(async () => {
     if (status.kind !== "running") return;
@@ -256,6 +331,45 @@ export function RunPanel() {
           )}
         </pre>
       )}
+      {!collapsed && canReply && (
+        <form
+          className="run-panel__reply"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void onSendReply();
+          }}
+        >
+          <textarea
+            className="run-panel__reply-input"
+            value={replyDraft}
+            onChange={(e) => setReplyDraft(e.target.value)}
+            placeholder="Reply to the agent — answer questions, refine, or continue. Cmd/Ctrl+Enter to send."
+            rows={2}
+            disabled={sending}
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                e.preventDefault();
+                void onSendReply();
+              }
+            }}
+            aria-label="Reply to the agent"
+          />
+          <div className="run-panel__reply-actions">
+            {replyError && (
+              <span className="run-panel__reply-error" role="alert">
+                {replyError}
+              </span>
+            )}
+            <button
+              type="submit"
+              className="btn btn--primary btn--small"
+              disabled={sending || replyDraft.trim() === ""}
+            >
+              {sending ? "Sending…" : "Send"}
+            </button>
+          </div>
+        </form>
+      )}
     </aside>
   );
 }
@@ -273,6 +387,26 @@ function describeStatus(status: RunStatus): string {
         ? "exited (success)"
         : `exited (code ${status.exit.code ?? "?"})`;
   }
+}
+
+/**
+ * Pull `session_id` out of Claude's `system` init event without forcing
+ * the renderer pipeline to surface it. Returns `null` on any shape we
+ * don't recognise — the caller treats absence as "stick with whatever
+ * we already had".
+ */
+function extractClaudeSessionId(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (trimmed === "" || trimmed[0] !== "{") return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed)) return null;
+  if (readString(parsed, "type") !== "system") return null;
+  return readString(parsed, "session_id") ?? null;
 }
 
 function formatBytes(n: number): string {

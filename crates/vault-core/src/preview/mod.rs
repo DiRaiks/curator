@@ -19,8 +19,8 @@ use walkdir::WalkDir;
 
 use crate::scan::{scan_vault, is_pruned, ScanError};
 use crate::types::{
-    ArtifactKind, ContextPreview, ExcludedCounts, IncludeReason, IncludedFile, PreviewWarning,
-    Scope, SourceRepoStatus, WarningKind,
+    ContextPreview, ExcludedCounts, IncludeReason, IncludedFile, PreviewWarning, Scope,
+    SourceRepoStatus, WarningKind,
 };
 
 mod runner_prompt;
@@ -58,10 +58,14 @@ pub fn preview_context(
         .ok_or_else(|| PreviewError::ProjectNotFound(project_slug.to_string()))?
         .clone();
 
+    // Find by id across any runnable kind — skills, commands, and agents
+    // are first-class run targets alongside agent-prompts. Rules
+    // (`ClaudeRule`) are policy fragments, not invokables, and stay
+    // excluded.
     let prompt = r
         .artifacts
         .iter()
-        .find(|a| matches!(a.kind, ArtifactKind::AgentPrompt) && a.id == prompt_id)
+        .find(|a| a.runnable && a.id == prompt_id)
         .ok_or_else(|| PreviewError::PromptNotFound(prompt_id.to_string()))?
         .clone();
 
