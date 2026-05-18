@@ -1102,6 +1102,232 @@ button {
   outline-offset: -2px;
 }
 
+/* CodeMirror 6 wrapper: fill the editor body height. The CM instance
+ * paints its own border/background; we just position it. */
+.editor__cm {
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--panel);
+}
+
+.editor__cm .cm-editor {
+  height: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  background: transparent;
+}
+
+.editor__cm .cm-scroller {
+  font-family: inherit;
+}
+
+.editor__cm .cm-focused {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Markdown preview pane. Inherits typography from the app so it reads
+ * like the rest of the dashboard rather than a foreign rendered surface. */
+.editor__preview {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.editor__preview > :first-child {
+  margin-top: 0;
+}
+
+.editor__preview > :last-child {
+  margin-bottom: 0;
+}
+
+.editor__preview h1,
+.editor__preview h2,
+.editor__preview h3,
+.editor__preview h4,
+.editor__preview h5,
+.editor__preview h6 {
+  margin: 1.2em 0 0.5em;
+  line-height: 1.25;
+}
+
+.editor__preview h1 { font-size: 1.6em; }
+.editor__preview h2 { font-size: 1.35em; }
+.editor__preview h3 { font-size: 1.15em; }
+
+.editor__preview p,
+.editor__preview ul,
+.editor__preview ol,
+.editor__preview blockquote,
+.editor__preview pre {
+  margin: 0.6em 0;
+}
+
+.editor__preview code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  padding: 1px 4px;
+  background: color-mix(in srgb, var(--muted) 12%, transparent);
+  border-radius: 3px;
+}
+
+.editor__preview pre {
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--muted) 12%, transparent);
+  border-radius: 6px;
+  overflow: auto;
+}
+
+.editor__preview pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.editor__preview blockquote {
+  padding: 4px 12px;
+  border-left: 3px solid var(--accent);
+  color: var(--muted);
+}
+
+.editor__preview table {
+  border-collapse: collapse;
+  margin: 0.8em 0;
+}
+
+.editor__preview th,
+.editor__preview td {
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  text-align: left;
+}
+
+.editor__preview a {
+  color: var(--accent);
+}
+
+/* Wikilink button rendered inside preview text. Visually closer to a link
+ * than a button to match Obsidian-like expectations. */
+.wikilink {
+  display: inline;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.wikilink::before { content: "[["; opacity: 0.5; }
+.wikilink::after  { content: "]]"; opacity: 0.5; }
+
+.wikilink:hover {
+  text-decoration-thickness: 2px;
+}
+
+.wikilink:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* ---------- Frontmatter form ---------- */
+
+.fm-form {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 50%, transparent);
+}
+
+.fm-form__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.fm-form__title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.fm-form__hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.fm-form__rows {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  align-items: center;
+}
+
+.fm-form__row {
+  display: contents;
+}
+
+.fm-form__label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: right;
+  padding-right: 4px;
+}
+
+.fm-form__input {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+}
+
+.fm-form__input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.fm-form__input--array {
+  font-style: italic;
+}
+
+.fm-form__checkbox {
+  justify-self: start;
+}
+
+.fm-form__value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+  padding: 4px 0;
+  word-break: break-word;
+}
+
 .editor__missing {
   margin: 0;
   padding: 8px 10px;

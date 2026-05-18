@@ -264,6 +264,31 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
     [isDirty, doOpenFile],
   );
 
+  /**
+   * Resolve a wikilink target (the text between `[[…]]`) to a vault file
+   * path and open it. Matches by case-insensitive stem (filename minus
+   * `.md`). Ambiguous matches resolve to the first hit; missing targets
+   * surface in the file-tree error banner so the user knows the click
+   * wasn't silently dropped.
+   */
+  const onOpenWikilink = useCallback(
+    (target: string) => {
+      const normalized = target.toLowerCase();
+      const match = result.markdownFiles.find((f) => {
+        const stem = (f.path.split("/").pop() ?? "")
+          .replace(/\.md$/i, "")
+          .toLowerCase();
+        return stem === normalized;
+      });
+      if (match) {
+        attemptOpenFile(match.path);
+      } else {
+        setOpenError(`Wikilink not found in vault: [[${target}]]`);
+      }
+    },
+    [result.markdownFiles, attemptOpenFile],
+  );
+
   const closeEditor = useCallback(() => {
     setOpenFile(null);
     setEditorError(null);
@@ -579,6 +604,7 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
                 }}
                 onDiscard={discardOpenFile}
                 onClose={attemptCloseEditor}
+                onOpenWikilink={onOpenWikilink}
               />
             </section>
           )}
