@@ -1,0 +1,4 @@
+# Old research notes (backup)
+
+This file ends in `.bak` so the scanner emits an `info` diagnostic and does
+NOT index it as a Markdown file.

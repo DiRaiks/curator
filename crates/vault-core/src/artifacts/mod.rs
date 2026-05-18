@@ -1,0 +1,68 @@
+//! AI workflow artifact discovery, parsing, and metadata.
+//!
+//! Six artifact kinds, each living in a known location in the vault:
+//!
+//! | kind             | where                                    |
+//! |------------------|------------------------------------------|
+//! | `agent-prompt`   | `00_meta/agent-tasks/prompts/*.md`       |
+//! | `claude-command` | `00_meta/_claude/commands/*.md`          |
+//! | `claude-agent`   | `00_meta/_claude/agents/*.md`            |
+//! | `claude-skill`   | `00_meta/_claude/skills/*/SKILL.md`      |
+//! | `claude-rule`    | `00_meta/_claude/rules/*.md`             |
+//! | `vault-skill`    | `.vault/skills/*.skill.md` (forward-looking) |
+//!
+//! Discovery walks each well-known directory in isolation. Parsing reads
+//! YAML frontmatter and falls back to filename stem for `id` / `title`
+//! when fields are missing. Errors during parsing produce diagnostics —
+//! they never abort the scan.
+
+use crate::types::ArtifactKind;
+
+pub(crate) mod discovery;
+mod parsers;
+
+pub(crate) use discovery::{
+    discover_agent_prompts, discover_claude_agents, discover_claude_commands,
+    discover_claude_rules, discover_claude_skills, discover_projects, discover_vault_skills,
+};
+
+pub(crate) fn kind_sort_index(k: &ArtifactKind) -> u8 {
+    match k {
+        ArtifactKind::AgentPrompt => 0,
+        ArtifactKind::ClaudeCommand => 1,
+        ArtifactKind::ClaudeAgent => 2,
+        ArtifactKind::ClaudeSkill => 3,
+        ArtifactKind::ClaudeRule => 4,
+        ArtifactKind::VaultSkill => 5,
+    }
+}
+
+pub(crate) fn artifact_kind_label(k: &ArtifactKind) -> &'static str {
+    match k {
+        ArtifactKind::AgentPrompt => "agent-prompt",
+        ArtifactKind::VaultSkill => "vault-skill",
+        ArtifactKind::ClaudeSkill => "claude-skill",
+        ArtifactKind::ClaudeAgent => "claude-agent",
+        ArtifactKind::ClaudeCommand => "claude-command",
+        ArtifactKind::ClaudeRule => "claude-rule",
+    }
+}
+
+pub(crate) fn artifact_runnable(kind: &ArtifactKind) -> bool {
+    matches!(kind, ArtifactKind::AgentPrompt)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_agent_prompt_is_runnable() {
+        assert!(artifact_runnable(&ArtifactKind::AgentPrompt));
+        assert!(!artifact_runnable(&ArtifactKind::VaultSkill));
+        assert!(!artifact_runnable(&ArtifactKind::ClaudeSkill));
+        assert!(!artifact_runnable(&ArtifactKind::ClaudeAgent));
+        assert!(!artifact_runnable(&ArtifactKind::ClaudeCommand));
+        assert!(!artifact_runnable(&ArtifactKind::ClaudeRule));
+    }
+}
