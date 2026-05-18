@@ -1,7 +1,14 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Welcome } from "./components/Welcome";
 import { Dashboard } from "./components/Dashboard";
-import { demoVaultPath, pickVaultFolder, scanVault } from "./api";
+import {
+  demoVaultPath,
+  onVaultChange,
+  pickVaultFolder,
+  scanVault,
+  startVaultWatch,
+  stopVaultWatch,
+} from "./api";
 import type { ScanResult } from "./types";
 
 type AppState =
@@ -76,6 +83,43 @@ export function App() {
       // Keep the prior scan visible. The editor surfaces its own error.
     }
   }, []);
+
+  /**
+   * Drive the filesystem watcher off the currently loaded vault root.
+   * Starting fires once per load (or vault switch); the Tauri shell replaces
+   * any prior watcher internally. The latest `rescan` is held in a ref so
+   * the listener doesn't need re-attaching when its identity changes.
+   */
+  const activeVaultRoot = state.kind === "loaded" ? state.result.vaultRoot : null;
+  const rescanRef = useRef(rescan);
+  rescanRef.current = rescan;
+
+  useEffect(() => {
+    if (!activeVaultRoot) return;
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+
+    void (async () => {
+      try {
+        await startVaultWatch(activeVaultRoot);
+        if (cancelled) {
+          void stopVaultWatch().catch(() => {});
+          return;
+        }
+        unlisten = await onVaultChange(() => {
+          void rescanRef.current(activeVaultRoot);
+        });
+      } catch {
+        // Watcher is best-effort — manual Refresh still works.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+      void stopVaultWatch().catch(() => {});
+    };
+  }, [activeVaultRoot]);
 
   if (state.kind === "welcome") {
     return (

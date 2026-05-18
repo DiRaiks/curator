@@ -1,4 +1,8 @@
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::thread;
+
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[tauri::command]
 fn scan_vault(path: String) -> Result<vault_core::ScanResult, String> {
@@ -69,10 +73,61 @@ fn demo_vault_path() -> Result<String, String> {
         .map_err(|e| format!("demo vault not found at {}: {e}", candidate.display()))
 }
 
+/// Holds the active filesystem watcher (if any). Replacing it drops the
+/// previous `WatchToken`, which stops the underlying notify watcher and
+/// disconnects its emit thread on the next event read.
+#[derive(Default)]
+struct WatchState(Mutex<Option<vault_core::watch::WatchToken>>);
+
+/// Start (or restart) the vault filesystem watcher for the given vault root.
+/// Emits a `vault:changed` event to the frontend each time the debouncer
+/// fires. Any previous watcher is stopped first.
+#[tauri::command]
+fn start_vault_watch(
+    vault_root: String,
+    app: AppHandle,
+    state: State<'_, WatchState>,
+) -> Result<(), String> {
+    let root = PathBuf::from(&vault_root);
+    let (token, rx) = vault_core::watch::start_watch(vec![root])
+        .map_err(|e| e.to_string())?;
+
+    {
+        let mut slot = state.0.lock().map_err(|e| e.to_string())?;
+        // Dropping the old token stops the previous watcher.
+        *slot = Some(token);
+    }
+
+    // Spawn the emit pump. Holds only an `AppHandle`, which is cheap to
+    // clone, and the receiver. When the WatchState slot is replaced (or the
+    // app exits) the sender end drops and `recv()` returns Err, ending the
+    // loop.
+    let app_for_thread = app.clone();
+    thread::spawn(move || {
+        while let Ok(ev) = rx.recv() {
+            let _ = app_for_thread.emit("vault:changed", ev);
+        }
+    });
+
+    Ok(())
+}
+
+/// Stop the active watcher, if any. Idempotent.
+#[tauri::command]
+fn stop_vault_watch(state: State<'_, WatchState>) -> Result<(), String> {
+    let mut slot = state.0.lock().map_err(|e| e.to_string())?;
+    *slot = None;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            app.manage(WatchState::default());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             scan_vault,
             demo_vault_path,
@@ -80,7 +135,9 @@ pub fn run() {
             inspect_source_repo,
             read_markdown_file,
             write_markdown_file,
-            create_markdown_file
+            create_markdown_file,
+            start_vault_watch,
+            stop_vault_watch
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

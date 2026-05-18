@@ -41,3 +41,5 @@ mod markdown_io;
 pub use markdown_io::{
     create_markdown_file, read_markdown_file, write_markdown_file, MarkdownFileError,
 };
+
+pub mod watch;
