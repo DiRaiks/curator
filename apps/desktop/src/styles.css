@@ -1,38 +1,55 @@
 :root {
-  --bg: #fbfbfb;
-  --panel: #ffffff;
-  --border: #e3e3e6;
-  --text: #1d1f23;
-  --muted: #6b7280;
-  --accent: #2c5aa0;
-  --accent-fg: #ffffff;
-  --warn: #b45309;
-  --warn-bg: #fef3c7;
-  --err: #b91c1c;
-  --err-bg: #fee2e2;
-  --info: #1e40af;
-  --info-bg: #dbeafe;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu,
-    "Helvetica Neue", sans-serif;
+  --bg: #131110;
+  --panel: #181614;
+  --panel-2: #1d1b18;
+  --bg-sub: #0c0b0a;
+  --border: #2a2622;
+  --border-soft: #211d1a;
+  --text: #d8d0c4;
+  --fg-2: #a89e8e;
+  --muted: #6e6557;
+  --muted-2: #4a4338;
+  --accent: #d4914d;
+  --accent-soft: #3a2a18;
+  --accent-fg: #131110;
+  --warn: #d4a14d;
+  --warn-bg: #2a2014;
+  --err: #c97565;
+  --err-bg: #2e1a16;
+  --ok: #8aaa6e;
+  --ok-bg: #1f2818;
+  --info: #7a96b8;
+  --info-bg: #18222e;
+
+  --radius: 3px;
+  --row-h: 24px;
+  --font: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  font-family: var(--font);
   font-size: 14px;
   color: var(--text);
 }
 
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme: light) {
   :root {
-    --bg: #1a1b1e;
-    --panel: #25262b;
-    --border: #2f3036;
-    --text: #e9ecef;
-    --muted: #909296;
-    --accent: #4c8df6;
-    --accent-fg: #0b1220;
-    --warn: #fbbf24;
-    --warn-bg: #3b2f12;
-    --err: #fca5a5;
-    --err-bg: #3b1212;
-    --info: #93c5fd;
-    --info-bg: #112236;
+    --bg: #eee7da;
+    --panel: #f4ede0;
+    --panel-2: #faf3e4;
+    --bg-sub: #e0d7c3;
+    --border: #c4b89c;
+    --border-soft: #d4c9af;
+    --text: #1f1a13;
+    --fg-2: #4a4034;
+    --muted: #786b58;
+    --muted-2: #a89c84;
+    --accent: #a85a1c;
+    --accent-soft: #ecd8b8;
+    --accent-fg: #fff8ec;
+    --warn-bg: #f0dbb0;
+    --err-bg: #f0c8b8;
+    --ok-bg: #d2dfba;
+    --info-bg: #d0d8e4;
   }
 }
 
@@ -438,18 +455,19 @@ button {
 
 .dashboard__body {
   display: grid;
-  grid-template-columns: 280px 1fr;
+  /* Slice 8 PR A: the left track now holds the grouped Sidebar (was
+   * the 280px tree aside). 220px matches the v0.5 spec (B-prototype
+   * density). */
+  grid-template-columns: 220px 1fr;
   gap: 0;
   flex: 1;
   min-height: 0;
 }
 
-.dashboard__tree {
-  border-right: 1px solid var(--border);
-  padding: 12px 8px;
-  overflow: auto;
-  background: var(--panel);
-}
+/* Legacy `.dashboard__tree` rules removed in slice 8 PR A — the aside
+ * was replaced by `<Sidebar>`. The header helpers below
+ * (`dashboard__tree-header`) are kept for now: not rendered anywhere,
+ * but harmless until the next styles cleanup pass. */
 
 .dashboard__main {
   padding: 16px;
@@ -497,6 +515,49 @@ button {
 .pill--warn {
   background: var(--warn-bg);
   color: var(--warn);
+}
+
+/* Clickable variant of `.pill` — used when a whole pill is meant to be
+ * a single button. Resets the native <button> chrome so it visually
+ * matches the regular pill and adds a subtle hover lift. */
+.pill--clickable {
+  border: 0;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: filter 120ms ease;
+}
+
+.pill--clickable:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+/* Inline action link rendered inside a pill body — currently used by
+ * VaultFormatPill to offer a one-click "create config.yml" affordance
+ * without making the entire pill a button. Inherits the pill's colour
+ * (warn for the legacy-vault case) and underlines so it reads as an
+ * action rather than decoration. */
+.pill__fix-link {
+  margin-left: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.pill__fix-link:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+
+.pill__fix-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 2px;
 }
 
 .tag {
@@ -855,17 +916,23 @@ button {
   display: inline-flex;
 }
 
+/* Flat pill — star glyph, "recs" label, optional accent count badge.
+ * Two visual states: count==0 → transparent + muted (the bell still
+ * shows because dismissed items exist), count>0 → accent-soft tint
+ * with full fg text so the active state is visible at a glance. */
 .recs-bell {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
+  border-radius: var(--radius);
+  background: transparent;
   color: var(--muted);
   cursor: pointer;
-  font-size: 13px;
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
 .recs-bell:hover {
@@ -873,23 +940,32 @@ button {
 }
 
 .recs-bell--has-active {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: var(--accent-soft);
   color: var(--text);
 }
 
 .recs-bell__icon {
-  font-size: 14px;
+  font-size: 12px;
   line-height: 1;
 }
 
+.recs-bell__label {
+  line-height: 1;
+}
+
+/* Count badge — solid accent pill, accent-fg text. Sits to the right of
+ * "recs" so the eye lands on the number after parsing the label. */
 .recs-bell__count {
-  font-size: 11px;
-  font-weight: 700;
-  padding: 0 6px;
-  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  height: 14px;
+  padding: 0 5px;
+  border-radius: 7px;
   background: var(--accent);
-  color: white;
+  color: var(--accent-fg);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .recs-popover {
@@ -1335,6 +1411,189 @@ button {
   border-color: color-mix(in srgb, var(--warn) 60%, var(--border) 40%);
 }
 
+/* Included-files reason badge. Fixed width so the file paths align in a
+ * column regardless of which reason a row carries — the rhythm makes
+ * the list easier to skim. */
+.reason-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 76px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.reason-badge--info {
+  background: var(--info-bg);
+  color: var(--info);
+}
+
+.reason-badge--accent {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.reason-badge--ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.reason-badge--warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+/* Excluded-counts grid — non-zero buckets only, 3 per row on wide
+ * displays, collapsing to 2 / 1 as space shrinks. Dot colour signals
+ * severity: err for personal / team, warn for inbox, muted for
+ * archive / .bak / ignored. */
+.bucket-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 16px;
+}
+
+@media (max-width: 720px) {
+  .bucket-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 480px) {
+  .bucket-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.bucket-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+  min-width: 0;
+}
+
+.bucket-pill__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex-shrink: 0;
+}
+
+.bucket-pill__dot--err {
+  background: var(--err);
+}
+
+.bucket-pill__dot--warn {
+  background: var(--warn);
+}
+
+.bucket-pill__dot--muted {
+  background: var(--muted);
+}
+
+.bucket-pill__label {
+  color: var(--fg-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bucket-pill__count {
+  margin-left: auto;
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Warning rows — flat, mono [kind] prefix in warn tone, ⚠ glyph for
+ * visual weight. Path drops to a new line so the message stays
+ * readable when the path is long. */
+.warnings-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.warning-row {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  background: var(--warn-bg);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.warning-row__glyph {
+  color: var(--warn);
+  font-weight: 700;
+}
+
+.warning-row__kind {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--warn);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.warning-row__message {
+  color: var(--text);
+  min-width: 0;
+}
+
+.warning-row__path {
+  grid-column: 2 / -1;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* External-runner section — secondary content, collapsed by default.
+ * The summary line carries the disclosure marker; we let the browser's
+ * default ▸ stay so users see a familiar affordance. */
+.external-runner-details {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.external-runner-details__summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-2);
+  user-select: none;
+}
+
+.external-runner-details[open] .external-runner-details__summary {
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text);
+}
+
+.external-runner-details > :not(summary) {
+  padding: 0 4px 4px;
+}
+
 /* ---------- Run plan preview (MVP) ---------- */
 
 .preview__summary {
@@ -1514,6 +1773,131 @@ button {
   font-size: 13px;
 }
 
+/* ---------- Projects list (dense rows, not cards) ---------- */
+
+/* Outer `ul` uses `--border-soft` as its background and 1px gaps so each
+ * row's panel-coloured tile leaves a hairline divider between items —
+ * cleaner than per-row `border-bottom` since hover/selected backgrounds
+ * never clip into the divider. */
+.project-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--border-soft);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.project-list__item {
+  background: var(--panel);
+}
+
+.project-list__row {
+  display: grid;
+  grid-template-columns: 8px 1fr auto;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 10px 14px;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  transition: background 80ms;
+}
+
+.project-list__row:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.project-list__row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Status dot. `--unknown` covers absent / unrecognised status strings
+ * — the muted tone signals "no signal" rather than mimicking active. */
+.project-list__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted-2);
+}
+
+.project-list__dot--active {
+  background: var(--ok);
+}
+
+.project-list__dot--paused {
+  background: var(--warn);
+}
+
+.project-list__dot--archived {
+  background: var(--muted-2);
+}
+
+.project-list__dot--unknown {
+  background: var(--muted-2);
+}
+
+.project-list__content {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.project-list__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-list__slug {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-list__role {
+  flex-shrink: 0;
+  padding: 0 5px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-radius: 2px;
+}
+
+.project-list__meta {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-list__chevron {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 14px;
+}
+
 /* ---------- File tree active row + New button ---------- */
 
 .dashboard__tree-header {
@@ -1599,18 +1983,6 @@ button {
   min-width: 0;
 }
 
-.editor__mode {
-  display: inline-block;
-  padding: 1px 8px;
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  background: color-mix(in srgb, var(--muted) 18%, transparent);
-  color: var(--muted);
-}
-
 .editor__path {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
@@ -1627,6 +1999,86 @@ button {
   display: flex;
   gap: 6px;
   flex-shrink: 0;
+  align-items: center;
+}
+
+/* Source / split / preview view-mode toggle. Lives in the editor header
+ * actions row. Each button carries a Cmd/Ctrl+N hint kbd so the user
+ * sees the shortcut next to the control they'd otherwise click. */
+.editor-mode-toggle {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.editor-mode-toggle__btn {
+  padding: 0 10px;
+  height: 24px;
+  background: transparent;
+  color: var(--muted);
+  border: 0;
+  border-left: 1px solid var(--border-soft);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+
+.editor-mode-toggle__btn:first-child {
+  border-left: 0;
+}
+
+.editor-mode-toggle__btn--active {
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 700;
+}
+
+.editor-mode-toggle__kbd {
+  color: color-mix(in srgb, currentColor 60%, transparent);
+  opacity: 0.7;
+}
+
+/* Two-pane editor body. The wrapper takes the remaining height in the
+ * editor flex column and lays out CodeMirror + preview via grid. Mode
+ * modifier classes switch between single-column variants and the
+ * 50/50 split. Both children are always mounted; the hidden one uses
+ * `display: none` so CodeMirror keeps its internal scroll + selection
+ * across mode switches. */
+.editor__body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.editor__body > * {
+  min-width: 0;
+  min-height: 0;
+}
+
+.editor__body--src {
+  grid-template-columns: 1fr;
+}
+
+.editor__body--src .editor__preview {
+  display: none;
+}
+
+.editor__body--split {
+  grid-template-columns: 1fr 1fr;
+}
+
+.editor__body--prev {
+  grid-template-columns: 1fr;
+}
+
+.editor__body--prev .editor__cm {
+  display: none;
 }
 
 .editor__textarea {
@@ -1931,6 +2383,72 @@ button {
 
 .run-panel__status--exited {
   color: var(--muted);
+}
+
+/* Collapsed-mode compact header. One mono line: dot + status word +
+ * trailing meta (scope, tokens, cost, last-run age). Replaces the
+ * title + status + usage chip when the drawer is collapsed so the
+ * idle/running/exited state is glanceable at a glance. */
+.run-panel__compact {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-2);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.run-panel__compact-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted-2);
+  flex-shrink: 0;
+}
+
+.run-panel__compact-dot--running {
+  background: var(--accent);
+  animation: run-panel-compact-pulse 1.2s ease-in-out infinite;
+}
+
+.run-panel__compact-dot--stopping {
+  background: var(--warn);
+}
+
+.run-panel__compact-dot--ok {
+  background: var(--ok);
+}
+
+.run-panel__compact-dot--muted {
+  background: var(--muted-2);
+}
+
+.run-panel__compact-label {
+  color: var(--text);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.run-panel__compact-meta {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+@keyframes run-panel-compact-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
 }
 
 /* Session usage chip — tokens + cost, summed across resume turns.
@@ -2338,6 +2856,169 @@ button {
   border-radius: 4px;
   font-size: 12px;
   line-height: 1.4;
+}
+
+/* ---------- Approve-tools modal ---------- */
+
+/* Standalone modal (doesn't reuse `.modal-overlay` because it owns the
+ * scrim + card layout) — claude is paused awaiting a decision so we
+ * want full focus capture and a slightly louder warn tone in the
+ * header. Three actions in the footer, no Cancel — closing the modal
+ * without picking would desync the SDK control protocol. */
+.approve-tools-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.approve-tools-modal__scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.approve-tools-modal__card {
+  position: relative;
+  width: min(520px, calc(100vw - 32px));
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+}
+
+.approve-tools-modal__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.approve-tools-modal__pill {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: var(--radius);
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.approve-tools-modal__skill {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-2);
+}
+
+.approve-tools-modal__body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.approve-tools-modal__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.approve-tools-modal__description {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.approve-tools-modal__tool-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+.approve-tools-modal__risk {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.approve-tools-modal__risk--low {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.approve-tools-modal__risk--med {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.approve-tools-modal__risk--high {
+  background: var(--err-bg);
+  color: var(--err);
+}
+
+.approve-tools-modal__arg {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text);
+  word-break: break-all;
+  white-space: pre-wrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.approve-tools-modal__error {
+  margin: 0 16px 8px;
+  padding: 8px 10px;
+  background: var(--err-bg);
+  color: var(--err);
+  border-radius: var(--radius);
+  font-size: 12px;
+}
+
+.approve-tools-modal__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-soft);
+}
+
+/* Deny is destructive (claude gets an is_error tool_result) but lower
+ * key than the primary Allow action — ghost style with err text only. */
+.approve-tools-modal__deny.btn--danger {
+  background: transparent;
+  color: var(--err);
+  border-color: transparent;
+  margin-right: auto;
+}
+
+.approve-tools-modal__deny.btn--danger:hover:not(:disabled) {
+  background: var(--err-bg);
 }
 
 /* ---------- External runner prompt ---------- */
@@ -2748,56 +3429,56 @@ button {
   margin-right: 4px;
 }
 
+/* Severity pills — flat, square-cornered, mono-typed. Clickable
+ * variants are buttons; non-clickable are plain spans. Visual treatment
+ * is identical for both so the panel-level summary and the per-project
+ * filter row read as the same family. */
 .severity-chip {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
   font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid transparent;
-  background: color-mix(in srgb, var(--panel) 80%, var(--border) 20%);
+  font-weight: 600;
+  border: 0;
+  background: var(--panel-2);
   color: var(--muted);
-  transition: opacity 120ms ease, filter 120ms ease;
+  transition: opacity 120ms ease;
 }
 
 .severity-chip--clickable {
   cursor: pointer;
 }
 
-.severity-chip--clickable:hover {
-  filter: brightness(1.05);
-}
-
 .severity-chip--off {
-  opacity: 0.45;
-  text-decoration: line-through;
+  opacity: 0.55;
 }
 
 .severity-chip--critical {
   background: var(--err-bg);
   color: var(--err);
-  border-color: color-mix(in srgb, var(--err) 30%, transparent);
 }
 
 .severity-chip--high {
-  background: color-mix(in srgb, var(--err-bg) 70%, var(--warn-bg) 30%);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
   color: var(--err);
-  border-color: color-mix(in srgb, var(--err) 25%, transparent);
 }
 
 .severity-chip--medium {
   background: var(--warn-bg);
   color: var(--warn);
-  border-color: color-mix(in srgb, var(--warn) 25%, transparent);
 }
 
 .severity-chip--low {
   background: var(--info-bg);
   color: var(--info);
-  border-color: color-mix(in srgb, var(--info) 25%, transparent);
 }
 
 .severity-chip--none {
-  background: color-mix(in srgb, var(--panel) 80%, var(--border) 20%);
+  background: var(--panel-2);
   color: var(--muted);
 }
 
@@ -2824,32 +3505,52 @@ button {
   gap: 6px;
 }
 
+/* Advisory card — 4px severity-coloured strip on the left via a grid
+ * cell, then the content stack on the right. The `::before` is the
+ * coloured strip itself; the surrounding card background is a tinted
+ * variant of the same severity so the card reads as one unit even at a
+ * glance. Severity drives both via per-variant custom properties. */
 .advisory {
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--border);
-  border-radius: 6px;
+  display: grid;
+  grid-template-columns: 4px 1fr;
+  background: var(--advisory-bg, var(--panel));
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+
+.advisory::before {
+  content: "";
+  background: var(--advisory-bar, var(--border));
+}
+
+.advisory__content {
   padding: 8px 10px;
-  background: color-mix(in srgb, var(--panel) 95%, var(--bg) 5%);
 }
 
 .advisory--critical {
-  border-left-color: var(--err);
+  --advisory-bg: var(--err-bg);
+  --advisory-bar: var(--err);
 }
 
 .advisory--high {
-  border-left-color: color-mix(in srgb, var(--err) 70%, var(--warn) 30%);
+  --advisory-bg: color-mix(in srgb, var(--err) 12%, transparent);
+  --advisory-bar: var(--err);
 }
 
 .advisory--medium {
-  border-left-color: var(--warn);
+  --advisory-bg: var(--warn-bg);
+  --advisory-bar: var(--warn);
 }
 
 .advisory--low {
-  border-left-color: var(--info);
+  --advisory-bg: var(--info-bg);
+  --advisory-bar: var(--info);
 }
 
 .advisory--none {
-  border-left-color: var(--muted);
+  --advisory-bg: var(--panel-2);
+  --advisory-bar: var(--muted);
 }
 
 .advisory__head {
@@ -2861,47 +3562,35 @@ button {
 }
 
 .advisory__pkg {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 600;
+  color: var(--text);
 }
 
 .advisory__id {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   color: var(--muted);
   margin-left: auto;
 }
 
+/* Severity pill on the card — uses the card's own bar colour as the
+ * background and the page background as the text colour so it reads as
+ * an inverted chip and contrasts well with the tinted card body. */
 .advisory__severity {
+  padding: 0 6px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  background: var(--advisory-bar, var(--muted));
+  color: var(--bg);
+  font-family: var(--font-mono);
   font-size: 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 700;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--panel) 80%, var(--border) 20%);
-  color: var(--muted);
-}
-
-.advisory__severity--critical {
-  background: var(--err-bg);
-  color: var(--err);
-}
-
-.advisory__severity--high {
-  background: color-mix(in srgb, var(--err-bg) 70%, var(--warn-bg) 30%);
-  color: var(--err);
-}
-
-.advisory__severity--medium {
-  background: var(--warn-bg);
-  color: var(--warn);
-}
-
-.advisory__severity--low {
-  background: var(--info-bg);
-  color: var(--info);
+  border-radius: 2px;
 }
 
 .advisory__summary {
@@ -2956,31 +3645,35 @@ button {
   color: var(--muted);
 }
 
+/* Segmented Active / Archived / All toggle. The divider lives on the
+ * left edge of every button so the first child can suppress it via
+ * :first-child — keeps the outer border crisp without an extra wrapper. */
 .history-panel__filter {
-  display: inline-flex;
+  display: flex;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   overflow: hidden;
 }
 
 .history-panel__filter-btn {
-  font: inherit;
-  font-size: 12px;
-  padding: 4px 12px;
-  border: none;
-  background: var(--panel);
-  color: var(--text);
+  padding: 0 12px;
+  height: 26px;
+  background: transparent;
+  color: var(--muted);
+  border: 0;
+  border-left: 1px solid var(--border-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
   cursor: pointer;
-  border-right: 1px solid var(--border);
 }
 
-.history-panel__filter-btn:last-child {
-  border-right: none;
+.history-panel__filter-btn:first-child {
+  border-left: 0;
 }
 
 .history-panel__filter-btn--active {
-  background: color-mix(in srgb, var(--accent) 16%, var(--panel) 84%);
-  color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
   font-weight: 600;
 }
 
@@ -3002,13 +3695,16 @@ button {
   gap: 8px;
 }
 
+/* Three-column row: status dot, content stack (title + meta), action
+ * buttons. Aligning the dot to the title baseline (not the row center)
+ * keeps it tied to the row's identity even when the meta line wraps. */
 .history-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
   gap: 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 10px 14px;
   background: var(--panel);
 }
@@ -3017,12 +3713,33 @@ button {
   opacity: 0.7;
 }
 
+.history-row__dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  margin-top: 6px;
+  flex-shrink: 0;
+}
+
+.history-row__dot--ok {
+  background: var(--ok);
+}
+
+.history-row__dot--fail {
+  background: var(--err);
+}
+
+.history-row__dot--unknown {
+  background: var(--muted);
+}
+
 .history-row__main {
   display: flex;
   flex-direction: column;
   gap: 4px;
   min-width: 0;
-  flex: 1;
 }
 
 .history-row__title-row {
@@ -3040,35 +3757,58 @@ button {
   overflow-wrap: anywhere;
 }
 
-.history-row__exit {
+/* Origin badge — distinguishes free chats from artifact (skill) runs at
+ * a glance. Colors are semantic, not decorative: info-blue for free
+ * chats, accent-warm for skill runs. */
+.history-row__type {
+  font-family: var(--font-mono);
   font-size: 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: var(--radius);
 }
 
-.history-row__exit--ok {
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
+.history-row__type--freeform {
+  background: var(--info-bg);
+  color: var(--info);
+}
+
+.history-row__type--skill {
+  background: var(--accent-soft);
   color: var(--accent);
 }
 
+.history-row__exit {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+.history-row__exit--ok {
+  color: var(--ok);
+}
+
 .history-row__exit--fail {
-  background: var(--err-bg);
   color: var(--err);
 }
 
 .history-row__exit--unknown {
-  background: color-mix(in srgb, var(--panel) 80%, var(--border) 20%);
   color: var(--muted);
 }
 
 .history-row__badge {
+  font-family: var(--font-mono);
   font-size: 10px;
   padding: 1px 6px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--panel) 80%, var(--border) 20%);
+  border-radius: var(--radius);
+  background: var(--panel-2);
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -3079,15 +3819,33 @@ button {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
   color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .history-row__actions {
   display: flex;
   gap: 6px;
   flex-shrink: 0;
+}
+
+.history-row__actions .btn {
+  height: 22px;
+}
+
+/* Delete is the only destructive action in the row, so we lean on a
+ * ghost-style err-colored button — visible but quieter than the solid
+ * --danger style used for Stop in the run drawer. Scoped here so Stop's
+ * appearance elsewhere stays unchanged. */
+.history-row__actions .btn--danger {
+  background: transparent;
+  color: var(--err);
+  border-color: transparent;
+}
+
+.history-row__actions .btn--danger:hover:not(:disabled) {
+  background: var(--err-bg);
 }
 
 .empty-state {
@@ -3104,3 +3862,694 @@ button {
   padding: 1px 5px;
   border-radius: 4px;
 }
+
+/* ---------- Empty-vault onboarding (slice 7) ---------- */
+
+.empty-vault {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.empty-vault__top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.empty-vault__label {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-2);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty-vault__main {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) 1fr;
+  flex: 1;
+  min-height: 0;
+}
+
+@media (max-width: 720px) {
+  .empty-vault__main {
+    grid-template-columns: 1fr;
+  }
+  .empty-vault__sidebar {
+    display: none;
+  }
+}
+
+.empty-vault__sidebar {
+  border-right: 1px solid var(--border-soft);
+  padding: 14px 14px 20px;
+  overflow-y: auto;
+  background: var(--panel);
+}
+
+.empty-vault__sidebar-title {
+  margin: 0 0 8px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.empty-vault__sidebar-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.empty-vault__sidebar-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.empty-vault__sidebar-item {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-2);
+  padding: 2px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty-vault__hero {
+  padding: 32px 36px;
+  max-width: 720px;
+  overflow-y: auto;
+}
+
+.empty-vault__hero--no-projects {
+  max-width: 640px;
+}
+
+.empty-vault__title {
+  margin: 0 0 12px;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.empty-vault__lede {
+  margin: 0 0 20px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--fg-2);
+}
+
+.empty-vault__lede code {
+  font-family: var(--font-mono);
+  background: var(--panel-2);
+  padding: 1px 5px;
+  border-radius: var(--radius);
+  font-size: 12.5px;
+}
+
+.empty-vault__plan {
+  margin: 0 0 20px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.empty-vault__plan-title {
+  margin: 0;
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.empty-vault__plan-list {
+  margin: 0;
+  padding: 10px 14px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--panel);
+}
+
+.empty-vault__error {
+  margin: 0 0 14px;
+  padding: 8px 10px;
+  background: var(--err-bg);
+  color: var(--err);
+  border-radius: var(--radius);
+  font-size: 12.5px;
+}
+
+.empty-vault__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Checklist on the no-projects screen. Each row shows the vault
+ * component, whether it's present, and (for the pending project row) a
+ * neutral marker so the user reads "next step" rather than "broken". */
+.empty-vault__checklist {
+  list-style: none;
+  margin: 0 0 22px;
+  padding: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.empty-vault__checklist-row {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 12.5px;
+}
+
+.empty-vault__checklist-row:last-child {
+  border-bottom: 0;
+}
+
+.empty-vault__checklist-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.empty-vault__checklist-row--ok .empty-vault__checklist-mark {
+  color: var(--ok);
+}
+
+.empty-vault__checklist-row--warn .empty-vault__checklist-mark {
+  color: var(--warn);
+}
+
+.empty-vault__checklist-row--pending .empty-vault__checklist-mark {
+  color: var(--muted);
+}
+
+.empty-vault__checklist-label {
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+
+.empty-vault__checklist-detail {
+  font-size: 11.5px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+
+/* First-project form. Inline labels above inputs, mono inputs for
+ * fields that hold paths / slugs / URLs. Single-column layout so the
+ * user reads top-to-bottom without scanning back and forth. */
+.empty-vault__form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.empty-vault__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.empty-vault__field-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.empty-vault__field-input {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.empty-vault__field-input--mono {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.empty-vault__field-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.empty-vault__field-input[aria-invalid="true"] {
+  border-color: var(--err);
+}
+
+.empty-vault__field-hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.empty-vault__field-error {
+  font-size: 11px;
+  color: var(--err);
+}
+
+/* ---------- App shell · TitleBar (slice 8 PR A) ---------- */
+
+/* Topmost row — macOS dots, project tabs, vault meta cluster, palette
+ * + AI handle. Sits above the existing `dashboard__header` in PR A;
+ * PR B/C may reconcile the two rows. */
+.titlebar {
+  display: flex;
+  align-items: stretch;
+  height: 34px;
+  flex-shrink: 0;
+  background: var(--bg-sub);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-2);
+}
+
+.titlebar__dots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  border-right: 1px solid var(--border-soft);
+}
+
+/* Decorative only — Tauri's window decorations own the real
+ * close/min/zoom. Colours echo the macOS palette without trying to
+ * pass for a real chrome target. */
+.titlebar__dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.titlebar__dot--close {
+  background: #d97e6c;
+}
+
+.titlebar__dot--min {
+  background: #d4b46b;
+}
+
+.titlebar__dot--zoom {
+  background: #9ab87d;
+}
+
+.titlebar__tabs {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.titlebar__tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  height: 34px;
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--border-soft);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  position: relative;
+}
+
+.titlebar__tab:hover {
+  color: var(--text);
+}
+
+.titlebar__tab--active {
+  background: var(--bg);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Top-edge accent rail signals which tab is current — matches V5
+ * design's 1px accent stripe at the top of an active tab. */
+.titlebar__tab--active::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--accent);
+}
+
+.titlebar__tab--plus {
+  padding: 0 12px;
+  color: var(--muted);
+}
+
+.titlebar__tab-close {
+  color: var(--muted-2);
+  font-size: 12px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+.titlebar__tab-close:hover {
+  color: var(--err);
+}
+
+.titlebar__spacer {
+  flex: 1;
+}
+
+.titlebar__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.titlebar__meta-path {
+  color: var(--fg-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}
+
+.titlebar__meta-sep {
+  color: var(--muted-2);
+}
+
+.titlebar__meta-text {
+  color: var(--muted);
+}
+
+.titlebar__palette,
+.titlebar__ai {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--border-soft);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.titlebar__palette:hover,
+.titlebar__ai:hover {
+  color: var(--text);
+}
+
+.titlebar__ai {
+  font-weight: 600;
+}
+
+.titlebar__ai-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted-2);
+}
+
+.titlebar__ai-dot--running {
+  background: var(--accent);
+  animation: titlebar-ai-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes titlebar-ai-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.titlebar__ai-count {
+  color: var(--fg-2);
+}
+
+.titlebar__ai-live {
+  display: inline-flex;
+  align-items: center;
+  height: 14px;
+  padding: 0 5px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.titlebar__kbd {
+  color: var(--muted-2);
+  font-size: 10px;
+}
+
+/* ---------- App shell · Sidebar (slice 8 PR A) ---------- */
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-2);
+}
+
+/* Section rails — mono uppercase 9.5px, bg-sub stripe with thin
+ * borders top and bottom for a "shelf" feel. Sticky-style without
+ * actually sticking (cheap; PR B can add `position: sticky` if the
+ * scroll behaviour calls for it). */
+.sidebar__section-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 12px;
+  background: var(--bg-sub);
+  border-top: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--border-soft);
+  flex-shrink: 0;
+}
+
+.sidebar__section-label {
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.sidebar__section-spacer {
+  flex: 1;
+}
+
+.sidebar__section-right {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.sidebar__section-right--muted {
+  color: var(--muted-2);
+}
+
+.sidebar__section-right--accent {
+  color: var(--accent);
+}
+
+.sidebar__section-right--warn {
+  color: var(--warn);
+}
+
+.sidebar__section-action {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 4px;
+  cursor: pointer;
+}
+
+.sidebar__section-action:hover {
+  color: var(--text);
+}
+
+.sidebar__group {
+  display: flex;
+  flex-direction: column;
+  padding: 2px 0;
+  flex-shrink: 0;
+}
+
+.sidebar__empty {
+  margin: 0;
+  padding: 4px 12px;
+  color: var(--muted-2);
+  font-size: 10.5px;
+  font-style: italic;
+}
+
+/* Generic row — button reset, 22px row height, accent left rail when
+ * active. Each row variant overrides bullet colour or label tone but
+ * shares this skeleton. */
+.sidebar__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 10px;
+  background: transparent;
+  border: 0;
+  border-left: 2px solid transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sidebar__row:hover {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  color: var(--text);
+}
+
+.sidebar__row--browse {
+  color: var(--muted);
+}
+
+.sidebar__row--active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-left-color: var(--accent);
+  color: var(--text);
+}
+
+.sidebar__row-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar__row-right {
+  font-size: 10px;
+}
+
+.sidebar__row-right--muted {
+  color: var(--muted-2);
+}
+
+.sidebar__row-right--warn {
+  color: var(--warn);
+}
+
+.sidebar__row-right--accent {
+  color: var(--accent);
+}
+
+.sidebar__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--muted-2);
+}
+
+.sidebar__dot--active {
+  background: var(--ok);
+}
+
+.sidebar__dot--paused {
+  background: var(--warn);
+}
+
+.sidebar__dot--archived {
+  background: var(--muted-2);
+}
+
+.sidebar__dot--unknown {
+  background: var(--muted-2);
+}
+
+.sidebar__draft-glyph {
+  color: var(--accent);
+  font-size: 10px;
+  width: 10px;
+  flex-shrink: 0;
+  text-align: center;
+}
+
+.sidebar__bullet {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--muted-2);
+  flex-shrink: 0;
+}
+
+.sidebar__error {
+  margin: 4px 12px;
+  padding: 4px 8px;
+  background: var(--err-bg);
+  color: var(--err);
+  font-size: 10.5px;
+  border-radius: var(--radius);
+}
+
+.sidebar__files {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+

@@ -14,13 +14,43 @@ import { ExternalRunnerPromptCard } from "./ExternalRunnerPromptCard";
 
 // ---------- Labels ----------
 
-const REASON_SHORT: Record<IncludeReason, string> = {
-  "meta-agents-rules": "meta agent rules",
-  "selected-prompt": "selected prompt",
-  "project-index": "project index",
-  "project-document": "project document",
-  "existing-output-file": "existing output file",
-};
+type ReasonTone = "info" | "accent" | "ok" | "warn";
+
+/**
+ * Short reason badge text + semantic tone. The tone drives the badge
+ * background/foreground tokens via `.reason-badge--{tone}` and stays
+ * stable across the included-files list and any future per-row badges
+ * so users learn the colour language once.
+ */
+const REASON_LABELS: Record<IncludeReason, { label: string; tone: ReasonTone }> =
+  {
+    "meta-agents-rules": { label: "meta", tone: "info" },
+    "selected-prompt": { label: "prompt", tone: "accent" },
+    "project-index": { label: "index", tone: "ok" },
+    "project-document": { label: "project", tone: "ok" },
+    "existing-output-file": { label: "output", tone: "warn" },
+  };
+
+type BucketTone = "err" | "warn" | "muted";
+
+/**
+ * Excluded-content buckets, in display order. Order is "loudest first"
+ * — buckets that point at real security concerns (personal-work,
+ * team-management) lead so the user notices counts > 0 immediately.
+ * Buckets whose count is zero are filtered out at render time.
+ */
+const BUCKETS: ReadonlyArray<{
+  key: keyof ExcludedCounts;
+  label: string;
+  tone: BucketTone;
+}> = [
+  { key: "personalWork", label: "personal-work", tone: "err" },
+  { key: "teamManagement", label: "team-management", tone: "err" },
+  { key: "inbox", label: "inbox", tone: "warn" },
+  { key: "archiveOrResource", label: "archive/resource", tone: "muted" },
+  { key: "bak", label: ".bak files", tone: "muted" },
+  { key: "ignoredPath", label: "ignored paths", tone: "muted" },
+];
 
 const WARNING_LABEL: Record<WarningKind, string> = {
   "output-file-missing": "output_file missing",
@@ -67,13 +97,6 @@ export function ContextPreviewPanel({
         isRefreshing={isRefreshing}
         onCreateAndOpenFile={onCreateAndOpenFile}
       />
-      <ExternalRunnerPromptCard
-        prompt={preview.externalRunnerPrompt}
-        unresolvedPlaceholders={preview.unresolvedPlaceholders}
-        vaultRoot={vaultRoot}
-        projectSlug={preview.projectSlug}
-        promptId={preview.promptId}
-      />
       <SourceRepoCard
         sourceRepo={preview.sourceRepo}
         inspection={sourceRepoInspection ?? null}
@@ -84,6 +107,22 @@ export function ContextPreviewPanel({
       )}
       <VaultFilesBlock files={preview.included} />
       <ExcludedBlock counts={preview.excludedCounts} />
+      {/* Secondary action: copy the runner-agnostic prompt for paste
+       * into Zed / Claude / Codex / Cursor. Collapsed by default so the
+       * card focuses on the run plan; advanced users can expand it. */}
+      <details className="external-runner-details">
+        <summary className="external-runner-details__summary">
+          External runner prompt — copy to paste into Zed / Claude / Codex /
+          Cursor
+        </summary>
+        <ExternalRunnerPromptCard
+          prompt={preview.externalRunnerPrompt}
+          unresolvedPlaceholders={preview.unresolvedPlaceholders}
+          vaultRoot={vaultRoot}
+          projectSlug={preview.projectSlug}
+          promptId={preview.promptId}
+        />
+      </details>
     </article>
   );
 }
@@ -328,19 +367,23 @@ function WarningsBlock({ warnings }: { warnings: PreviewWarning[] }) {
       role="region"
     >
       <h4 className="preview__section-title">
-        Warnings ({warnings.length})
+        Warnings · {warnings.length}
       </h4>
-      <ul className="list">
+      <ul className="warnings-list">
         {warnings.map((w, i) => (
-          <li key={i} className="list__item diag diag--warning">
-            <div className="list__primary">
-              <span className="tag tag--warning">{WARNING_LABEL[w.kind]}</span>
-              <span>{w.message}</span>
-            </div>
+          <li key={i} className="warning-row">
+            <span className="warning-row__glyph" aria-hidden="true">
+              ⚠
+            </span>
+            <span
+              className="warning-row__kind"
+              title={WARNING_LABEL[w.kind]}
+            >
+              [{w.kind}]
+            </span>
+            <span className="warning-row__message">{w.message}</span>
             {w.path && (
-              <div className="list__secondary">
-                <span className="list__path">{w.path}</span>
-              </div>
+              <span className="warning-row__path">{w.path}</span>
             )}
           </li>
         ))}
@@ -358,7 +401,7 @@ function VaultFilesBlock({ files }: { files: IncludedFile[] }) {
       aria-label="Vault files made available"
     >
       <h4 className="preview__section-title">
-        Vault files made available ({files.length})
+        Included · {files.length} file{files.length === 1 ? "" : "s"}
       </h4>
       {files.length === 0 ? (
         <p className="empty">No vault files would be included.</p>
@@ -367,8 +410,7 @@ function VaultFilesBlock({ files }: { files: IncludedFile[] }) {
           {files.map((f) => (
             <li key={f.path} className="list__item">
               <div className="list__primary">
-                <span className={"scope scope--" + f.scope}>{f.scope}</span>
-                <span className="list__id">{REASON_SHORT[f.reason]}</span>
+                <ReasonBadge reason={f.reason} />
                 <span className="list__path">{f.path}</span>
               </div>
             </li>
@@ -379,72 +421,54 @@ function VaultFilesBlock({ files }: { files: IncludedFile[] }) {
   );
 }
 
+function ReasonBadge({ reason }: { reason: IncludeReason }) {
+  const { label, tone } = REASON_LABELS[reason];
+  return (
+    <span
+      className={`reason-badge reason-badge--${tone}`}
+      title={reason}
+    >
+      {label}
+    </span>
+  );
+}
+
 // ---------- Excluded counts ----------
 
 function ExcludedBlock({ counts }: { counts: ExcludedCounts }) {
-  const total =
-    counts.personalWork +
-    counts.teamManagement +
-    counts.inbox +
-    counts.archiveOrResource +
-    counts.ignoredPath +
-    counts.bak;
+  // Buckets with zero hits are filtered out — the user only sees what's
+  // actually being excluded so the panel stays scannable. The total is
+  // the sum over ALL buckets (the empties contribute zero anyway).
+  const nonZero = BUCKETS.filter(({ key }) => counts[key] > 0);
+  const total = BUCKETS.reduce((acc, { key }) => acc + counts[key], 0);
 
   return (
     <section className="preview__excluded" aria-label="Excluded content">
       <h4 className="preview__section-title">
-        Excluded content ({total})
+        Excluded · {total} file{total === 1 ? "" : "s"}
         <span className="preview__total">counts only — no contents shown</span>
       </h4>
-      <ul className="zone-summary" aria-label="Exclusions">
-        <ExcludedRow
-          scope="personal-work"
-          label="personal-work excluded"
-          count={counts.personalWork}
-        />
-        <ExcludedRow
-          scope="team-management"
-          label="team-management excluded"
-          count={counts.teamManagement}
-        />
-        <ExcludedRow
-          scope="inbox"
-          label="inbox excluded"
-          count={counts.inbox}
-        />
-        <ExcludedRow
-          scope="archive"
-          label="archive / resource excluded"
-          count={counts.archiveOrResource}
-        />
-        <ExcludedRow
-          scope="unknown"
-          label="ignored path (.env, .pem, .key) excluded"
-          count={counts.ignoredPath}
-        />
-        <ExcludedRow scope="unknown" label="*.bak excluded" count={counts.bak} />
-      </ul>
+      {nonZero.length === 0 ? (
+        <p className="empty">Nothing excluded.</p>
+      ) : (
+        <ul className="bucket-grid" aria-label="Exclusions">
+          {nonZero.map(({ key, label, tone }) => (
+            <li key={key} className="bucket-pill">
+              <span
+                className={"bucket-pill__dot bucket-pill__dot--" + tone}
+                aria-hidden="true"
+              />
+              <span className="bucket-pill__label">{label}</span>
+              <span className="bucket-pill__count">{counts[key]}</span>
+            </li>
+          ))}
+        </ul>
+      )}
       <p className="preview__excluded-hint">
         These categories are excluded from project workflows by default. Their
         file contents are <strong>not</strong> read, displayed, or prepared
         for AI context.
       </p>
     </section>
-  );
-}
-
-interface ExcludedRowProps {
-  scope: string;
-  label: string;
-  count: number;
-}
-
-function ExcludedRow({ scope, label, count }: ExcludedRowProps) {
-  return (
-    <li className="zone-summary__item">
-      <span className={"scope scope--" + scope}>{scope}</span>
-      <span className="zone-summary__count">{count}</span>
-      <span className="zone-summary__zones">{label}</span>
-    </li>
   );
 }

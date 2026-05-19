@@ -46,6 +46,9 @@ pub use markdown_io::{
     MarkdownFileError,
 };
 
+mod bootstrap;
+pub use bootstrap::{init_project, init_vault, BootstrapError, InitProjectArgs};
+
 pub mod watch;
 
 pub mod runner;

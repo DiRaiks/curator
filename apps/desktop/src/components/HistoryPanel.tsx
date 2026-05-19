@@ -183,17 +183,17 @@ function HistoryRow({
     session.endedAtMs !== null
       ? formatDuration(session.endedAtMs - session.startedAtMs)
       : "—";
-  const exitClass = session.exitSuccess
-    ? "history-row__exit history-row__exit--ok"
-    : session.exitSuccess === false
-      ? "history-row__exit history-row__exit--fail"
-      : "history-row__exit history-row__exit--unknown";
-  const exitLabel =
+  // The dot, exit badge, and exit label all key off the same tri-state
+  // (ok / fail / unknown) so they stay visually in sync: dot color ==
+  // badge color == status word the user reads.
+  const exitKind: "ok" | "fail" | "unknown" =
     session.exitSuccess === true
       ? "ok"
       : session.exitSuccess === false
-        ? "failed"
-        : "unfinished";
+        ? "fail"
+        : "unknown";
+  const exitLabel =
+    exitKind === "ok" ? "ok" : exitKind === "fail" ? "failed" : "unfinished";
 
   return (
     <li
@@ -202,10 +202,24 @@ function HistoryRow({
         (session.archived ? " history-row--archived" : "")
       }
     >
+      <span
+        className={"history-row__dot history-row__dot--" + exitKind}
+        aria-hidden="true"
+      />
       <div className="history-row__main">
         <div className="history-row__title-row">
           <span className="history-row__title">{session.title}</span>
-          <span className={exitClass}>{exitLabel}</span>
+          <span
+            className={
+              "history-row__type history-row__type--" +
+              (session.freeform ? "freeform" : "skill")
+            }
+          >
+            {session.freeform ? "free chat" : "skill"}
+          </span>
+          <span className={"history-row__exit history-row__exit--" + exitKind}>
+            {exitLabel}
+          </span>
           {session.archived && (
             <span className="history-row__badge">archived</span>
           )}

@@ -462,32 +462,34 @@ interface AdvisoryItemProps {
 function AdvisoryItem({ advisory, severity }: AdvisoryItemProps) {
   return (
     <li className={"advisory advisory--" + severity}>
-      <div className="advisory__head">
-        <span className="advisory__pkg">
-          {advisory.package.name}@{advisory.package.version}
-        </span>
-        <span className={"advisory__severity advisory__severity--" + severity}>
-          {advisory.severity ?? "no severity"}
-        </span>
-        <span className="advisory__id">{advisory.osvId}</span>
+      <div className="advisory__content">
+        <div className="advisory__head">
+          <span className="advisory__pkg">
+            {advisory.package.name}@{advisory.package.version}
+          </span>
+          <span className={"advisory__severity advisory__severity--" + severity}>
+            {advisory.severity ?? "no severity"}
+          </span>
+          <span className="advisory__id">{advisory.osvId}</span>
+        </div>
+        <p className="advisory__summary">{advisory.summary || "(no summary)"}</p>
+        {advisory.fixedVersions.length > 0 && (
+          <p className="advisory__fix">
+            <strong>Fixed in:</strong> {advisory.fixedVersions.join(", ")}
+          </p>
+        )}
+        {advisory.references.length > 0 && (
+          <ul className="advisory__refs">
+            {advisory.references.slice(0, 3).map((url, i) => (
+              <li key={i}>
+                <a href={url} target="_blank" rel="noopener noreferrer">
+                  {hostnameOrUrl(url)}
+                </a>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
-      <p className="advisory__summary">{advisory.summary || "(no summary)"}</p>
-      {advisory.fixedVersions.length > 0 && (
-        <p className="advisory__fix">
-          <strong>Fixed in:</strong> {advisory.fixedVersions.join(", ")}
-        </p>
-      )}
-      {advisory.references.length > 0 && (
-        <ul className="advisory__refs">
-          {advisory.references.slice(0, 3).map((url, i) => (
-            <li key={i}>
-              <a href={url} target="_blank" rel="noopener noreferrer">
-                {hostnameOrUrl(url)}
-              </a>
-            </li>
-          ))}
-        </ul>
-      )}
     </li>
   );
 }

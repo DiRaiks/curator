@@ -45,7 +45,7 @@ use thiserror::Error;
 
 mod claude;
 
-pub use claude::ClaudeRunner;
+pub use claude::{build_permission_response_line, ClaudeRunner};
 
 /// Soft cap on total bytes emitted across stdout + stderr per run, before
 /// further output is dropped (with one `Truncated` event).
@@ -100,7 +100,11 @@ pub struct RunRequest {
 
 /// Streaming event from an active run. Consumers should treat unknown
 /// variants conservatively if new ones are added later.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Eq` is intentionally NOT derived — `PermissionRequest::tool_input`
+/// uses `serde_json::Value` which doesn't implement `Eq` (numbers have
+/// representational ambiguity). `PartialEq` is enough for tests.
+#[derive(Debug, Clone, PartialEq)]
 pub enum RunEvent {
     /// One line of stdout (newline stripped).
     Stdout(String),
@@ -111,6 +115,11 @@ pub enum RunEvent {
     /// Output cap exceeded; subsequent stdout/stderr is dropped. Emitted
     /// at most once per run.
     Truncated { dropped_bytes: usize },
+    /// Claude has paused awaiting a tool-use authorisation decision from
+    /// the host. Routed to the Tauri shell, which surfaces a modal; the
+    /// user's choice is sent back via [`RunHandle::respond_to_permission`].
+    /// The run resumes once a `control_response` is delivered.
+    PermissionRequest(PermissionRequest),
     /// Subprocess exited. The final event of the stream; the channel
     /// becomes disconnected shortly after. By construction, every prior
     /// `Stdout` / `Stderr` line has been emitted before this — the
@@ -118,23 +127,84 @@ pub enum RunEvent {
     Exit { code: Option<i32>, success: bool },
 }
 
-/// Handle to a live run. Owns both the event receiver and the kill switch
-/// in a single struct so a single owner can manage both. Use
-/// [`RunHandle::into_parts`] when the receiver and kill switch need to live
-/// in different threads / storage slots (typical for the Tauri shell).
+/// Permission-request payload mirroring the Claude Agent SDK
+/// `SDKControlPermissionRequest`. We keep this Tauri-agnostic so frontend
+/// callers see a stable shape even if the underlying SDK adds fields.
+///
+/// Field semantics (from `@anthropic-ai/claude-agent-sdk` types):
+/// - `request_id`: opaque correlation id. The host MUST echo it back in
+///   the `control_response`.
+/// - `tool_name`: e.g. "Bash", "Edit". Drives the risk heuristic + the
+///   modal copy.
+/// - `tool_input`: raw arguments the model is asking to invoke the tool
+///   with. Opaque JSON; the host renders it for the user but doesn't
+///   inspect its shape.
+/// - `tool_use_id`: identifies the specific tool_use the request is
+///   for. Multiple parallel tool_use blocks in one assistant message
+///   each get their own id and trigger one PermissionRequest each.
+/// - `title` / `display_name` / `description`: pre-rendered prompt
+///   strings from claude. Use these directly in the UI instead of
+///   reconstructing from `tool_name + tool_input` when present.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionRequest {
+    pub request_id: String,
+    pub tool_name: String,
+    pub tool_input: serde_json::Value,
+    pub tool_use_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// Decision a host returns for a [`PermissionRequest`]. Mirrors the SDK
+/// `PermissionResult` discriminated union — `allow` may carry an updated
+/// input (rare) and updated session-scoped permission rules; `deny`
+/// carries a message that becomes the failed tool_result the model sees.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "behavior", rename_all = "snake_case")]
+pub enum PermissionDecision {
+    Allow {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        updated_input: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        updated_permissions: Option<serde_json::Value>,
+    },
+    Deny {
+        message: String,
+    },
+}
+
+/// Handle to a live run. Owns the event receiver, the kill switch and
+/// the stdin write channel in a single struct so a single owner can
+/// manage all three. Use [`RunHandle::into_parts`] when these need to
+/// live in different threads / storage slots (typical for the Tauri
+/// shell, where the receiver pumps events on its own thread and the
+/// killer + stdin sender live in long-lived app state).
 pub struct RunHandle {
     events: mpsc::Receiver<RunEvent>,
     kill: Option<Box<dyn FnOnce() + Send>>,
+    /// Sender into the per-run stdin writer thread. `None` for runners
+    /// that don't open child stdin (legacy path / test fixtures). When
+    /// present, each sent string is written as one line + newline to the
+    /// subprocess. Used for the SDK control protocol — initialize +
+    /// initial user message on start, control_response on approve/deny.
+    stdin: Option<mpsc::Sender<String>>,
 }
 
 impl RunHandle {
     pub(crate) fn new(
         events: mpsc::Receiver<RunEvent>,
         kill: Box<dyn FnOnce() + Send>,
+        stdin: Option<mpsc::Sender<String>>,
     ) -> Self {
         Self {
             events,
             kill: Some(kill),
+            stdin,
         }
     }
 
@@ -160,18 +230,29 @@ impl RunHandle {
         }
     }
 
-    /// Split the handle into its receiver and a one-shot kill switch.
-    /// Lets the caller stash the killer in long-lived state while moving
-    /// the receiver to a worker thread.
+    /// Send a raw line to the subprocess stdin. Best-effort: returns
+    /// `false` if the runner had no stdin pipe (legacy path) or the
+    /// writer thread has already terminated (subprocess closed stdin).
+    /// Newline is appended by the writer thread.
+    pub fn send_stdin(&self, line: String) -> bool {
+        match &self.stdin {
+            Some(tx) => tx.send(line).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Split the handle into its receiver, kill switch, and stdin sink.
+    /// Lets the caller stash the long-lived bits (killer + stdin) in
+    /// app state while moving the receiver to a worker thread.
     ///
     /// Panics if called after [`Self::stop`] consumed the kill closure.
     /// Callers that may stop first should hold the handle whole.
     pub fn into_parts(self) -> (mpsc::Receiver<RunEvent>, Killer) {
-        let RunHandle { events, kill } = self;
+        let RunHandle { events, kill, stdin } = self;
         let kill = kill.expect(
             "RunHandle::into_parts called after stop(); use the handle directly instead",
         );
-        (events, Killer { inner: Some(kill) })
+        (events, Killer { inner: Some(kill), stdin })
     }
 }
 
@@ -179,14 +260,27 @@ impl RunHandle {
 /// Calling [`Killer::kill`] consumes the switch and signals the subprocess
 /// to terminate. Subsequent calls on a separately-held `Option<Killer>`
 /// would naturally no-op once the slot is empty.
+///
+/// Also carries the stdin sender so a caller that holds the killer (e.g.
+/// the Tauri shell's `ActiveRun`) can write `control_response` lines to
+/// the running subprocess without keeping the full `RunHandle` around.
 pub struct Killer {
     inner: Option<Box<dyn FnOnce() + Send>>,
+    stdin: Option<mpsc::Sender<String>>,
 }
 
 impl Killer {
     pub fn kill(mut self) {
         if let Some(kill) = self.inner.take() {
             kill();
+        }
+    }
+
+    /// Send one line to the subprocess stdin. See [`RunHandle::send_stdin`].
+    pub fn send_stdin(&self, line: String) -> bool {
+        match &self.stdin {
+            Some(tx) => tx.send(line).is_ok(),
+            None => false,
         }
     }
 }

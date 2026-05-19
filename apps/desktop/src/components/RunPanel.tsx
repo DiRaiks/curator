@@ -134,6 +134,12 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
   const [sessionMenuError, setSessionMenuError] = useState<string | null>(null);
 
+  // Cache backing the collapsed compact header — latest session + count
+  // for this vault. Eager-fetched while idle so the drawer can say "last
+  // run 11m ago · $0.21" without waiting for a menu open. Invalidated on
+  // run exit so the next idle picks up the freshly saved row.
+  const [lastSessions, setLastSessions] = useState<SessionSummary[] | null>(null);
+
   // Projects eligible as a chat scope. Without a `localPath` the backend
   // can't validate/canonicalize a cwd, so the project can't be a target.
   const scopeOptions = useMemo(
@@ -594,12 +600,37 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
 
   // Invalidate the dropdown cache when the panel saves a new exit —
   // otherwise reopening the menu would show a stale list missing the
-  // run that just finished.
+  // run that just finished. Also invalidate the compact-header cache so
+  // the next idle reflects the run we just stored.
   useEffect(() => {
     if (status.kind === "exited") {
       setRecentSessions(null);
+      setLastSessions(null);
     }
   }, [status.kind]);
+
+  // Eager-fetch the recent session list while idle so the collapsed
+  // compact line can show "last run X ago · $Y" without waiting for the
+  // user to open the menu. Skipped while a freeform send is in flight
+  // (pendingTitle set) — the in-flight title is the source of truth for
+  // the next history row.
+  useEffect(() => {
+    if (status.kind !== "idle") return;
+    if (pendingTitle !== null) return;
+    if (lastSessions !== null) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const list = await listSessions(vaultRoot, false);
+        if (!cancelled) setLastSessions(list);
+      } catch {
+        // Best-effort: the compact line falls back to bare "● idle".
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [status.kind, pendingTitle, vaultRoot, lastSessions]);
 
   const onPickSessionFromMenu = useCallback(
     async (summary: SessionSummary) => {
@@ -669,6 +700,11 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
   );
 
   const statusLabel = useMemo(() => describeStatus(status), [status]);
+  const compact = useMemo(
+    () => compactStatusLine({ status, usage, lastSessions }),
+    [status, usage, lastSessions],
+  );
+  const sessionsCount = lastSessions?.length ?? recentSessions?.length ?? null;
   const showChatInput =
     !collapsed && status.kind !== "running" && status.kind !== "stopping";
 
@@ -678,33 +714,69 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
       aria-label="Agent run output"
     >
       <header className="run-panel__header">
-        <span className="run-panel__title">Chat</span>
-        <SessionMenuButton
-          open={sessionMenuOpen}
-          loading={recentSessions === null && sessionMenuError === null}
-          sessions={recentSessions ?? []}
-          error={sessionMenuError}
-          activeSessionId={sessionId}
-          onToggle={() => void openSessionMenu()}
-          onPick={(s) => void onPickSessionFromMenu(s)}
-          onArchive={(s) => void onArchiveFromMenu(s)}
-          onDelete={(s) => void onDeleteFromMenu(s)}
-          onDismiss={() => setSessionMenuOpen(false)}
-        />
-        <span className={"run-panel__status run-panel__status--" + status.kind}>
-          {statusLabel}
-        </span>
-        {hasUsage(usage) && (
-          <Tooltip
-            content={formatUsageTooltip(usage)}
-            placement="top"
-            align="end"
-            ariaLabel="Session usage"
-          >
-            <span className="run-panel__usage">
-              {formatUsageSummary(usage)}
+        {collapsed ? (
+          <>
+            <div className="run-panel__compact">
+              <span
+                className={
+                  "run-panel__compact-dot run-panel__compact-dot--" +
+                  compact.dot
+                }
+                aria-hidden="true"
+              />
+              <span className="run-panel__compact-label">{compact.label}</span>
+              {compact.meta && (
+                <span className="run-panel__compact-meta">{compact.meta}</span>
+              )}
+            </div>
+            <SessionMenuButton
+              open={sessionMenuOpen}
+              loading={recentSessions === null && sessionMenuError === null}
+              sessions={recentSessions ?? []}
+              error={sessionMenuError}
+              activeSessionId={sessionId}
+              compact
+              sessionsCount={sessionsCount}
+              onToggle={() => void openSessionMenu()}
+              onPick={(s) => void onPickSessionFromMenu(s)}
+              onArchive={(s) => void onArchiveFromMenu(s)}
+              onDelete={(s) => void onDeleteFromMenu(s)}
+              onDismiss={() => setSessionMenuOpen(false)}
+            />
+          </>
+        ) : (
+          <>
+            <span className="run-panel__title">Chat</span>
+            <SessionMenuButton
+              open={sessionMenuOpen}
+              loading={recentSessions === null && sessionMenuError === null}
+              sessions={recentSessions ?? []}
+              error={sessionMenuError}
+              activeSessionId={sessionId}
+              onToggle={() => void openSessionMenu()}
+              onPick={(s) => void onPickSessionFromMenu(s)}
+              onArchive={(s) => void onArchiveFromMenu(s)}
+              onDelete={(s) => void onDeleteFromMenu(s)}
+              onDismiss={() => setSessionMenuOpen(false)}
+            />
+            <span
+              className={"run-panel__status run-panel__status--" + status.kind}
+            >
+              {statusLabel}
             </span>
-          </Tooltip>
+            {hasUsage(usage) && (
+              <Tooltip
+                content={formatUsageTooltip(usage)}
+                placement="top"
+                align="end"
+                ariaLabel="Session usage"
+              >
+                <span className="run-panel__usage">
+                  {formatUsageSummary(usage)}
+                </span>
+              </Tooltip>
+            )}
+          </>
         )}
         {status.kind === "running" && (
           <button
@@ -847,6 +919,10 @@ interface SessionMenuButtonProps {
   sessions: SessionSummary[];
   error: string | null;
   activeSessionId: string | null;
+  /** Collapsed-mode RunPanel: shorten the toggle label to `☰ {count}`. */
+  compact?: boolean;
+  /** Total session count for the compact label; `null` when unknown. */
+  sessionsCount?: number | null;
   onToggle: () => void;
   onPick: (s: SessionSummary) => void;
   onArchive: (s: SessionSummary) => void;
@@ -867,6 +943,8 @@ function SessionMenuButton({
   sessions,
   error,
   activeSessionId,
+  compact = false,
+  sessionsCount = null,
   onToggle,
   onPick,
   onArchive,
@@ -874,6 +952,14 @@ function SessionMenuButton({
   onDismiss,
 }: SessionMenuButtonProps) {
   const visible = sessions.slice(0, 12);
+  // Compact label drops the word "History" — the icon carries the
+  // meaning in the collapsed drawer; the count is the only extra signal
+  // worth showing inline.
+  const toggleLabel = compact
+    ? sessionsCount != null
+      ? `☰ ${sessionsCount}`
+      : "☰"
+    : "⌛ History";
   return (
     <div className="run-panel__history">
       <button
@@ -884,7 +970,7 @@ function SessionMenuButton({
         aria-expanded={open}
         title="Reopen, archive, or delete recent chats"
       >
-        ⌛ History
+        {toggleLabel}
       </button>
       {open && (
         <>
@@ -994,6 +1080,86 @@ function describeStatus(status: RunStatus): string {
         ? "exited (success)"
         : `exited (code ${status.exit.code ?? "?"})`;
   }
+}
+
+/** Visual state for the collapsed compact header row.
+ *
+ * `dot` selects the colored status indicator class
+ * (`run-panel__compact-dot--{dot}`). `label` is the primary status word
+ * (idle / running / ready to reply / stopping). `meta` is the optional
+ * trailing detail string — scope, tokens, cost, last-run age.
+ */
+interface CompactStatus {
+  dot: "muted" | "running" | "stopping" | "ok";
+  label: string;
+  meta: string | null;
+}
+
+/**
+ * Build the one-line status payload rendered when the RunPanel is
+ * collapsed. Idle uses the cached `lastSessions` list to surface the
+ * most recent run; running / stopping / exited summarise the current
+ * session from `status` + `usage`. Side-effect free — purely a view
+ * helper so the JSX stays a thin renderer.
+ */
+function compactStatusLine(args: {
+  status: RunStatus;
+  usage: SessionUsage;
+  lastSessions: SessionSummary[] | null;
+}): CompactStatus {
+  const { status, usage, lastSessions } = args;
+  const usageSummary = hasUsage(usage) ? formatUsageSummary(usage) : null;
+
+  switch (status.kind) {
+    case "running": {
+      const parts = [scopeLabel(status.started)];
+      if (usageSummary) parts.push(usageSummary);
+      return { dot: "running", label: "running", meta: parts.join(" · ") };
+    }
+    case "stopping": {
+      const parts = [scopeLabel(status.started)];
+      if (usageSummary) parts.push(usageSummary);
+      return { dot: "stopping", label: "stopping…", meta: parts.join(" · ") };
+    }
+    case "exited": {
+      const parts: string[] = [];
+      if (status.started) parts.push(scopeLabel(status.started));
+      if (usageSummary) parts.push(usageSummary);
+      return {
+        dot: "ok",
+        label: "ready to reply",
+        meta: parts.length > 0 ? parts.join(" · ") : null,
+      };
+    }
+    case "idle": {
+      const latest = lastSessions && lastSessions.length > 0
+        ? lastSessions[0]
+        : null;
+      if (!latest) {
+        return {
+          dot: "muted",
+          label: "idle",
+          meta: lastSessions === null ? null : "no chats yet",
+        };
+      }
+      const parts = [`last run ${formatRelativeMs(latest.startedAtMs)}`];
+      if (latest.costUsd > 0) parts.push(formatCost(latest.costUsd));
+      return { dot: "muted", label: "idle", meta: parts.join(" · ") };
+    }
+  }
+}
+
+/**
+ * Short, glanceable label for the run's scope. Freeform vault runs
+ * render as `vault`; freeform project runs render as the slug; artifact
+ * runs render as `slug/promptId` so the user can tell which prompt is
+ * running without expanding the panel.
+ */
+function scopeLabel(started: RunStartedEvent): string {
+  if (started.freeform) {
+    return started.projectSlug === "(vault)" ? "vault" : started.projectSlug;
+  }
+  return `${started.projectSlug}/${started.promptId}`;
 }
 
 /**

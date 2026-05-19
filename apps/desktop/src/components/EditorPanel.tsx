@@ -42,27 +42,48 @@ interface EditorPanelProps {
   onOpenWikilink?: (target: string) => void;
 }
 
-type Mode = "edit" | "view";
+type ViewMode = "src" | "split" | "prev";
+
+const VIEW_MODES: readonly ViewMode[] = ["src", "split", "prev"] as const;
+const VIEW_MODE_STORAGE_KEY = "vide.editor.viewMode";
+
+/** Label for the segmented control, in display order matching VIEW_MODES. */
+const VIEW_MODE_LABELS: Record<ViewMode, string> = {
+  src: "source",
+  split: "split",
+  prev: "preview",
+};
 
 const WIKILINK_RE = /\[\[([^\]\n]+)\]\]/g;
 
+/** Modifier-key symbol the host platform uses. Lets the kbd hints in
+ *  the mode toggle show ⌘1/⌘2/⌘3 on macOS and Ctrl+1/2/3 elsewhere
+ *  without per-keystroke checks. The keyboard handler itself accepts
+ *  either modifier so the shortcut works everywhere regardless. */
+const isMac =
+  typeof navigator !== "undefined" &&
+  /mac/i.test(navigator.platform || navigator.userAgent || "");
+const MOD_LABEL = isMac ? "⌘" : "Ctrl+";
+
 /**
- * Markdown editor with two modes:
+ * Markdown editor with three view modes:
  *
- * - **edit**: CodeMirror 6 + the markdown grammar (headings, lists, code
- *   blocks, links highlighted in the source). No live preview — toggle to
- *   view mode for that.
- * - **view**: `react-markdown` + GFM (tables, task lists, strikethrough)
- *   with wikilink support — `[[Note Name]]` renders as a clickable button
- *   that invokes `onOpenWikilink`.
+ * - **src**: CodeMirror 6 source only, full width.
+ * - **split**: source + live preview side by side (default).
+ * - **prev**: rendered preview only, full width. Frontmatter form is
+ *   hidden in this mode since react-markdown already renders the file's
+ *   metadata block.
  *
- * Cmd/Ctrl + E toggles between modes. The mode toggle is per-mount: opening
- * a different file does not reset it.
+ * Cmd/Ctrl + 1/2/3 toggle between modes. The choice persists across
+ * mounts via `localStorage` under `vide.editor.viewMode`. Both panes
+ * stay mounted at all times — the hidden one uses `display: none` so
+ * CodeMirror keeps its scroll/selection state when the user switches
+ * back.
  *
- * Save/Discard/Close + dirty + missing-on-disk state work the same in both
- * modes. Frontmatter editing UI lives in `FrontmatterForm` and is plugged in
- * by a follow-up commit; for now the editor sees the file content as a
- * single string.
+ * Save/Discard/Close + dirty + missing-on-disk state work the same in
+ * all modes. `react-markdown` + GFM powers the preview, with
+ * `[[Note Name]]` wikilinks rendered as clickable buttons that invoke
+ * `onOpenWikilink`.
  */
 export function EditorPanel({
   path,
@@ -83,23 +104,37 @@ export function EditorPanel({
   const saveDisabled = !isDirty || saving || missing;
   const discardDisabled = !isDirty || saving || missing;
 
-  const [mode, setMode] = useState<Mode>("edit");
-  const toggleMode = useCallback(
-    () => setMode((m) => (m === "edit" ? "view" : "edit")),
-    [],
-  );
+  // Initial mode is read from localStorage once. We don't subscribe to
+  // storage events — each editor instance owns its own state and writes
+  // back on change, so cross-tab sync isn't a goal.
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    if (typeof window === "undefined") return "split";
+    const raw = window.localStorage.getItem(VIEW_MODE_STORAGE_KEY);
+    return raw === "src" || raw === "split" || raw === "prev" ? raw : "split";
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, viewMode);
+  }, [viewMode]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      const cmdOrCtrl = e.metaKey || e.ctrlKey;
-      if (cmdOrCtrl && (e.key === "e" || e.key === "E")) {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.key === "1") {
         e.preventDefault();
-        toggleMode();
+        setViewMode("src");
+      } else if (e.key === "2") {
+        e.preventDefault();
+        setViewMode("split");
+      } else if (e.key === "3") {
+        e.preventDefault();
+        setViewMode("prev");
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [toggleMode]);
+  }, []);
 
   const cmExtensions = useMemo(() => [markdown()], []);
 
@@ -129,16 +164,6 @@ export function EditorPanel({
     <article className="editor" aria-label={`Markdown editor for ${path}`}>
       <header className="editor__header">
         <div className="editor__meta">
-          <span
-            className="editor__mode"
-            title={
-              mode === "edit"
-                ? "Markdown source — Cmd/Ctrl+E for preview"
-                : "Rendered preview — Cmd/Ctrl+E for source"
-            }
-          >
-            {mode === "edit" ? "Source" : "Preview"}
-          </span>
           <span className="editor__path">{path}</span>
           {scope && (
             <span className={"scope scope--" + scope}>{scope}</span>
@@ -164,15 +189,31 @@ export function EditorPanel({
           )}
         </div>
         <div className="editor__actions">
-          <button
-            type="button"
-            className="btn btn--small"
-            onClick={toggleMode}
-            title="Toggle source / preview (Cmd/Ctrl+E)"
-            aria-pressed={mode === "view"}
+          <div
+            className="editor-mode-toggle"
+            role="group"
+            aria-label="View mode"
           >
-            {mode === "edit" ? "Preview" : "Source"}
-          </button>
+            {VIEW_MODES.map((m, i) => (
+              <button
+                key={m}
+                type="button"
+                className={
+                  "editor-mode-toggle__btn" +
+                  (m === viewMode ? " editor-mode-toggle__btn--active" : "")
+                }
+                onClick={() => setViewMode(m)}
+                aria-pressed={m === viewMode}
+                title={`${VIEW_MODE_LABELS[m]} (${MOD_LABEL}${i + 1})`}
+              >
+                {VIEW_MODE_LABELS[m]}
+                <span className="editor-mode-toggle__kbd">
+                  {MOD_LABEL}
+                  {i + 1}
+                </span>
+              </button>
+            ))}
+          </div>
           <button
             type="button"
             className="btn btn--primary btn--small"
@@ -212,13 +253,18 @@ export function EditorPanel({
         </p>
       )}
       {error && <p className="welcome__error">{error}</p>}
-      <FrontmatterForm
-        frontmatter={parsed.frontmatter}
-        hasFrontmatter={parsed.hasFrontmatter}
-        readOnly={mode === "view"}
-        onChange={updateFrontmatter}
-      />
-      {mode === "edit" ? (
+      {viewMode !== "prev" && (
+        <FrontmatterForm
+          frontmatter={parsed.frontmatter}
+          hasFrontmatter={parsed.hasFrontmatter}
+          readOnly={false}
+          onChange={updateFrontmatter}
+        />
+      )}
+      {/* Both panes are always mounted — only their visibility flips via
+       * the body modifier class. Keeps CodeMirror's scroll/selection +
+       * the preview's scroll position alive across mode switches. */}
+      <div className={"editor__body editor__body--" + viewMode}>
         <CodeMirror
           className="editor__cm"
           value={parsed.body}
@@ -236,7 +282,6 @@ export function EditorPanel({
           }}
           aria-label={"Markdown source of " + path}
         />
-      ) : (
         <div
           className="editor__preview"
           aria-label={"Rendered preview of " + path}
@@ -248,7 +293,7 @@ export function EditorPanel({
             {parsed.body}
           </ReactMarkdown>
         </div>
-      )}
+      </div>
     </article>
   );
 }

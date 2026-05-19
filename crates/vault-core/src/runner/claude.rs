@@ -47,16 +47,24 @@
 //! while accounting for one line, so contention is negligible at any
 //! realistic output rate.
 
-use std::io::{BufRead, BufReader, Read};
-use std::process::{Child, Command, Stdio};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use super::{RunEvent, RunHandle, RunRequest, Runner, RunnerError, RunnerKind, MAX_OUTPUT_BYTES};
+use super::{
+    PermissionRequest, RunEvent, RunHandle, RunRequest, Runner, RunnerError, RunnerKind,
+    MAX_OUTPUT_BYTES,
+};
 
 const CLAUDE_BIN: &str = "claude";
 const WAITER_POLL_MS: u64 = 50;
+
+/// Request id of the initialize control_request. Claude echoes this back
+/// in a control_response; we silently swallow that ack so it doesn't show
+/// up in the user-facing output stream.
+const INIT_REQUEST_ID: &str = "vide-init-1";
 
 pub struct ClaudeRunner;
 
@@ -78,40 +86,41 @@ impl Runner for ClaudeRunner {
     }
 
     fn start(&self, req: RunRequest) -> Result<RunHandle, RunnerError> {
-        spawn_with_command(CLAUDE_BIN, build_args(&req), req)
+        let args = build_args(&req);
+        let init_messages = build_stdin_messages(&req);
+        spawn_with_command(CLAUDE_BIN, args, req, init_messages)
     }
 }
 
 fn build_args(req: &RunRequest) -> Vec<String> {
     let mut args: Vec<String> =
-        Vec::with_capacity(8 + req.additional_dirs.len() * 2);
+        Vec::with_capacity(10 + req.additional_dirs.len() * 2);
+    // -p (print/non-interactive) is still required even when input comes
+    // via stream-json — without it claude would open a TUI and ignore the
+    // streamed messages.
     args.push("-p".to_string());
 
-    let mut prompt = req.prompt.clone();
-    if let Some(extra) = req.runtime_input.as_ref().filter(|s| !s.trim().is_empty()) {
-        prompt.push_str("\n\n## Additional input\n\n");
-        prompt.push_str(extra);
-        prompt.push('\n');
-    }
-    args.push(prompt);
-
-    // stream-json + verbose is the only combination that actually streams.
-    // Plain `text` mode buffers everything until exit (claude returns the
-    // full response in one chunk), which makes the live RunPanel useless.
+    // Bidirectional stream-json. Input carries the initialize handshake +
+    // user message + control_response replies; output carries assistant
+    // events + control_request can_use_tool prompts.
+    args.push("--input-format".to_string());
+    args.push("stream-json".to_string());
     args.push("--output-format".to_string());
     args.push("stream-json".to_string());
     args.push("--verbose".to_string());
 
     // Authorise file-edit tools so claude doesn't hang on a permission
     // prompt mid-run. The user clicked Run with intent and the vault is
-    // git-tracked; review happens via `git diff` afterwards. Other tools
-    // (Bash, MCP, network) still respect the user's global settings.
+    // git-tracked; review via `git diff`. Other tools (Bash, MCP,
+    // network) still go through the SDK canUseTool path activated by our
+    // `initialize` control_request — those surface as
+    // `RunEvent::PermissionRequest`.
     args.push("--permission-mode".to_string());
     args.push("acceptEdits".to_string());
 
-    // Resume an existing conversation when the caller asked. Claude keeps
-    // the prior turns under the session id, so `prompt` is treated as the
-    // next user message rather than a fresh task description.
+    // Resume an existing conversation when the caller asked. Claude
+    // keeps prior turns under the session id; the next user message
+    // (sent via stdin) becomes the next turn.
     if let Some(id) = req
         .resume_session_id
         .as_ref()
@@ -128,18 +137,52 @@ fn build_args(req: &RunRequest) -> Vec<String> {
     args
 }
 
+/// JSON lines to write to claude's stdin immediately after spawn.
+///
+/// Order matters: the `initialize` control_request goes first so claude
+/// registers us as an SDK host (enables the canUseTool path); the user
+/// message follows as the first conversation turn. Both are single-line
+/// JSON — newline is appended by the writer thread.
+///
+/// `runtime_input` is concatenated into the message content here (under
+/// `## Additional input`) instead of into a CLI argument, since stream-
+/// json input mode has no positional prompt slot.
+fn build_stdin_messages(req: &RunRequest) -> Vec<String> {
+    let mut content = req.prompt.clone();
+    if let Some(extra) = req.runtime_input.as_ref().filter(|s| !s.trim().is_empty()) {
+        content.push_str("\n\n## Additional input\n\n");
+        content.push_str(extra);
+        content.push('\n');
+    }
+
+    let init = serde_json::json!({
+        "type": "control_request",
+        "request_id": INIT_REQUEST_ID,
+        "request": { "subtype": "initialize" }
+    });
+    let user = serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": content }
+    });
+
+    vec![init.to_string(), user.to_string()]
+}
+
 /// Generic spawn entry point — `bin` is normally `"claude"` but tests pass
 /// `"echo"` / a fixture binary to exercise the pipeline without needing the
-/// real Claude CLI.
+/// real Claude CLI. `initial_stdin_lines` is written to the child's stdin
+/// in order immediately after spawn; pass an empty vec for fixtures that
+/// don't speak the stream-json input protocol.
 pub(crate) fn spawn_with_command(
     bin: &str,
     args: Vec<String>,
     req: RunRequest,
+    initial_stdin_lines: Vec<String>,
 ) -> Result<RunHandle, RunnerError> {
     let mut cmd = Command::new(bin);
     cmd.args(&args)
         .current_dir(&req.workdir)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
@@ -159,10 +202,30 @@ pub(crate) fn spawn_with_command(
         .stderr
         .take()
         .ok_or_else(|| RunnerError::Spawn("stderr pipe missing".into()))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| RunnerError::Spawn("stdin pipe missing".into()))?;
 
     let child_arc: Arc<Mutex<Child>> = Arc::new(Mutex::new(child));
     let (tx, rx) = mpsc::channel::<RunEvent>();
     let trunc = Arc::new(Mutex::new(TruncationState::default()));
+
+    // Spawn the stdin writer first so the initial messages are queued
+    // before claude starts reading. The writer holds the only owner of
+    // ChildStdin; senders that bypass it (or a dropped sender) would
+    // close the pipe and stall claude on its first stdin.read.
+    let (stdin_tx, stdin_writer_handle) = spawn_stdin_writer(stdin);
+    for line in initial_stdin_lines {
+        // Errors here mean the writer thread already died; the run will
+        // fail loudly via reader/coordinator events shortly after.
+        let _ = stdin_tx.send(line);
+    }
+    // The writer handle is intentionally orphaned — it exits naturally
+    // when the channel closes or when ChildStdin write fails (child
+    // exited). The coordinator doesn't need to join it because the child
+    // wait already accounts for input pipe closure.
+    drop(stdin_writer_handle);
 
     let stdout_handle = spawn_reader(
         stdout,
@@ -191,7 +254,57 @@ pub(crate) fn spawn_with_command(
         let _ = guard.kill();
     });
 
-    Ok(RunHandle::new(rx, kill))
+    Ok(RunHandle::new(rx, kill, Some(stdin_tx)))
+}
+
+/// Serialize a SDK `PermissionResult` into the control_response JSON
+/// line claude expects on stdin. The `request_id` MUST match the one
+/// from the incoming `control_request can_use_tool` envelope or claude
+/// won't correlate the answer with the pending tool call.
+///
+/// Tauri commands use this to keep the wire format in one place — the
+/// shell only sees a typed `(request_id, PermissionDecision)`, never the
+/// raw JSON.
+pub fn build_permission_response_line(
+    request_id: &str,
+    decision: &super::PermissionDecision,
+) -> String {
+    let response = serde_json::to_value(decision).unwrap_or(serde_json::Value::Null);
+    let envelope = serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": response,
+        }
+    });
+    envelope.to_string()
+}
+
+/// Owns the child's stdin handle and writes one line per message
+/// received on the channel. Each message gets a trailing `\n` (so callers
+/// pass single-line JSON without the newline). Exits when the channel
+/// closes (Sender dropped) or a write fails — both signal that the
+/// subprocess has gone away or the host is done writing.
+fn spawn_stdin_writer(mut stdin: ChildStdin) -> (mpsc::Sender<String>, JoinHandle<()>) {
+    let (tx, rx) = mpsc::channel::<String>();
+    let handle = thread::spawn(move || {
+        while let Ok(line) = rx.recv() {
+            if stdin.write_all(line.as_bytes()).is_err() {
+                break;
+            }
+            if stdin.write_all(b"\n").is_err() {
+                break;
+            }
+            if stdin.flush().is_err() {
+                break;
+            }
+        }
+        // stdin drops here, closing the pipe — claude sees EOF and stops
+        // waiting for more user turns. The coordinator's wait() will
+        // unblock naturally.
+    });
+    (tx, handle)
 }
 
 // ---------- Truncation state ----------
@@ -266,12 +379,14 @@ fn spawn_reader<R: Read + Send + 'static>(
             match outcome {
                 AccountResult::Emit => {
                     let event = match kind {
-                        ReaderKind::Stdout => RunEvent::Stdout(line),
-                        ReaderKind::Stderr => RunEvent::Stderr(line),
+                        ReaderKind::Stdout => classify_stdout_line(line),
+                        ReaderKind::Stderr => Some(RunEvent::Stderr(line)),
                     };
-                    if tx.send(event).is_err() {
-                        // Receiver dropped — the consumer no longer cares.
-                        break;
+                    if let Some(event) = event {
+                        if tx.send(event).is_err() {
+                            // Receiver dropped — the consumer no longer cares.
+                            break;
+                        }
                     }
                 }
                 AccountResult::FirstDrop { dropped_bytes } => {
@@ -286,6 +401,97 @@ fn spawn_reader<R: Read + Send + 'static>(
                 }
             }
         }
+    })
+}
+
+/// Inspect one stdout line and decide what RunEvent (if any) it maps to.
+///
+/// Non-JSON lines and ordinary assistant/result/system messages flow
+/// through as `Stdout` so the frontend's existing stream-json renderer
+/// keeps working. Two control-protocol shapes are intercepted:
+///
+/// - `control_request` with `subtype: "can_use_tool"` is converted into
+///   a typed `PermissionRequest` event — that's how the modal-flow Tauri
+///   shell learns claude is paused awaiting a decision.
+/// - `control_response` (claude acknowledging our own control_requests,
+///   e.g. the initialize handshake) is swallowed silently — it's
+///   protocol-level metadata that would otherwise pollute the chat log.
+///
+/// Any unrecognised JSON or parse failure falls through to `Stdout` so
+/// we never silently drop legitimate output. The frontend handles
+/// unknown shapes gracefully.
+fn classify_stdout_line(line: String) -> Option<RunEvent> {
+    // Cheap byte-level prefix check — most stream-json lines start with
+    // '{' but log lines from claude may not. Avoids paying for a parse
+    // attempt on every non-JSON line.
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with('{') {
+        return Some(RunEvent::Stdout(line));
+    }
+    let parsed: serde_json::Value = match serde_json::from_str(trimmed) {
+        Ok(v) => v,
+        Err(_) => return Some(RunEvent::Stdout(line)),
+    };
+    let ty = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match ty {
+        "control_response" => {
+            // claude's ack of an SDK host control_request (e.g. our
+            // initialize). Not user-visible — swallow.
+            None
+        }
+        "control_request" => {
+            let subtype = parsed
+                .get("request")
+                .and_then(|r| r.get("subtype"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if subtype == "can_use_tool" {
+                if let Some(req) = parse_permission_request(&parsed) {
+                    return Some(RunEvent::PermissionRequest(req));
+                }
+                // Malformed — fall through so the frontend at least sees
+                // the raw JSON instead of silently dropping it.
+                Some(RunEvent::Stdout(line))
+            } else {
+                // Other control_request subtypes from claude aren't
+                // expected in normal flow; surface them for debugging.
+                Some(RunEvent::Stdout(line))
+            }
+        }
+        _ => Some(RunEvent::Stdout(line)),
+    }
+}
+
+/// Extract the SDK `SDKControlPermissionRequest` payload from a parsed
+/// control_request envelope. Returns `None` if required fields are
+/// missing — the caller falls back to surfacing the raw line so the
+/// debugging tail still works.
+fn parse_permission_request(envelope: &serde_json::Value) -> Option<PermissionRequest> {
+    let request_id = envelope.get("request_id")?.as_str()?.to_string();
+    let request = envelope.get("request")?;
+    let tool_name = request.get("tool_name")?.as_str()?.to_string();
+    let tool_use_id = request.get("tool_use_id")?.as_str()?.to_string();
+    let tool_input = request.get("input").cloned().unwrap_or(serde_json::Value::Null);
+    let title = request
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let display_name = request
+        .get("display_name")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let description = request
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    Some(PermissionRequest {
+        request_id,
+        tool_name,
+        tool_input,
+        tool_use_id,
+        title,
+        display_name,
+        description,
     })
 }
 
@@ -402,6 +608,7 @@ mod tests {
             "echo",
             vec!["hello-from-runner".to_string()],
             req(),
+            Vec::new(),
         )
         .expect("spawn echo");
         let (events, exit) = collect_until_exit(handle, Duration::from_secs(5));
@@ -438,6 +645,7 @@ mod tests {
                 "for i in 1 2 3 4 5 6 7 8; do echo line-$i; done".into(),
             ],
             req(),
+            Vec::new(),
         )
         .expect("spawn sh");
 
@@ -471,6 +679,7 @@ mod tests {
             "sh",
             vec!["-c".into(), "exit 3".into()],
             req(),
+            Vec::new(),
         )
         .expect("spawn sh");
         let (_, exit) = collect_until_exit(handle, Duration::from_secs(5));
@@ -489,6 +698,7 @@ mod tests {
             "sleep",
             vec!["60".into()],
             req(),
+            Vec::new(),
         )
         .expect("spawn sleep");
         // Give the child a moment to actually be running.
@@ -516,6 +726,7 @@ mod tests {
             "this-binary-definitely-does-not-exist-xyz",
             vec![],
             req(),
+            Vec::new(),
         );
         match result {
             Err(RunnerError::BinaryNotFound(_)) => {}
@@ -532,6 +743,7 @@ mod tests {
             "yes",
             vec![],
             req(),
+            Vec::new(),
         )
         .expect("spawn yes");
 
@@ -570,6 +782,7 @@ mod tests {
                 "yes >&1 & yes >&2 & wait".into(),
             ],
             req(),
+            Vec::new(),
         )
         .expect("spawn sh");
 
@@ -609,7 +822,10 @@ mod tests {
     }
 
     #[test]
-    fn runtime_input_appended_to_prompt_section() {
+    fn runtime_input_appended_to_user_message() {
+        // The prompt is delivered via stream-json on stdin now, so
+        // build_args is flag-only; the prompt content + runtime input
+        // live in the second stdin line (after the initialize handshake).
         let req = RunRequest {
             workdir: std::env::temp_dir(),
             additional_dirs: Vec::new(),
@@ -617,17 +833,43 @@ mod tests {
             runtime_input: Some("PR-42".into()),
             resume_session_id: None,
         };
-        let args = build_args(&req);
-        // Position 0 is "-p", position 1 is the prompt.
-        assert_eq!(args[0], "-p");
-        let combined = &args[1];
-        assert!(combined.contains("base prompt"));
-        assert!(combined.contains("## Additional input"));
-        assert!(combined.contains("PR-42"));
+        let lines = build_stdin_messages(&req);
+        assert_eq!(lines.len(), 2, "expected initialize + user message");
+        let user_json: serde_json::Value =
+            serde_json::from_str(&lines[1]).expect("user message is valid JSON");
+        let content = user_json["message"]["content"]
+            .as_str()
+            .expect("user message has string content");
+        assert!(content.contains("base prompt"));
+        assert!(content.contains("## Additional input"));
+        assert!(content.contains("PR-42"));
+    }
+
+    #[test]
+    fn initialize_handshake_is_first_stdin_line() {
+        // The Claude Agent SDK requires an `initialize` control_request
+        // BEFORE the first user turn — otherwise claude won't activate
+        // the canUseTool callback path and our permission modal never
+        // fires. Regression guard.
+        let req = RunRequest {
+            workdir: std::env::temp_dir(),
+            additional_dirs: Vec::new(),
+            prompt: "p".into(),
+            runtime_input: None,
+            resume_session_id: None,
+        };
+        let lines = build_stdin_messages(&req);
+        let init: serde_json::Value =
+            serde_json::from_str(&lines[0]).expect("first line is JSON");
+        assert_eq!(init["type"], "control_request");
+        assert_eq!(init["request"]["subtype"], "initialize");
     }
 
     #[test]
     fn streaming_flags_are_set() {
+        // stream-json input + output + verbose is the only combination
+        // that gives us bidirectional events. Guard against accidental
+        // regressions to text mode or one-way streaming.
         let req = RunRequest {
             workdir: std::env::temp_dir(),
             additional_dirs: Vec::new(),
@@ -636,11 +878,13 @@ mod tests {
             resume_session_id: None,
         };
         let args = build_args(&req);
-        // stream-json without --verbose is rejected by claude; we must
-        // pass both. Guard against accidental regressions.
+        assert!(args.iter().any(|a| a == "--input-format"));
+        assert!(args.iter().any(|a| a == "--output-format"));
         assert!(args.iter().any(|a| a == "stream-json"));
         assert!(args.iter().any(|a| a == "--verbose"));
         assert!(!args.iter().any(|a| a == "text"));
+        // -p (print/non-interactive) is still required.
+        assert!(args.iter().any(|a| a == "-p"));
     }
 
     #[test]
@@ -653,8 +897,10 @@ mod tests {
             resume_session_id: None,
         };
         let args = build_args(&req);
-        // Without this flag, claude prompts on Write/Edit and the run
-        // hangs in non-interactive `-p` mode. Regression guard.
+        // Without this flag, claude prompts on Write/Edit. With the SDK
+        // control protocol the prompt routes through canUseTool — but we
+        // keep auto-accept on file edits so the modal only fires for
+        // Bash / network / MCP. Regression guard.
         let pos = args
             .iter()
             .position(|a| a == "--permission-mode")
@@ -712,8 +958,11 @@ mod tests {
             .collect();
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].1, "abc-123-xyz");
-        // The prompt slot still carries the user reply.
-        assert_eq!(args[1], "follow-up reply");
+        // The follow-up reply lives in the stream-json user message now.
+        let lines = build_stdin_messages(&req);
+        let user_json: serde_json::Value =
+            serde_json::from_str(&lines[1]).expect("user message is valid JSON");
+        assert_eq!(user_json["message"]["content"], "follow-up reply");
     }
 
     #[test]
@@ -730,5 +979,91 @@ mod tests {
             !args.iter().any(|a| a == "--resume"),
             "whitespace-only session id should be ignored"
         );
+    }
+
+    // ---------- control-protocol parsing ----------
+
+    #[test]
+    fn classify_stdout_passes_through_plain_lines() {
+        match classify_stdout_line("hello".into()) {
+            Some(RunEvent::Stdout(s)) => assert_eq!(s, "hello"),
+            other => panic!("expected Stdout, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn classify_stdout_passes_through_non_control_json() {
+        let line = r#"{"type":"assistant","message":{"content":[]}}"#.to_string();
+        match classify_stdout_line(line.clone()) {
+            Some(RunEvent::Stdout(s)) => assert_eq!(s, line),
+            other => panic!("expected Stdout, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn classify_stdout_swallows_control_response() {
+        let line = r#"{"type":"control_response","response":{"subtype":"success","request_id":"vide-init-1"}}"#;
+        assert!(
+            classify_stdout_line(line.into()).is_none(),
+            "control_response (init ack) must not surface as Stdout"
+        );
+    }
+
+    #[test]
+    fn classify_stdout_extracts_can_use_tool_request() {
+        let line = r#"{
+            "type":"control_request",
+            "request_id":"perm-7",
+            "request":{
+                "subtype":"can_use_tool",
+                "tool_name":"Bash",
+                "input":{"command":"ls -la"},
+                "tool_use_id":"toolu_42",
+                "title":"Claude wants to run ls",
+                "display_name":"Run shell command",
+                "description":"Read directory listing"
+            }
+        }"#
+        .to_string();
+        match classify_stdout_line(line) {
+            Some(RunEvent::PermissionRequest(req)) => {
+                assert_eq!(req.request_id, "perm-7");
+                assert_eq!(req.tool_name, "Bash");
+                assert_eq!(req.tool_use_id, "toolu_42");
+                assert_eq!(req.title.as_deref(), Some("Claude wants to run ls"));
+                assert_eq!(req.display_name.as_deref(), Some("Run shell command"));
+                assert_eq!(req.tool_input["command"], "ls -la");
+            }
+            other => panic!("expected PermissionRequest, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn build_permission_response_line_allow_shape() {
+        let line = build_permission_response_line(
+            "perm-7",
+            &super::super::PermissionDecision::Allow {
+                updated_input: None,
+                updated_permissions: None,
+            },
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["type"], "control_response");
+        assert_eq!(parsed["response"]["subtype"], "success");
+        assert_eq!(parsed["response"]["request_id"], "perm-7");
+        assert_eq!(parsed["response"]["response"]["behavior"], "allow");
+    }
+
+    #[test]
+    fn build_permission_response_line_deny_carries_message() {
+        let line = build_permission_response_line(
+            "perm-8",
+            &super::super::PermissionDecision::Deny {
+                message: "user denied via modal".into(),
+            },
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["response"]["response"]["behavior"], "deny");
+        assert_eq!(parsed["response"]["response"]["message"], "user denied via modal");
     }
 }

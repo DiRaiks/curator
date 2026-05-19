@@ -10,6 +10,47 @@ fn scan_vault(path: String) -> Result<vault_core::ScanResult, String> {
     vault_core::scan_vault(&PathBuf::from(path)).map_err(|e| e.to_string())
 }
 
+/// Turn a plain folder into a vault — writes `.vault/config.yml`, the
+/// canonical zone dirs, and a seed `00_meta/AGENTS.md`. Caller is
+/// expected to re-scan after.
+///
+/// `async` + `spawn_blocking` mirrors `scan_project_vulnerabilities`:
+/// vault init touches disk (multiple `create_dir_all` + writes) and we
+/// don't want a beachball if the target FS is slow / over the network.
+#[tauri::command]
+async fn init_vault(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        vault_core::init_vault(&PathBuf::from(&path)).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("init_vault task failed: {e}"))?
+}
+
+/// Create the first project inside an existing vault. Returns the
+/// vault-relative path of the new `_index.md` so the frontend can
+/// open it in the editor without an extra round-trip.
+#[tauri::command]
+async fn init_project(
+    vault_root: String,
+    slug: String,
+    my_role: String,
+    repo: Option<String>,
+    local_path: Option<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let args = vault_core::InitProjectArgs {
+            slug: &slug,
+            my_role: &my_role,
+            repo: repo.as_deref(),
+            local_path: local_path.as_deref(),
+        };
+        vault_core::init_project(&PathBuf::from(&vault_root), &args)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("init_project task failed: {e}"))?
+}
+
 #[tauri::command]
 fn preview_context(
     vault_path: String,
@@ -201,6 +242,12 @@ struct ActiveRun {
     /// installs a placeholder with empty fields and Reply later fails
     /// with "vault root not accessible: <empty>".
     started: RunStartedPayload,
+    /// Pending `can_use_tool` requests claude is currently waiting on.
+    /// Keyed by `request_id`. Cleared when the user picks approve/deny
+    /// via [`approve_tool_use`] / [`deny_tool_use`] (which both
+    /// validate the id exists before writing to claude's stdin so a
+    /// stale modal click doesn't desync the protocol).
+    pending_permissions: HashMap<String, ()>,
 }
 
 /// Holds the active CLI run's kill switch (if any) plus a monotonic
@@ -267,6 +314,26 @@ struct RunTruncatedPayload {
 struct RunExitPayload {
     code: Option<i32>,
     success: bool,
+}
+
+/// `run:permission-request` event payload. Mirrors the runner's
+/// `PermissionRequest` struct one-for-one — separate type kept so the
+/// shell's IPC surface is self-contained and the runner crate stays
+/// Tauri-agnostic. Only the fields the modal actually renders surface
+/// here; the rest of the SDK payload is dropped on the floor for now.
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RunPermissionRequestPayload {
+    request_id: String,
+    tool_name: String,
+    tool_input: serde_json::Value,
+    tool_use_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
 }
 
 /// Start a run. Resolves the materialized prompt and source-repo `cwd` via
@@ -595,6 +662,7 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
             gen,
             killer,
             started: started_payload.clone(),
+            pending_permissions: HashMap::new(),
         });
         (events, gen)
     };
@@ -629,6 +697,35 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
                         RunTruncatedPayload { dropped_bytes },
                     );
                 }
+                RunEvent::PermissionRequest(req) => {
+                    // Record the pending request so approve/deny can
+                    // validate the id before responding. We don't
+                    // serialize the whole struct into state (the runner
+                    // also keeps no buffer); just the id presence is
+                    // enough to reject stale modal clicks after a
+                    // restart.
+                    if let Some(state) = app_for_thread.try_state::<RunState>() {
+                        let mut inner = lock_recovering(&state.0);
+                        if let Some(active) = inner.active.as_mut() {
+                            if active.gen == gen {
+                                active.pending_permissions
+                                    .insert(req.request_id.clone(), ());
+                            }
+                        }
+                    }
+                    let _ = app_for_thread.emit(
+                        "run:permission-request",
+                        RunPermissionRequestPayload {
+                            request_id: req.request_id,
+                            tool_name: req.tool_name,
+                            tool_input: req.tool_input,
+                            tool_use_id: req.tool_use_id,
+                            title: req.title,
+                            display_name: req.display_name,
+                            description: req.description,
+                        },
+                    );
+                }
                 RunEvent::Exit { code, success } => {
                     let _ = app_for_thread.emit(
                         "run:exit",
@@ -661,6 +758,70 @@ fn stop_run(state: State<'_, RunState>) -> Result<(), String> {
     };
     if let Some(active) = active {
         active.killer.kill();
+    }
+    Ok(())
+}
+
+/// Approve a pending tool-use permission request. Writes the
+/// corresponding `control_response` back to claude's stdin, unblocking
+/// the paused turn. The frontend invokes this when the user clicks
+/// "Allow" / "Allow for this session" in the approve-tools modal.
+///
+/// `updated_permissions` carries session-scoped permission rules (the
+/// SDK's `PermissionUpdate[]`) so claude doesn't ask again for this
+/// tool within the session. None = ask-each-time (Allow once).
+///
+/// Rejects unknown `request_id`s up front — a stale modal click after
+/// restart shouldn't pollute the stdin protocol.
+#[tauri::command]
+fn approve_tool_use(
+    state: State<'_, RunState>,
+    request_id: String,
+    updated_input: Option<serde_json::Value>,
+    updated_permissions: Option<serde_json::Value>,
+) -> Result<(), String> {
+    let mut inner = lock_recovering(&state.0);
+    let active = inner
+        .active
+        .as_mut()
+        .ok_or_else(|| "no active run".to_string())?;
+    if active.pending_permissions.remove(&request_id).is_none() {
+        return Err(format!("unknown or already-resolved request_id: {request_id}"));
+    }
+    let decision = vault_core::runner::PermissionDecision::Allow {
+        updated_input,
+        updated_permissions,
+    };
+    let line = vault_core::runner::build_permission_response_line(&request_id, &decision);
+    if !active.killer.send_stdin(line) {
+        return Err("failed to send control_response — subprocess closed stdin".into());
+    }
+    Ok(())
+}
+
+/// Deny a pending tool-use permission request. Writes a deny
+/// `control_response` to claude's stdin; the model receives an
+/// `is_error` tool_result with `message` and can adapt its plan.
+#[tauri::command]
+fn deny_tool_use(
+    state: State<'_, RunState>,
+    request_id: String,
+    message: Option<String>,
+) -> Result<(), String> {
+    let mut inner = lock_recovering(&state.0);
+    let active = inner
+        .active
+        .as_mut()
+        .ok_or_else(|| "no active run".to_string())?;
+    if active.pending_permissions.remove(&request_id).is_none() {
+        return Err(format!("unknown or already-resolved request_id: {request_id}"));
+    }
+    let decision = vault_core::runner::PermissionDecision::Deny {
+        message: message.unwrap_or_else(|| "user denied".to_string()),
+    };
+    let line = vault_core::runner::build_permission_response_line(&request_id, &decision);
+    if !active.killer.send_stdin(line) {
+        return Err("failed to send control_response — subprocess closed stdin".into());
     }
     Ok(())
 }
@@ -946,6 +1107,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             scan_vault,
+            init_vault,
+            init_project,
             demo_vault_path,
             preview_context,
             inspect_source_repo,
@@ -962,6 +1125,8 @@ pub fn run() {
             start_freeform_run,
             resume_freeform_run,
             stop_run,
+            approve_tool_use,
+            deny_tool_use,
             get_run_status,
             compute_recommendations,
             dismiss_recommendation,

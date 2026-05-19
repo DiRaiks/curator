@@ -22,6 +22,35 @@ export async function scanVault(path: string): Promise<ScanResult> {
   return invoke<ScanResult>("scan_vault", { path });
 }
 
+/**
+ * Seed a plain folder as a vault: writes `.vault/config.yml`, the
+ * canonical zone directories, and `00_meta/AGENTS.md`. Caller is
+ * responsible for re-scanning after — the Dashboard's empty-vault
+ * gate flips to `EmptyVaultNoProjects` (state 2) once the scan picks
+ * up the new config.
+ */
+export async function initVault(path: string): Promise<void> {
+  await invoke<void>("init_vault", { path });
+}
+
+/**
+ * Create the first project inside a vault. Returns the vault-relative
+ * path of the new `_index.md` so the caller can open it in the editor.
+ *
+ * `myRole` is required (every project needs to know who's driving).
+ * `repo` / `localPath` are optional — leave blank if the project lives
+ * only inside the vault for now.
+ */
+export async function initProject(args: {
+  vaultRoot: string;
+  slug: string;
+  myRole: string;
+  repo?: string;
+  localPath?: string;
+}): Promise<string> {
+  return invoke<string>("init_project", args);
+}
+
 export async function pickVaultFolder(): Promise<string | null> {
   const result = await open({
     directory: true,
@@ -268,6 +297,32 @@ export interface RunExitEvent {
   success: boolean;
 }
 
+/**
+ * Permission-request event payload — fires when claude pauses awaiting
+ * a tool-use decision via the SDK control protocol (Bash, network,
+ * MCP, …). The frontend renders a modal and resolves with
+ * {@link approveToolUse} / {@link denyToolUse}, both keyed by
+ * `requestId`.
+ *
+ * `toolInput` is opaque JSON from claude (the exact arguments the model
+ * wants to invoke the tool with) — display it verbatim, don't inspect
+ * the shape.
+ *
+ * `title` / `displayName` / `description` are pre-rendered prompt
+ * strings from claude. Use them directly in the modal copy when
+ * present; fall back to reconstructing from tool name + input only when
+ * absent.
+ */
+export interface RunPermissionRequestEvent {
+  requestId: string;
+  toolName: string;
+  toolInput: unknown;
+  toolUseId: string;
+  title?: string;
+  displayName?: string;
+  description?: string;
+}
+
 export interface RunStatus {
   active: boolean;
   /** When `active` is true, the same payload the original `run:started`
@@ -287,6 +342,36 @@ export async function startRun(args: {
 
 export async function stopRun(): Promise<void> {
   await invoke<void>("stop_run");
+}
+
+/**
+ * Approve a pending tool-use permission request. `requestId` must match
+ * an unresolved `run:permission-request` event payload; stale ids are
+ * rejected server-side.
+ *
+ * `updatedPermissions` echoes the SDK's `permission_suggestions` from
+ * the request when the user picks "Allow for this session", so claude
+ * adds a session-scoped rule and doesn't ask again for the same tool.
+ * Omit for one-shot "Allow once".
+ */
+export async function approveToolUse(args: {
+  requestId: string;
+  updatedInput?: unknown;
+  updatedPermissions?: unknown;
+}): Promise<void> {
+  await invoke<void>("approve_tool_use", args);
+}
+
+/**
+ * Deny a pending tool-use permission request. `message` becomes the
+ * `is_error` tool_result claude sees, so the model can adapt instead of
+ * just failing silently.
+ */
+export async function denyToolUse(args: {
+  requestId: string;
+  message?: string;
+}): Promise<void> {
+  await invoke<void>("deny_tool_use", args);
 }
 
 /**
@@ -371,6 +456,7 @@ export async function onRunEvents(handlers: {
   onStderr?: (e: RunLineEvent) => void;
   onTruncated?: (e: RunTruncatedEvent) => void;
   onExit?: (e: RunExitEvent) => void;
+  onPermissionRequest?: (e: RunPermissionRequestEvent) => void;
 }): Promise<UnlistenFn> {
   const pending: Promise<UnlistenFn>[] = [];
 
@@ -399,6 +485,14 @@ export async function onRunEvents(handlers: {
   if (handlers.onExit) {
     const h = handlers.onExit;
     pending.push(listen<RunExitEvent>("run:exit", (ev) => h(ev.payload)));
+  }
+  if (handlers.onPermissionRequest) {
+    const h = handlers.onPermissionRequest;
+    pending.push(
+      listen<RunPermissionRequestEvent>("run:permission-request", (ev) =>
+        h(ev.payload),
+      ),
+    );
   }
 
   const unlisteners = await Promise.all(pending);
