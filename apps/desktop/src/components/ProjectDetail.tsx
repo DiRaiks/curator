@@ -4,6 +4,8 @@ import type {
   ArtifactKind,
   ContextPreview,
   Project,
+  Recommendation,
+  RecommendationSeverity,
   SourceRepoInspection,
   WorkflowArtifact,
 } from "../types";
@@ -40,6 +42,14 @@ interface ProjectDetailProps {
    *  re-trigger the source-repo inspection so manual Refresh updates this
    *  panel too. */
   refreshTick: number;
+  /** Project-scoped recommendations from the shared useRecommendations
+   *  hook. Already filtered to active (non-dismissed); Dashboard owns
+   *  the dismiss callbacks. */
+  recommendations: Recommendation[];
+  onDismissRecommendation: (recId: string) => void;
+  /** Open a vault-relative markdown file in the editor. Used by
+   *  recommendation "Open file" actions and elsewhere. */
+  onOpenFile: (path: string) => void;
   onBack: () => void;
   /** Create a Markdown file at the given vault-relative path and open it in
    *  the editor. Used by the Run Plan "Create output stub" action. Throws on
@@ -71,6 +81,9 @@ export function ProjectDetail({
   homeDir,
   vaultRoot,
   refreshTick,
+  recommendations,
+  onDismissRecommendation,
+  onOpenFile,
   onBack,
   onCreateAndOpenFile,
 }: ProjectDetailProps) {
@@ -206,6 +219,16 @@ export function ProjectDetail({
         error={inspectionError}
       />
 
+      {recommendations.length > 0 && (
+        <InlineRecommendations
+          recommendations={recommendations}
+          artifacts={artifacts}
+          onSelectArtifact={setSelectedPromptId}
+          onOpenFile={onOpenFile}
+          onDismiss={onDismissRecommendation}
+        />
+      )}
+
       <section className="project-detail__meta">
         <h2 className="project-detail__title">{project.slug}</h2>
         <div className="project-detail__tags">
@@ -328,6 +351,122 @@ export function ProjectDetail({
       )}
     </div>
   );
+}
+
+interface InlineRecommendationsProps {
+  recommendations: Recommendation[];
+  artifacts: WorkflowArtifact[];
+  /** Select an artifact for the run-plan preview. Used when a
+   *  recommendation suggests a specific skill: clicking Run scrolls the
+   *  user down to the (now-populated) preview where they can review
+   *  context before actually firing the agent. */
+  onSelectArtifact: (id: string) => void;
+  onOpenFile: (path: string) => void;
+  onDismiss: (recId: string) => void;
+}
+
+/**
+ * Project-scoped recommendations block at the top of ProjectDetail.
+ * Same recommendation cards as the header bell uses, but here the
+ * "Run" action is wired through to the existing run-plan preview
+ * (since we're already inside the project context).
+ */
+function InlineRecommendations({
+  recommendations,
+  artifacts,
+  onSelectArtifact,
+  onOpenFile,
+  onDismiss,
+}: InlineRecommendationsProps) {
+  const sorted = useMemo(
+    () =>
+      recommendations.slice().sort((a, b) => {
+        const sa = severityRank(a.severity);
+        const sb = severityRank(b.severity);
+        if (sa !== sb) return sb - sa; // higher severity first
+        return a.title.localeCompare(b.title);
+      }),
+    [recommendations],
+  );
+
+  return (
+    <section className="project-detail__recs" aria-label="Recommendations for this project">
+      <header className="kind-group__header">
+        <h3 className="kind-group__title">
+          Recommendations
+          <span className="kind-group__count">{sorted.length}</span>
+        </h3>
+        <p className="kind-group__hint">
+          Hints from the IDE based on this project's state. Dismiss what's
+          not relevant — dismissals persist per-vault.
+        </p>
+      </header>
+      <ul className="recs-list project-detail__recs-list">
+        {sorted.map((r) => {
+          const artifact = r.suggestedSkill
+            ? artifacts.find(
+                (a) =>
+                  a.runnable &&
+                  (a.id === r.suggestedSkill || a.id.endsWith(`-${r.suggestedSkill}`)),
+              )
+            : undefined;
+          return (
+            <li
+              key={r.id}
+              className={"recs-card recs-card--" + r.severity}
+            >
+              <div className="recs-card__head">
+                <span className="recs-card__title">{r.title}</span>
+                <span className="recs-card__category">{r.category}</span>
+              </div>
+              {r.detail && (
+                <p className="recs-card__detail">{r.detail}</p>
+              )}
+              <div className="recs-card__actions">
+                {artifact && (
+                  <button
+                    type="button"
+                    className="btn btn--primary btn--small"
+                    onClick={() => onSelectArtifact(artifact.id)}
+                    title={`Open run plan for ${artifact.id}`}
+                  >
+                    Run {artifact.id}
+                  </button>
+                )}
+                {r.suggestedFile && (
+                  <button
+                    type="button"
+                    className="btn btn--small"
+                    onClick={() => onOpenFile(r.suggestedFile!)}
+                  >
+                    Open file
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn btn--small"
+                  onClick={() => onDismiss(r.id)}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+function severityRank(s: RecommendationSeverity): number {
+  switch (s) {
+    case "warn":
+      return 2;
+    case "suggest":
+      return 1;
+    case "info":
+      return 0;
+  }
 }
 
 interface KindChipProps {

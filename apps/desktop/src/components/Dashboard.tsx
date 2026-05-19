@@ -12,9 +12,11 @@ import { Diagnostics } from "./Diagnostics";
 import { EditorPanel } from "./EditorPanel";
 import { FileTree } from "./FileTree";
 import { NewFileDialog } from "./NewFileDialog";
+import { useRecommendations } from "../hooks/useRecommendations";
 import { DraftsList } from "./DraftsList";
 import { ProjectDetail } from "./ProjectDetail";
 import { ProjectList } from "./ProjectList";
+import { RecommendationsBell } from "./RecommendationsBell";
 import { RunPanel } from "./RunPanel";
 import { ZoneList } from "./ZoneList";
 
@@ -198,6 +200,24 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
   /** Bumped after every successful rescan so child panels (Project Detail's
    *  Source Repository section, etc.) can re-fetch their derived data. */
   const [refreshTick, setRefreshTick] = useState(0);
+
+  // Recommendations: re-computed on every refreshTick so vault rescans
+  // (manual Refresh, file-watcher fires, draft promotions, agent runs)
+  // surface fresh hints.
+  const recs = useRecommendations(result.vaultRoot, refreshTick);
+
+  // Navigate to a project's detail view from the bell. Looks up the
+  // project by slug in the current scan.
+  const goToProject = useCallback(
+    (slug: string) => {
+      const project = result.projects.find((p) => p.slug === slug);
+      if (project) {
+        setTab("projects");
+        setSelectedProject(project);
+      }
+    },
+    [result.projects],
+  );
 
   const filePaths = useMemo(
     () => result.markdownFiles.map((f) => f.path),
@@ -476,6 +496,15 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
               {result.zones.length} zones
             </span>
           )}
+          <RecommendationsBell
+            active={recs.active}
+            dismissed={recs.dismissed}
+            onDismiss={(id) => void recs.dismiss(id)}
+            onRestore={(id) => void recs.restore(id)}
+            onClearAll={() => void recs.clearAll()}
+            onGoToProject={goToProject}
+            onOpenFile={attemptOpenFile}
+          />
           <button
             type="button"
             className="btn btn--small"
@@ -588,6 +617,11 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
                   homeDir={result.homeDir}
                   vaultRoot={result.vaultRoot}
                   refreshTick={refreshTick}
+                  recommendations={recs.active.filter(
+                    (r) => r.projectSlug === selectedProject.slug,
+                  )}
+                  onDismissRecommendation={(id) => void recs.dismiss(id)}
+                  onOpenFile={attemptOpenFile}
                   onBack={() => setSelectedProject(null)}
                   onCreateAndOpenFile={createAndOpenFile}
                 />

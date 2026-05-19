@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
   ContextPreview,
+  Recommendation,
   ScanResult,
   SourceRepoInspection,
 } from "./types";
@@ -81,6 +82,44 @@ export async function discardDraft(
   draftPath: string,
 ): Promise<void> {
   await invoke<void>("discard_draft", { vaultRoot, draftPath });
+}
+
+// ---------- Recommendations ----------
+
+/**
+ * Compute the current recommendation set for the vault. Re-scans + per-
+ * project repo inspections; usually a few hundred ms. Call on vault
+ * open and after rescans (e.g. when the file watcher fires).
+ *
+ * Returns ALL recommendations; the caller filters dismissed ids
+ * client-side via {@link listDismissed}.
+ */
+export async function computeRecommendations(
+  vaultRoot: string,
+): Promise<Recommendation[]> {
+  return invoke<Recommendation[]>("compute_recommendations", { vaultRoot });
+}
+
+export async function dismissRecommendation(
+  vaultRoot: string,
+  recId: string,
+): Promise<void> {
+  await invoke<void>("dismiss_recommendation", { vaultRoot, recId });
+}
+
+export async function restoreRecommendation(
+  vaultRoot: string,
+  recId: string,
+): Promise<void> {
+  await invoke<void>("restore_recommendation", { vaultRoot, recId });
+}
+
+export async function listDismissed(vaultRoot: string): Promise<string[]> {
+  return invoke<string[]>("list_dismissed", { vaultRoot });
+}
+
+export async function clearDismissals(vaultRoot: string): Promise<void> {
+  await invoke<void>("clear_dismissals", { vaultRoot });
 }
 
 export async function inspectSourceRepo(

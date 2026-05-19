@@ -1,3 +1,4 @@
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::thread;
@@ -494,6 +495,172 @@ struct RunStatusPayload {
     active: bool,
 }
 
+// ---------- Recommendations + dismiss store ----------
+
+/// Persistent storage for dismissed recommendation ids, per vault.
+/// Keyed by canonical vault path (string form) → ordered set of rec ids.
+/// Persisted to `app_local_data_dir/dismissed.json` on every write;
+/// loaded once at startup.
+#[derive(Default)]
+struct DismissedStore {
+    inner: Mutex<DismissedStoreInner>,
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct DismissedStoreInner {
+    /// `BTreeSet` keeps the on-disk JSON stable across saves (no
+    /// jitter from hashmap ordering).
+    by_vault: HashMap<String, BTreeSet<String>>,
+    /// Absolute path where this store persists. Set during init from
+    /// `app_local_data_dir`; never written back to JSON.
+    #[serde(skip)]
+    persist_path: Option<PathBuf>,
+}
+
+impl DismissedStoreInner {
+    fn load_from(path: &Path) -> Self {
+        match std::fs::read_to_string(path) {
+            Ok(s) => {
+                let mut inner: DismissedStoreInner =
+                    serde_json::from_str(&s).unwrap_or_default();
+                inner.persist_path = Some(path.to_path_buf());
+                inner
+            }
+            Err(_) => DismissedStoreInner {
+                persist_path: Some(path.to_path_buf()),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// Best-effort persistence. Writes via a `.tmp` sibling + rename so a
+    /// crash mid-write doesn't corrupt the file. Errors are swallowed —
+    /// the IDE keeps working with the in-memory state even if persistence
+    /// is broken (e.g. disk full).
+    fn save(&self) {
+        let Some(path) = self.persist_path.as_ref() else { return };
+        let Ok(content) = serde_json::to_string_pretty(self) else { return };
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, content).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
+    }
+}
+
+/// Compute recommendations for the current vault. Re-scans + inspects
+/// repo state per project, then applies the rule set in
+/// `vault_core::recommendations`. Returns all rules' output; the frontend
+/// filters out dismissed ids client-side using `list_dismissed`.
+#[tauri::command]
+fn compute_recommendations(
+    vault_root: String,
+) -> Result<Vec<vault_core::recommendations::Recommendation>, String> {
+    let path = PathBuf::from(&vault_root).canonicalize().map_err(|e| {
+        format!("vault root not accessible: {}: {e}", vault_root)
+    })?;
+    let scan = vault_core::scan_vault(&path).map_err(|e| e.to_string())?;
+
+    // Inspect each project that declares a `local_path`. Sequential is
+    // fine — a typical vault has <30 projects and git ops are fast.
+    let mut repo_states: HashMap<String, vault_core::SourceRepoInspection> =
+        HashMap::new();
+    for project in &scan.projects {
+        if let Some(lp) = project.local_path.as_deref() {
+            let inspection =
+                vault_core::inspect_source_repo(&PathBuf::from(lp));
+            repo_states.insert(project.slug.clone(), inspection);
+        }
+    }
+
+    Ok(vault_core::recommendations::compute_recommendations(
+        &path,
+        &scan,
+        &repo_states,
+    ))
+}
+
+/// Dismiss a recommendation by id for the given vault. Idempotent.
+#[tauri::command]
+fn dismiss_recommendation(
+    vault_root: String,
+    rec_id: String,
+    store: State<'_, DismissedStore>,
+) -> Result<(), String> {
+    let key = vault_key(&vault_root)?;
+    let mut inner = lock_recovering(&store.inner);
+    inner
+        .by_vault
+        .entry(key)
+        .or_default()
+        .insert(rec_id);
+    inner.save();
+    Ok(())
+}
+
+/// Restore a previously dismissed recommendation. Useful when the user
+/// changes their mind.
+#[tauri::command]
+fn restore_recommendation(
+    vault_root: String,
+    rec_id: String,
+    store: State<'_, DismissedStore>,
+) -> Result<(), String> {
+    let key = vault_key(&vault_root)?;
+    let mut inner = lock_recovering(&store.inner);
+    if let Some(set) = inner.by_vault.get_mut(&key) {
+        set.remove(&rec_id);
+        if set.is_empty() {
+            inner.by_vault.remove(&key);
+        }
+    }
+    inner.save();
+    Ok(())
+}
+
+/// List dismissed recommendation ids for the given vault. Returned as a
+/// sorted vector so the frontend can use the value directly without
+/// re-sorting.
+#[tauri::command]
+fn list_dismissed(
+    vault_root: String,
+    store: State<'_, DismissedStore>,
+) -> Result<Vec<String>, String> {
+    let key = vault_key(&vault_root)?;
+    let inner = lock_recovering(&store.inner);
+    Ok(inner
+        .by_vault
+        .get(&key)
+        .map(|set| set.iter().cloned().collect())
+        .unwrap_or_default())
+}
+
+/// Clear all dismissals for the given vault. Useful as a "show all
+/// recommendations again" reset.
+#[tauri::command]
+fn clear_dismissals(
+    vault_root: String,
+    store: State<'_, DismissedStore>,
+) -> Result<(), String> {
+    let key = vault_key(&vault_root)?;
+    let mut inner = lock_recovering(&store.inner);
+    inner.by_vault.remove(&key);
+    inner.save();
+    Ok(())
+}
+
+/// Canonicalize the vault path so dismissals key off the same string
+/// regardless of how the frontend supplied it (with/without trailing
+/// slash, via symlink, etc.).
+fn vault_key(vault_root: &str) -> Result<String, String> {
+    let path = PathBuf::from(vault_root)
+        .canonicalize()
+        .map_err(|e| format!("vault root not accessible: {vault_root}: {e}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -501,6 +668,24 @@ pub fn run() {
         .setup(|app| {
             app.manage(WatchState::default());
             app.manage(RunState::default());
+
+            // Load persisted dismissals (best-effort) and stash the
+            // store so commands can mutate it. The persist path lives
+            // under the OS-standard per-app data dir so it survives
+            // across vault reopens and is private to this user/machine.
+            let persist_path = app
+                .path()
+                .app_local_data_dir()
+                .map(|d| d.join("dismissed.json"))
+                .ok();
+            let inner = match persist_path.as_ref() {
+                Some(p) => DismissedStoreInner::load_from(p),
+                None => DismissedStoreInner::default(),
+            };
+            app.manage(DismissedStore {
+                inner: Mutex::new(inner),
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -518,7 +703,12 @@ pub fn run() {
             start_run,
             resume_run,
             stop_run,
-            get_run_status
+            get_run_status,
+            compute_recommendations,
+            dismiss_recommendation,
+            restore_recommendation,
+            list_dismissed,
+            clear_dismissals
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

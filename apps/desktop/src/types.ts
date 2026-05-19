@@ -79,6 +79,26 @@ export interface Draft {
   created?: string;
 }
 
+export type RecommendationSeverity = "info" | "suggest" | "warn";
+
+export type RecommendationCategory =
+  | "bootstrap"
+  | "kb-stale"
+  | "curation"
+  | "configuration"
+  | "repo-state";
+
+export interface Recommendation {
+  id: string;
+  severity: RecommendationSeverity;
+  category: RecommendationCategory;
+  title: string;
+  detail?: string;
+  projectSlug?: string;
+  suggestedSkill?: string;
+  suggestedFile?: string;
+}
+
 export interface Diagnostic {
   level: DiagnosticLevel;
   message: string;

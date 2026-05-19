@@ -20,6 +20,12 @@ pub struct SourceRepoInspection {
     pub branch: Option<String>,
     pub dirty: Option<bool>,
     pub short_commit: Option<String>,
+    /// Unix timestamp (seconds) of the most recent commit on the current
+    /// branch — `git log -1 --format=%ct`. `None` when the path is not a
+    /// git repo, has no commits yet, or `git` isn't available. Used by
+    /// the recommendations engine to detect "repo edited since last KB
+    /// entry" without forcing every caller to shell out to git again.
+    pub last_commit_unix_secs: Option<i64>,
     /// Subset of [`DETECTED_CANDIDATES`] that actually exists at the repo
     /// root, plus a `README.*` fallback if `README.md` is missing.
     pub detected: Vec<String>,
@@ -85,6 +91,7 @@ pub fn inspect_source_repo(local_path: &Path) -> SourceRepoInspection {
             branch: None,
             dirty: None,
             short_commit: None,
+            last_commit_unix_secs: None,
             detected: Vec::new(),
             top_level: Vec::new(),
         };
@@ -94,16 +101,21 @@ pub fn inspect_source_repo(local_path: &Path) -> SourceRepoInspection {
         .as_deref()
         == Some("true");
 
-    let (branch, dirty, short_commit) = if is_git_repo {
+    let (branch, dirty, short_commit, last_commit_unix_secs) = if is_git_repo {
         let branch = run_git(local_path, &["branch", "--show-current"])
             .filter(|s| !s.is_empty());
         let dirty = run_git(local_path, &["status", "--porcelain"])
             .map(|s| !s.is_empty());
         let commit = run_git(local_path, &["rev-parse", "--short", "HEAD"])
             .filter(|s| !s.is_empty());
-        (branch, dirty, commit)
+        // `%ct` = committer date, unix timestamp. Newer than %at (author
+        // date) for rebase / cherry-pick scenarios, which is what we want
+        // for "when did this branch last move".
+        let last_commit = run_git(local_path, &["log", "-1", "--format=%ct"])
+            .and_then(|s| s.trim().parse::<i64>().ok());
+        (branch, dirty, commit, last_commit)
     } else {
-        (None, None, None)
+        (None, None, None, None)
     };
 
     let detected = detect_repo_files(local_path);
@@ -116,6 +128,7 @@ pub fn inspect_source_repo(local_path: &Path) -> SourceRepoInspection {
         branch,
         dirty,
         short_commit,
+        last_commit_unix_secs,
         detected,
         top_level,
     }
