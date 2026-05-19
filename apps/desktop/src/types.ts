@@ -174,6 +174,102 @@ export interface SourceRepoInspection {
   topLevel: TopLevelEntry[];
 }
 
+// ---------- CVE / Vulnerability scanning ----------
+
+export interface DependencyPackage {
+  ecosystem: string;
+  name: string;
+  version: string;
+  /** Relative path of the lock file the package was discovered in. */
+  sourceLockFile: string;
+}
+
+export interface Advisory {
+  package: DependencyPackage;
+  /** OSV identifier — typically `GHSA-…` or `CVE-…`. */
+  osvId: string;
+  summary: string;
+  details: string | null;
+  /** Best-effort label, e.g. `CVSS_V3 7.5`. Null when OSV gave nothing parseable. */
+  severity: string | null;
+  fixedVersions: string[];
+  references: string[];
+}
+
+export interface ProjectVulnerabilityScan {
+  lockFilesScanned: string[];
+  packagesScanned: number;
+  advisories: Advisory[];
+  /** Non-fatal warnings (parse issues, network failures). */
+  warnings: string[];
+}
+
+// ---------- Session history ----------
+
+export interface SessionOutputLine {
+  /** "stdout" | "stderr" | "system" — same buckets the chat panel renders. */
+  kind: string;
+  text: string;
+}
+
+export interface SessionUsageSnapshot {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  costUsd: number;
+  model: string | null;
+}
+
+export interface SessionSummary {
+  id: number;
+  claudeSessionId: string;
+  vaultRoot: string;
+  projectSlug: string;
+  promptId: string;
+  freeform: boolean;
+  title: string;
+  startedAtMs: number;
+  endedAtMs: number | null;
+  exitSuccess: boolean | null;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  model: string | null;
+  archived: boolean;
+  lineCount: number;
+}
+
+export interface SessionFull {
+  summary: SessionSummary;
+  workdir: string;
+  additionalDirs: string[];
+  outputLines: SessionOutputLine[];
+}
+
+export interface RecentVault {
+  path: string;
+  lastOpenedAtMs: number;
+  pinned: boolean;
+}
+
+export interface SaveSessionInput {
+  vaultRoot: string;
+  claudeSessionId: string;
+  projectSlug: string;
+  promptId: string;
+  workdir: string;
+  additionalDirs: string[];
+  freeform: boolean;
+  title: string;
+  outputLines: SessionOutputLine[];
+  startedAtMs: number;
+  endedAtMs: number | null;
+  exitCode: number | null;
+  exitSuccess: boolean | null;
+  usage: SessionUsageSnapshot;
+}
+
 export type WarningKind =
   | "output-file-missing"
   | "output-file-outside-project"

@@ -5,6 +5,7 @@ import {
   demoVaultPath,
   onVaultChange,
   pickVaultFolder,
+  recordRecentVault,
   scanVault,
   startVaultWatch,
   stopVaultWatch,
@@ -21,12 +22,24 @@ export function App() {
     error: null,
     loading: false,
   });
+  // Bumped on every successful vault load so the Welcome screen
+  // refetches the recent-vaults list. Lives at App level so the
+  // refresh happens when the user closes the vault and returns —
+  // not just on first render.
+  const [recentChangeTick, setRecentChangeTick] = useState(0);
 
   const loadVault = useCallback(async (path: string) => {
     setState({ kind: "welcome", error: null, loading: true });
     try {
       const result = await scanVault(path);
       setState({ kind: "loaded", result });
+      // Record AFTER a successful scan — we don't want to populate
+      // recents with paths that turn out not to be a vault. Use the
+      // canonical root the scan resolved, not the raw input, so
+      // future clicks land on the same key the store remembers.
+      void recordRecentVault(result.vaultRoot).then(() => {
+        setRecentChangeTick((t) => t + 1);
+      });
     } catch (err) {
       setState({
         kind: "welcome",
@@ -126,8 +139,10 @@ export function App() {
       <Welcome
         onOpenVault={onOpenVault}
         onOpenDemo={onOpenDemo}
+        onOpenPath={(path) => void loadVault(path)}
         error={state.error}
         loading={state.loading}
+        recentChangeTick={recentChangeTick}
       />
     );
   }

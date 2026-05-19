@@ -3,8 +3,13 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
   ContextPreview,
+  ProjectVulnerabilityScan,
+  RecentVault,
   Recommendation,
+  SaveSessionInput,
   ScanResult,
+  SessionFull,
+  SessionSummary,
   SourceRepoInspection,
 } from "./types";
 
@@ -129,6 +134,81 @@ export async function inspectSourceRepo(
 }
 
 /**
+ * Scan a project's `local_path` for known CVEs. Reads supported lock files
+ * (yarn.lock, package-lock.json) and queries OSV.dev. Network errors are
+ * folded into the returned `warnings` list — the call only rejects on
+ * a fatal local error (path missing, no lock files at all, etc.).
+ */
+export async function scanProjectVulnerabilities(
+  localPath: string,
+): Promise<ProjectVulnerabilityScan> {
+  return invoke<ProjectVulnerabilityScan>("scan_project_vulnerabilities", {
+    localPath,
+  });
+}
+
+// ---------- Session history ----------
+
+/**
+ * Persist (or update) a chat session. Called from `RunPanel` on each
+ * `run:exit` so the conversation can be reopened later. Returns the
+ * server-side row id, which the frontend caches so subsequent saves
+ * upsert the same row.
+ */
+export async function saveSession(input: SaveSessionInput): Promise<number> {
+  return invoke<number>("save_session", { input });
+}
+
+export async function listSessions(
+  vaultRoot: string,
+  includeArchived: boolean,
+): Promise<SessionSummary[]> {
+  return invoke<SessionSummary[]>("list_sessions", {
+    vaultRoot,
+    includeArchived,
+  });
+}
+
+export async function getSession(id: number): Promise<SessionFull> {
+  return invoke<SessionFull>("get_session", { id });
+}
+
+export async function archiveSession(
+  id: number,
+  archived: boolean,
+): Promise<void> {
+  await invoke<void>("archive_session", { id, archived });
+}
+
+export async function deleteSession(id: number): Promise<void> {
+  await invoke<void>("delete_session", { id });
+}
+
+// ---------- Recent vaults ----------
+
+/** Record (or update timestamp on) a vault in the recent list. Called
+ *  whenever a vault loads successfully so the Welcome screen has a
+ *  freshly-sorted list of last-used vaults to pick from. */
+export async function recordRecentVault(path: string): Promise<void> {
+  await invoke<void>("record_recent_vault", { path });
+}
+
+export async function listRecentVaults(): Promise<RecentVault[]> {
+  return invoke<RecentVault[]>("list_recent_vaults");
+}
+
+export async function removeRecentVault(path: string): Promise<void> {
+  await invoke<void>("remove_recent_vault", { path });
+}
+
+export async function pinRecentVault(
+  path: string,
+  pinned: boolean,
+): Promise<void> {
+  await invoke<void>("pin_recent_vault", { path, pinned });
+}
+
+/**
  * Start the filesystem watcher for the given vault root. Any previously
  * running watcher is replaced. The Tauri shell emits a `vault:changed`
  * event whenever the 300 ms debounce window fires.
@@ -160,11 +240,19 @@ export interface RunStartedEvent {
   promptId: string;
   vaultRoot: string;
   workdir: string;
+  /** Read/edit roots passed via `--add-dir`. Echoed back so a freeform
+   *  resume can re-spawn against the same scope without needing to
+   *  recompute it from a (non-existent) artifact prompt. */
+  additionalDirs: string[];
   runner: string;
   /** True when this is a `--resume` of a prior session; false for a
    *  fresh `start_run`. The frontend uses this to decide whether to
    *  clear the output buffer or append to it. */
   resume: boolean;
+  /** True when the run was launched via bottom-panel chat (no artifact
+   *  prompt). The Reply path routes to `resume_freeform_run` for these
+   *  runs since artifact-based resume would fail to materialize a prompt. */
+  freeform: boolean;
 }
 
 export interface RunLineEvent {
@@ -218,6 +306,44 @@ export async function resumeRun(args: {
   reply: string;
 }): Promise<void> {
   await invoke<void>("resume_run", args);
+}
+
+/**
+ * Start a free-form chat run — no artifact prompt, just the user's text
+ * wrapped with a short vault-context preamble.
+ *
+ * `scopeRepoPath` selects the cwd: when supplied + safe, the run executes
+ * inside that repo and the vault is exposed via `--add-dir`. When omitted,
+ * cwd is the vault root.
+ *
+ * `scopeProjectSlug` is a display label echoed back in `run:started`;
+ * the backend does not validate it against the scan.
+ */
+export async function startFreeformRun(args: {
+  vaultRoot: string;
+  prompt: string;
+  scopeProjectSlug?: string;
+  scopeRepoPath?: string;
+}): Promise<void> {
+  await invoke<void>("start_freeform_run", args);
+}
+
+/**
+ * Continue a free-form chat run. Unlike {@link resumeRun}, this takes
+ * the workdir + add-dirs directly (echoed back from the original
+ * `run:started`) because there's no artifact prompt to re-derive them
+ * from. `workdir` is re-validated server-side against the same deny-list
+ * used by `start_freeform_run`.
+ */
+export async function resumeFreeformRun(args: {
+  vaultRoot: string;
+  workdir: string;
+  additionalDirs: string[];
+  projectSlug: string;
+  sessionId: string;
+  reply: string;
+}): Promise<void> {
+  await invoke<void>("resume_freeform_run", args);
 }
 
 /**

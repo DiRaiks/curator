@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createMarkdownFile,
   readMarkdownFile,
@@ -11,13 +11,15 @@ import { ConfirmDirtyDialog } from "./ConfirmDirtyDialog";
 import { Diagnostics } from "./Diagnostics";
 import { EditorPanel } from "./EditorPanel";
 import { FileTree } from "./FileTree";
+import { HistoryPanel } from "./HistoryPanel";
 import { NewFileDialog } from "./NewFileDialog";
 import { useRecommendations } from "../hooks/useRecommendations";
 import { DraftsList } from "./DraftsList";
 import { ProjectDetail } from "./ProjectDetail";
 import { ProjectList } from "./ProjectList";
 import { RecommendationsBell } from "./RecommendationsBell";
-import { RunPanel } from "./RunPanel";
+import { RunPanel, type RunPanelHandle } from "./RunPanel";
+import { SecurityPanel } from "./SecurityPanel";
 import { Tooltip } from "./Tooltip";
 import { ZoneList } from "./ZoneList";
 
@@ -32,6 +34,8 @@ type Tab =
   | "projects"
   | "artifacts"
   | "drafts"
+  | "security"
+  | "history"
   | "zones"
   | "diagnostics"
   | "editor";
@@ -196,6 +200,8 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
   const [newFileSuggestion, setNewFileSuggestion] = useState<string>(
     "01_inbox/new-note.md",
   );
+
+  const runPanelRef = useRef<RunPanelHandle | null>(null);
 
   const [refreshing, setRefreshing] = useState(false);
   /** Bumped after every successful rescan so child panels (Project Detail's
@@ -578,6 +584,20 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
               count={result.drafts.length}
             />
             <TabButton
+              id="tab-security"
+              controls="panel-security"
+              active={effectiveTab === "security"}
+              onClick={() => onSelectTab("security")}
+              label="Security"
+            />
+            <TabButton
+              id="tab-history"
+              controls="panel-history"
+              active={effectiveTab === "history"}
+              onClick={() => onSelectTab("history")}
+              label="History"
+            />
+            <TabButton
               id="tab-zones"
               controls="panel-zones"
               active={effectiveTab === "zones"}
@@ -660,6 +680,34 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
               />
             </section>
           )}
+          {effectiveTab === "security" && (
+            <section
+              id="panel-security"
+              role="tabpanel"
+              aria-labelledby="tab-security"
+              className="panel"
+            >
+              <SecurityPanel projects={result.projects} />
+            </section>
+          )}
+          {effectiveTab === "history" && (
+            <section
+              id="panel-history"
+              role="tabpanel"
+              aria-labelledby="tab-history"
+              className="panel"
+            >
+              <HistoryPanel
+                vaultRoot={result.vaultRoot}
+                onReopen={(session) => {
+                  runPanelRef.current?.reopenSession(session);
+                  // After reopening, drop the user back into the chat
+                  // so they see the restored conversation immediately.
+                  setTab("projects");
+                }}
+              />
+            </section>
+          )}
           {effectiveTab === "zones" && (
             <section
               id="panel-zones"
@@ -710,7 +758,11 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
         </main>
       </div>
 
-      <RunPanel />
+      <RunPanel
+        ref={runPanelRef}
+        vaultRoot={result.vaultRoot}
+        projects={result.projects}
+      />
 
       {pendingAction && openFile && isDirty && (
         <ConfirmDirtyDialog

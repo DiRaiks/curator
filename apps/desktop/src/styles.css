@@ -93,6 +93,148 @@ button {
   align-items: flex-start;
 }
 
+/* Recent vaults list on the Welcome screen. Click a row to reopen,
+ * hover to reveal the pin/remove icons. Pinned rows show a pin
+ * indicator in the name column so they're recognisable at a glance. */
+.welcome__recent {
+  margin: 0 0 24px;
+}
+
+.welcome__section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 0 0 8px;
+  font-weight: 700;
+}
+
+.recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.recent-row {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 96%, var(--bg) 4%);
+  transition: background 100ms ease, border-color 100ms ease;
+}
+
+.recent-row:hover {
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel) 90%);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border) 70%);
+}
+
+.recent-row__main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 0 8px;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 6px 0 0 6px;
+  min-width: 0;
+}
+
+.recent-row__main:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.recent-row__name {
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-row__pin-indicator {
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.recent-row__path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--muted);
+  grid-column: 1;
+  grid-row: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-row__time {
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--muted);
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.recent-row__actions {
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+
+.recent-row:hover .recent-row__actions,
+.recent-row:focus-within .recent-row__actions {
+  opacity: 1;
+}
+
+.recent-row__action {
+  font-size: 12px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.recent-row__action:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--text);
+}
+
+.recent-row__action--danger:hover {
+  background: var(--err-bg);
+  color: var(--err);
+}
+
 .welcome__demo {
   display: flex;
   flex-direction: column;
@@ -1795,6 +1937,145 @@ button {
  * Sits between status and the action buttons so it's always glanceable
  * but doesn't compete with the run state for primary attention. Hover
  * detail comes from the generic <Tooltip> component wrapping the chip. */
+/* History dropdown in the chat panel header. The button toggles a small
+ * floating menu of recent sessions; clicking outside (the scrim) closes
+ * it without losing focus. */
+.run-panel__history {
+  position: relative;
+}
+
+.run-panel__history-toggle {
+  white-space: nowrap;
+}
+
+.run-panel__history-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+  background: transparent;
+}
+
+.run-panel__history-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 10;
+  min-width: 320px;
+  max-width: 420px;
+  max-height: 360px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.run-panel__history-empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.run-panel__history-empty--err {
+  color: var(--err);
+  font-style: normal;
+}
+
+.run-panel__history-item {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  border-radius: 4px;
+}
+
+.run-panel__history-item:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.run-panel__history-item--active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.run-panel__history-item-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  border-radius: 4px 0 0 4px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.run-panel__history-item-title {
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.run-panel__history-item-meta {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.run-panel__history-item-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 4px;
+  /* Show actions whenever the row is hovered OR keyboard-focused, so
+   * delete is reachable both with mouse and Tab navigation. Without
+   * this the icons would be invisible until hover, hiding the
+   * destructive action from anyone who searches via keyboard. */
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+
+.run-panel__history-item:hover .run-panel__history-item-actions,
+.run-panel__history-item:focus-within .run-panel__history-item-actions {
+  opacity: 1;
+}
+
+.run-panel__history-item-action {
+  font-size: 11px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.run-panel__history-item-action:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--text);
+}
+
+.run-panel__history-item-action--danger:hover {
+  background: var(--err-bg);
+  color: var(--err);
+}
+
 .run-panel__usage {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
@@ -1838,7 +2119,10 @@ button {
   font-style: italic;
 }
 
-.run-panel__reply {
+/* Chat input area at the bottom of the run panel. Hosts the scope
+ * dropdown, the message textarea, and the Send/Reply button. Visible
+ * whenever the panel is expanded and not actively running. */
+.run-panel__chat {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -1848,7 +2132,37 @@ button {
   background: color-mix(in srgb, var(--panel) 90%, var(--accent) 10%);
 }
 
-.run-panel__reply-input {
+.run-panel__chat-scope {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.run-panel__chat-scope-label {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.run-panel__chat-scope-select {
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.run-panel__chat-scope-select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.run-panel__chat-input {
   width: 100%;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
@@ -1859,28 +2173,28 @@ button {
   background: var(--panel);
   color: var(--text);
   resize: vertical;
-  min-height: 36px;
+  min-height: 48px;
   max-height: 160px;
 }
 
-.run-panel__reply-input:focus {
+.run-panel__chat-input:focus {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
-.run-panel__reply-input:disabled {
+.run-panel__chat-input:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
 
-.run-panel__reply-actions {
+.run-panel__chat-actions {
   display: flex;
   align-items: center;
   gap: 10px;
   justify-content: flex-end;
 }
 
-.run-panel__reply-error {
+.run-panel__chat-error {
   font-size: 11px;
   color: var(--warn);
   margin-right: auto;
@@ -2177,4 +2491,616 @@ button {
 
 .diag--warning {
   border-color: color-mix(in srgb, var(--warn) 50%, var(--border) 50%);
+}
+
+/* ---------- Security (CVE) panel ---------- */
+
+.security-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.security-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.security-panel__title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.security-panel__hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.security-panel__hint code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: color-mix(in srgb, var(--panel) 80%, var(--border) 20%);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.security-panel__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.security-panel__summary {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.security-panel__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.security-row {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: var(--panel);
+  transition: border-color 120ms ease;
+}
+
+.security-row--scanning {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border) 55%);
+}
+
+.security-row__progress {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.security-row__progress-hint {
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* Indeterminate progress bar. CSS-only — a moving gradient over a
+ * semi-transparent track. Keeps animating regardless of IPC chatter so
+ * the user sees forward motion even if the webview is otherwise idle. */
+.progress-bar {
+  height: 3px;
+  width: 100%;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  overflow: hidden;
+  position: relative;
+}
+
+.progress-bar__fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 30%;
+  background: var(--accent);
+  border-radius: 2px;
+  animation: progress-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes progress-slide {
+  0% {
+    left: -30%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+/* Small inline spinner for use inside buttons. Sized to align with
+ * surrounding 11–13 px text. */
+.spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: spinner-rotate 0.7s linear infinite;
+  vertical-align: -1px;
+}
+
+@keyframes spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.security-row__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.security-row__title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.security-row__name {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.security-row__path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.security-row__status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.security-row__status-text {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.security-row__status-text--ok {
+  color: color-mix(in srgb, var(--accent) 70%, var(--text) 30%);
+}
+
+.security-row__status-text--warn {
+  color: var(--warn);
+}
+
+.security-row__status-text--err {
+  color: var(--err);
+}
+
+.security-row__error {
+  margin: 8px 0 0;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: var(--err-bg);
+  color: var(--err);
+  font-size: 12px;
+}
+
+.security-row__body {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.security-row__meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.security-row__empty {
+  margin: 0;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--accent) 70%, var(--text) 30%);
+}
+
+.security-row__warnings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.security-row__warning {
+  font-size: 11px;
+  color: var(--warn);
+}
+
+/* Severity summary + per-row filter chips. Clickable chips toggle a
+ * severity in/out of the filter; non-clickable chips (panel-level
+ * overall summary) render as static badges. */
+.severity-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+}
+
+.severity-summary--panel {
+  margin: 0 0 4px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 96%, var(--bg) 4%);
+}
+
+.severity-summary__label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 4px;
+}
+
+.severity-chip {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: color-mix(in srgb, var(--panel) 80%, var(--border) 20%);
+  color: var(--muted);
+  transition: opacity 120ms ease, filter 120ms ease;
+}
+
+.severity-chip--clickable {
+  cursor: pointer;
+}
+
+.severity-chip--clickable:hover {
+  filter: brightness(1.05);
+}
+
+.severity-chip--off {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+.severity-chip--critical {
+  background: var(--err-bg);
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 30%, transparent);
+}
+
+.severity-chip--high {
+  background: color-mix(in srgb, var(--err-bg) 70%, var(--warn-bg) 30%);
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 25%, transparent);
+}
+
+.severity-chip--medium {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 25%, transparent);
+}
+
+.severity-chip--low {
+  background: var(--info-bg);
+  color: var(--info);
+  border-color: color-mix(in srgb, var(--info) 25%, transparent);
+}
+
+.severity-chip--none {
+  background: color-mix(in srgb, var(--panel) 80%, var(--border) 20%);
+  color: var(--muted);
+}
+
+.severity-summary__clear {
+  font-size: 11px;
+  color: var(--accent);
+  background: transparent;
+  border: none;
+  padding: 2px 4px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.severity-summary__clear:hover {
+  filter: brightness(1.1);
+}
+
+.advisories {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.advisory {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--panel) 95%, var(--bg) 5%);
+}
+
+.advisory--critical {
+  border-left-color: var(--err);
+}
+
+.advisory--high {
+  border-left-color: color-mix(in srgb, var(--err) 70%, var(--warn) 30%);
+}
+
+.advisory--medium {
+  border-left-color: var(--warn);
+}
+
+.advisory--low {
+  border-left-color: var(--info);
+}
+
+.advisory--none {
+  border-left-color: var(--muted);
+}
+
+.advisory__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.advisory__pkg {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.advisory__id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: auto;
+}
+
+.advisory__severity {
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 80%, var(--border) 20%);
+  color: var(--muted);
+}
+
+.advisory__severity--critical {
+  background: var(--err-bg);
+  color: var(--err);
+}
+
+.advisory__severity--high {
+  background: color-mix(in srgb, var(--err-bg) 70%, var(--warn-bg) 30%);
+  color: var(--err);
+}
+
+.advisory__severity--medium {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.advisory__severity--low {
+  background: var(--info-bg);
+  color: var(--info);
+}
+
+.advisory__summary {
+  margin: 2px 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.advisory__fix {
+  margin: 2px 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.advisory__refs {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.advisory__refs a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.advisory__refs a:hover {
+  text-decoration: underline;
+}
+
+/* ---------- History panel ---------- */
+
+.history-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.history-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.history-panel__hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.history-panel__filter {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.history-panel__filter-btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 12px;
+  border: none;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  border-right: 1px solid var(--border);
+}
+
+.history-panel__filter-btn:last-child {
+  border-right: none;
+}
+
+.history-panel__filter-btn--active {
+  background: color-mix(in srgb, var(--accent) 16%, var(--panel) 84%);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.history-panel__error {
+  padding: 8px 12px;
+  border-radius: 4px;
+  background: var(--err-bg);
+  color: var(--err);
+  font-size: 12px;
+  margin: 0;
+}
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.history-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: var(--panel);
+}
+
+.history-row--archived {
+  opacity: 0.7;
+}
+
+.history-row__main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+
+.history-row__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.history-row__title {
+  font-weight: 600;
+  font-size: 13px;
+  /* Allow long titles to wrap rather than truncate so the user can see
+   * the full first-message without hover. */
+  overflow-wrap: anywhere;
+}
+
+.history-row__exit {
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.history-row__exit--ok {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+}
+
+.history-row__exit--fail {
+  background: var(--err-bg);
+  color: var(--err);
+}
+
+.history-row__exit--unknown {
+  background: color-mix(in srgb, var(--panel) 80%, var(--border) 20%);
+  color: var(--muted);
+}
+
+.history-row__badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 80%, var(--border) 20%);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.history-row__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.history-row__actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.empty-state {
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+  margin: 16px 0;
+}
+
+.empty-state code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-style: normal;
+  background: color-mix(in srgb, var(--panel) 80%, var(--border) 20%);
+  padding: 1px 5px;
+  border-radius: 4px;
 }

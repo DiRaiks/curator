@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::thread;
@@ -23,6 +23,39 @@ fn preview_context(
 #[tauri::command]
 fn inspect_source_repo(local_path: String) -> Result<vault_core::SourceRepoInspection, String> {
     Ok(vault_core::inspect_source_repo(&PathBuf::from(local_path)))
+}
+
+/// Scan a project's source repository for known vulnerabilities.
+///
+/// Parses any supported lock files (yarn.lock, package-lock.json) at
+/// the repo root and queries OSV.dev for advisories. Returns a flat
+/// list of `(package, vuln)` rows plus any non-fatal warnings.
+///
+/// Security: `local_path` is canonicalized AND passed through
+/// `runner::validate_workdir` to enforce the same deny-list used by the
+/// agent runner (no system dirs, no `~/.ssh`, etc.). A vault config
+/// pointing at a sensitive path can't trick the IDE into reading lock
+/// files from outside a real project workdir.
+///
+/// The OSV query is best-effort — network failures are downgraded to
+/// warnings so the user still sees the package count and at least knows
+/// what would have been scanned.
+///
+/// `async` + `spawn_blocking` is deliberate: Tauri 2 runs synchronous
+/// commands on the main thread, which would freeze the UI (beachball,
+/// stuck cursor) for the full 5–30 s of an OSV scan on a real-world
+/// repo. Offloading to a blocking worker keeps the window responsive.
+#[tauri::command]
+async fn scan_project_vulnerabilities(
+    local_path: String,
+) -> Result<vault_core::cve::ProjectVulnerabilityScan, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let safe = vault_core::runner::validate_workdir(&PathBuf::from(&local_path))
+            .map_err(|e| e.to_string())?;
+        vault_core::cve::scan_project_vulnerabilities(&safe).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("scan task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -195,11 +228,20 @@ struct RunStartedPayload {
     /// (now-stale) original input.
     vault_root: String,
     workdir: String,
+    /// Extra read/edit roots passed via `--add-dir`. Echoed back so a
+    /// freeform resume can re-spawn with the same access scope without
+    /// re-deriving it from an artifact prompt (freeform runs don't have one).
+    additional_dirs: Vec<String>,
     runner: &'static str,
     /// True when this run is a resume of a prior session (`--resume`).
     /// The frontend keeps prior output buffer + session state visible
     /// across resumes; a fresh start resets them.
     resume: bool,
+    /// True when the run was launched via the bottom-panel chat (no artifact
+    /// prompt). Frontend routes the Reply path to `resume_freeform_run`
+    /// instead of `resume_run` so the spawn doesn't try to materialize a
+    /// non-existent artifact prompt.
+    freeform: bool,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -265,6 +307,7 @@ fn start_run(
         resume_session_id: None,
         project_slug,
         prompt_id,
+        freeform: false,
         app,
         state: &state,
     })
@@ -306,9 +349,127 @@ fn resume_run(
         resume_session_id: Some(session_id),
         project_slug,
         prompt_id,
+        freeform: false,
         app,
         state: &state,
     })
+}
+
+/// Start a free-form chat run — no artifact prompt, just the user's text
+/// wrapped with a short vault-context preamble. When `scope_repo_path` is
+/// provided + safe, cwd is that repo and the vault is exposed via
+/// `--add-dir`; otherwise cwd is the vault root.
+///
+/// `scope_project_slug` is purely a display label echoed back in the
+/// `run:started` event so the panel can show "running · my-proj/chat" vs
+/// "running · vault/chat". The backend does not validate it against the
+/// scan — it never touches the filesystem with it.
+#[tauri::command]
+fn start_freeform_run(
+    vault_root: String,
+    prompt: String,
+    scope_project_slug: Option<String>,
+    scope_repo_path: Option<String>,
+    app: AppHandle,
+    state: State<'_, RunState>,
+) -> Result<(), String> {
+    if prompt.trim().is_empty() {
+        return Err("prompt is required".into());
+    }
+    let vault_path = canonicalize_vault_root(&vault_root)?;
+    let (workdir, additional_dirs) =
+        resolve_workdir(&vault_path, scope_repo_path.as_deref());
+
+    let project_slug = scope_project_slug
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "(vault)".to_string());
+    let wrapped = build_freeform_prompt(&vault_path, &prompt, workdir != vault_path);
+
+    spawn_and_pump(SpawnArgs {
+        vault_path,
+        workdir,
+        additional_dirs,
+        prompt: wrapped,
+        runtime_input: None,
+        resume_session_id: None,
+        project_slug,
+        prompt_id: "chat".to_string(),
+        freeform: true,
+        app,
+        state: &state,
+    })
+}
+
+/// Continue a free-form chat run. Unlike `resume_run`, this does not
+/// re-derive the workdir from an artifact prompt (freeform runs have
+/// none) — the frontend passes back the `(workdir, additional_dirs,
+/// project_slug)` triple stashed from the original `run:started` event.
+///
+/// Security: `workdir` is re-validated via `runner::validate_workdir` on
+/// every resume so a stale or tampered echo can't redirect the agent
+/// into a denied path (`~/.ssh`, system dirs, etc.).
+#[tauri::command]
+fn resume_freeform_run(
+    vault_root: String,
+    workdir: String,
+    additional_dirs: Vec<String>,
+    project_slug: String,
+    session_id: String,
+    reply: String,
+    app: AppHandle,
+    state: State<'_, RunState>,
+) -> Result<(), String> {
+    if session_id.trim().is_empty() {
+        return Err("session id is required to resume a run".into());
+    }
+    if reply.trim().is_empty() {
+        return Err("reply text is required to resume a run".into());
+    }
+    let vault_path = canonicalize_vault_root(&vault_root)?;
+    let workdir = vault_core::runner::validate_workdir(&PathBuf::from(workdir))
+        .map_err(|e| e.to_string())?;
+    let additional_dirs: Vec<PathBuf> =
+        additional_dirs.into_iter().map(PathBuf::from).collect();
+
+    let display_slug = if project_slug.trim().is_empty() {
+        "(vault)".to_string()
+    } else {
+        project_slug
+    };
+
+    spawn_and_pump(SpawnArgs {
+        vault_path,
+        workdir,
+        additional_dirs,
+        prompt: reply,
+        runtime_input: None,
+        resume_session_id: Some(session_id),
+        project_slug: display_slug,
+        prompt_id: "chat".to_string(),
+        freeform: true,
+        app,
+        state: &state,
+    })
+}
+
+/// Wrap the user's chat prompt with a short context preamble so the agent
+/// knows where it is and which conventions to follow. Kept minimal — the
+/// authoritative rules live in the vault's `00_meta/AGENTS.md` and the
+/// agent will read it on demand.
+fn build_freeform_prompt(vault_path: &Path, user_prompt: &str, has_repo_scope: bool) -> String {
+    let vault = vault_path.display();
+    let preamble = if has_repo_scope {
+        format!(
+            "You're running inside a source repository (your cwd) with a Markdown knowledge vault at `{vault}` available via `--add-dir`. \
+Before creating or editing notes in the vault, read `00_meta/AGENTS.md` for mandatory frontmatter, tag conventions, and structure."
+        )
+    } else {
+        format!(
+            "You're running inside a Markdown knowledge vault at `{vault}` (your cwd). \
+Before creating or editing notes, read `00_meta/AGENTS.md` for mandatory frontmatter, tag conventions, and structure."
+        )
+    };
+    format!("{preamble}\n\nUser request:\n{user_prompt}")
 }
 
 fn canonicalize_vault_root(raw: &str) -> Result<PathBuf, String> {
@@ -341,8 +502,8 @@ fn resolve_workdir(
 }
 
 /// Inputs to `spawn_and_pump`. Grouped as a struct because the function
-/// runs both code paths (`start_run` + `resume_run`) and a 9-arg call
-/// site is unreadable.
+/// runs both code paths (`start_run` + `resume_run` + freeform variants)
+/// and a 10-arg call site is unreadable.
 struct SpawnArgs<'s> {
     vault_path: PathBuf,
     workdir: PathBuf,
@@ -352,6 +513,9 @@ struct SpawnArgs<'s> {
     resume_session_id: Option<String>,
     project_slug: String,
     prompt_id: String,
+    /// Marks the run as freeform (chat) so the frontend routes its Reply
+    /// path to `resume_freeform_run`. Plain artifact runs pass `false`.
+    freeform: bool,
     app: AppHandle,
     state: &'s State<'s, RunState>,
 }
@@ -369,6 +533,7 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
         resume_session_id,
         project_slug,
         prompt_id,
+        freeform,
         app,
         state,
     } = args;
@@ -376,6 +541,14 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
     // Capture the resume flag before constructing the request so it
     // survives the move into `Runner::start`.
     let is_resume = resume_session_id.is_some();
+
+    // Snapshot add-dirs as strings before they're moved into `RunRequest`;
+    // the started payload echoes them so a freeform resume can re-spawn
+    // with the same access scope.
+    let additional_dirs_str: Vec<String> = additional_dirs
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
 
     let req = vault_core::runner::RunRequest {
         workdir: workdir.clone(),
@@ -393,8 +566,10 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
         prompt_id,
         vault_root: vault_path.to_string_lossy().to_string(),
         workdir: workdir.to_string_lossy().to_string(),
+        additional_dirs: additional_dirs_str,
         runner: "claude-code",
         resume: is_resume,
+        freeform,
     };
 
     // Hold the RunState lock across the spawn so the "is_some" check and
@@ -515,60 +690,63 @@ struct RunStatusPayload {
     started: Option<RunStartedPayload>,
 }
 
-// ---------- Recommendations + dismiss store ----------
+/// Open the consolidated [`AppDb`] in `data_dir/app.db`, run the
+/// pre-open file rename (legacy `sessions.db` → `app.db`) and the
+/// post-open JSON migration (`dismissed.json`, `recent_vaults.json`),
+/// then stash the store as Tauri State.
+///
+/// All failures are logged but non-fatal: the IDE remains usable; the
+/// affected features (History tab, dismiss persistence, recent-vaults
+/// list) simply won't have a backing store and the corresponding
+/// commands will return errors when invoked.
+fn init_app_db<R: tauri::Runtime>(app: &tauri::App<R>, data_dir: &Path) {
+    let target = data_dir.join("app.db");
+    let legacy_sessions = data_dir.join("sessions.db");
 
-/// Persistent storage for dismissed recommendation ids, per vault.
-/// Keyed by canonical vault path (string form) → ordered set of rec ids.
-/// Persisted to `app_local_data_dir/dismissed.json` on every write;
-/// loaded once at startup.
-#[derive(Default)]
-struct DismissedStore {
-    inner: Mutex<DismissedStoreInner>,
-}
+    // Pre-open rename: earlier we called the file `sessions.db`. If
+    // the user already has data there and no `app.db` yet, move it
+    // into place so their session history survives the rename. If
+    // both exist (shouldn't normally happen — only via manual file
+    // restore) we leave the legacy file alone to avoid clobbering.
+    if legacy_sessions.is_file() && !target.exists() {
+        if let Err(e) = std::fs::rename(&legacy_sessions, &target) {
+            eprintln!(
+                "could not rename {} → {}: {e}",
+                legacy_sessions.display(),
+                target.display()
+            );
+        }
+    }
 
-#[derive(Default, serde::Serialize, serde::Deserialize)]
-struct DismissedStoreInner {
-    /// `BTreeSet` keeps the on-disk JSON stable across saves (no
-    /// jitter from hashmap ordering).
-    by_vault: HashMap<String, BTreeSet<String>>,
-    /// Absolute path where this store persists. Set during init from
-    /// `app_local_data_dir`; never written back to JSON.
-    #[serde(skip)]
-    persist_path: Option<PathBuf>,
-}
+    let db = match vault_core::db::AppDb::open(&target) {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("failed to open AppDb at {}: {e}", target.display());
+            return;
+        }
+    };
 
-impl DismissedStoreInner {
-    fn load_from(path: &Path) -> Self {
-        match std::fs::read_to_string(path) {
-            Ok(s) => {
-                let mut inner: DismissedStoreInner =
-                    serde_json::from_str(&s).unwrap_or_default();
-                inner.persist_path = Some(path.to_path_buf());
-                inner
+    // Post-open: migrate the legacy JSON stores into their new
+    // tables. Idempotent — empty tables import, then the source file
+    // is deleted; subsequent starts find no files and do nothing.
+    match vault_core::db::migrate_legacy_json(&db, data_dir) {
+        Ok(report) => {
+            if report.dismissed_imported > 0 || report.recents_imported > 0 {
+                eprintln!(
+                    "AppDb: migrated legacy JSON — dismissed={}, recents={}",
+                    report.dismissed_imported, report.recents_imported
+                );
             }
-            Err(_) => DismissedStoreInner {
-                persist_path: Some(path.to_path_buf()),
-                ..Default::default()
-            },
+        }
+        Err(e) => {
+            eprintln!("AppDb: legacy JSON migration error (non-fatal): {e}");
         }
     }
 
-    /// Best-effort persistence. Writes via a `.tmp` sibling + rename so a
-    /// crash mid-write doesn't corrupt the file. Errors are swallowed —
-    /// the IDE keeps working with the in-memory state even if persistence
-    /// is broken (e.g. disk full).
-    fn save(&self) {
-        let Some(path) = self.persist_path.as_ref() else { return };
-        let Ok(content) = serde_json::to_string_pretty(self) else { return };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, content).is_ok() {
-            let _ = std::fs::rename(&tmp, path);
-        }
-    }
+    app.manage(db);
 }
+
+// ---------- Recommendations ----------
 
 /// Compute recommendations for the current vault. Re-scans + inspects
 /// repo state per project, then applies the rule set in
@@ -602,83 +780,141 @@ fn compute_recommendations(
     ))
 }
 
-/// Dismiss a recommendation by id for the given vault. Idempotent.
-#[tauri::command]
-fn dismiss_recommendation(
-    vault_root: String,
-    rec_id: String,
-    store: State<'_, DismissedStore>,
-) -> Result<(), String> {
-    let key = vault_key(&vault_root)?;
-    let mut inner = lock_recovering(&store.inner);
-    inner
-        .by_vault
-        .entry(key)
-        .or_default()
-        .insert(rec_id);
-    inner.save();
-    Ok(())
-}
+// ---------- AppDb-backed commands (dismissed / recents / sessions) ----------
 
-/// Restore a previously dismissed recommendation. Useful when the user
-/// changes their mind.
-#[tauri::command]
-fn restore_recommendation(
-    vault_root: String,
-    rec_id: String,
-    store: State<'_, DismissedStore>,
-) -> Result<(), String> {
-    let key = vault_key(&vault_root)?;
-    let mut inner = lock_recovering(&store.inner);
-    if let Some(set) = inner.by_vault.get_mut(&key) {
-        set.remove(&rec_id);
-        if set.is_empty() {
-            inner.by_vault.remove(&key);
-        }
-    }
-    inner.save();
-    Ok(())
-}
-
-/// List dismissed recommendation ids for the given vault. Returned as a
-/// sorted vector so the frontend can use the value directly without
-/// re-sorting.
-#[tauri::command]
-fn list_dismissed(
-    vault_root: String,
-    store: State<'_, DismissedStore>,
-) -> Result<Vec<String>, String> {
-    let key = vault_key(&vault_root)?;
-    let inner = lock_recovering(&store.inner);
-    Ok(inner
-        .by_vault
-        .get(&key)
-        .map(|set| set.iter().cloned().collect())
-        .unwrap_or_default())
-}
-
-/// Clear all dismissals for the given vault. Useful as a "show all
-/// recommendations again" reset.
-#[tauri::command]
-fn clear_dismissals(
-    vault_root: String,
-    store: State<'_, DismissedStore>,
-) -> Result<(), String> {
-    let key = vault_key(&vault_root)?;
-    let mut inner = lock_recovering(&store.inner);
-    inner.by_vault.remove(&key);
-    inner.save();
-    Ok(())
-}
-
-/// Canonicalize the vault path so dismissals key off the same string
-/// regardless of how the frontend supplied it (with/without trailing
-/// slash, via symlink, etc.).
+/// Canonicalize the vault path so dismissals + sessions key off the
+/// same string regardless of how the frontend supplied it
+/// (with/without trailing slash, via symlink, etc.).
 fn vault_key(vault_root: &str) -> Result<String, String> {
     let path = PathBuf::from(vault_root)
         .canonicalize()
         .map_err(|e| format!("vault root not accessible: {vault_root}: {e}"))?;
     Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn dismiss_recommendation(
+    vault_root: String,
+    rec_id: String,
+    db: State<'_, vault_core::db::AppDb>,
+) -> Result<(), String> {
+    let key = vault_key(&vault_root)?;
+    db.dismiss_recommendation(&key, &rec_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn restore_recommendation(
+    vault_root: String,
+    rec_id: String,
+    db: State<'_, vault_core::db::AppDb>,
+) -> Result<(), String> {
+    let key = vault_key(&vault_root)?;
+    db.restore_recommendation(&key, &rec_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_dismissed(
+    vault_root: String,
+    db: State<'_, vault_core::db::AppDb>,
+) -> Result<Vec<String>, String> {
+    let key = vault_key(&vault_root)?;
+    db.list_dismissed(&key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn clear_dismissals(
+    vault_root: String,
+    db: State<'_, vault_core::db::AppDb>,
+) -> Result<(), String> {
+    let key = vault_key(&vault_root)?;
+    db.clear_dismissals(&key).map_err(|e| e.to_string())
+}
+
+// ---------- Recent vaults ----------
+
+#[tauri::command]
+fn record_recent_vault(
+    path: String,
+    db: State<'_, vault_core::db::AppDb>,
+) -> Result<(), String> {
+    let canonical = PathBuf::from(&path)
+        .canonicalize()
+        .map_err(|e| format!("vault path not accessible: {path}: {e}"))?
+        .to_string_lossy()
+        .to_string();
+    db.record_recent_vault(&canonical).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_recent_vaults(
+    db: State<'_, vault_core::db::AppDb>,
+) -> Result<Vec<vault_core::db::recents::RecentVault>, String> {
+    db.list_recent_vaults().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_recent_vault(
+    path: String,
+    db: State<'_, vault_core::db::AppDb>,
+) -> Result<(), String> {
+    db.remove_recent_vault(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn pin_recent_vault(
+    path: String,
+    pinned: bool,
+    db: State<'_, vault_core::db::AppDb>,
+) -> Result<(), String> {
+    db.pin_recent_vault(&path, pinned).map_err(|e| e.to_string())
+}
+
+// ---------- Session history ----------
+
+/// Upsert a chat / artifact-run session into the history store. Called
+/// from the frontend on `run:exit` (and on subsequent resume turns) so
+/// the conversation can be reopened later from the History tab.
+#[tauri::command]
+fn save_session(
+    input: vault_core::db::sessions::SaveSessionInput,
+    db: State<'_, vault_core::db::AppDb>,
+) -> Result<i64, String> {
+    db.save_session(input).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_sessions(
+    vault_root: String,
+    include_archived: bool,
+    db: State<'_, vault_core::db::AppDb>,
+) -> Result<Vec<vault_core::db::sessions::SessionSummary>, String> {
+    let key = vault_key(&vault_root)?;
+    db.list_sessions(&key, include_archived).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_session(
+    id: i64,
+    db: State<'_, vault_core::db::AppDb>,
+) -> Result<vault_core::db::sessions::SessionFull, String> {
+    db.get_session(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn archive_session(
+    id: i64,
+    archived: bool,
+    db: State<'_, vault_core::db::AppDb>,
+) -> Result<(), String> {
+    db.archive_session(id, archived).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_session(
+    id: i64,
+    db: State<'_, vault_core::db::AppDb>,
+) -> Result<(), String> {
+    db.delete_session(id).map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -689,22 +925,22 @@ pub fn run() {
             app.manage(WatchState::default());
             app.manage(RunState::default());
 
-            // Load persisted dismissals (best-effort) and stash the
-            // store so commands can mutate it. The persist path lives
-            // under the OS-standard per-app data dir so it survives
-            // across vault reopens and is private to this user/machine.
-            let persist_path = app
-                .path()
-                .app_local_data_dir()
-                .map(|d| d.join("dismissed.json"))
-                .ok();
-            let inner = match persist_path.as_ref() {
-                Some(p) => DismissedStoreInner::load_from(p),
-                None => DismissedStoreInner::default(),
-            };
-            app.manage(DismissedStore {
-                inner: Mutex::new(inner),
-            });
+            // Consolidated SQLite store. One file under
+            // app_local_data_dir holds sessions, dismissed
+            // recommendations, and the recent-vaults list. Before
+            // consolidation these were three separate persistence
+            // mechanisms; opening here also runs the one-shot
+            // migration from the legacy `sessions.db` filename plus
+            // any leftover JSON files.
+            //
+            // Failure to open is logged and the IDE keeps working;
+            // commands relying on the store will surface their own
+            // "store unavailable" errors.
+            if let Some(data_dir) = app.path().app_local_data_dir().ok() {
+                init_app_db(app, &data_dir);
+            } else {
+                eprintln!("no app_local_data_dir available — persistence disabled");
+            }
 
             Ok(())
         })
@@ -713,6 +949,7 @@ pub fn run() {
             demo_vault_path,
             preview_context,
             inspect_source_repo,
+            scan_project_vulnerabilities,
             read_markdown_file,
             write_markdown_file,
             create_markdown_file,
@@ -722,13 +959,24 @@ pub fn run() {
             stop_vault_watch,
             start_run,
             resume_run,
+            start_freeform_run,
+            resume_freeform_run,
             stop_run,
             get_run_status,
             compute_recommendations,
             dismiss_recommendation,
             restore_recommendation,
             list_dismissed,
-            clear_dismissals
+            clear_dismissals,
+            save_session,
+            list_sessions,
+            get_session,
+            archive_session,
+            delete_session,
+            record_recent_vault,
+            list_recent_vaults,
+            remove_recent_vault,
+            pin_recent_vault
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

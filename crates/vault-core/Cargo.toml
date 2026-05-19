@@ -13,3 +13,15 @@ walkdir = "2"
 thiserror = "2"
 notify = "8"
 notify-debouncer-full = "0.7"
+# Sync HTTP client for OSV.dev vulnerability queries. Chosen over reqwest
+# to avoid pulling in a tokio runtime — Tauri commands already run on a
+# blocking thread pool, so a sync client is the simpler fit.
+ureq = { version = "2", features = ["json"] }
+# Bundled SQLite for session history storage. `bundled` compiles
+# sqlite3 from source so we don't depend on the host system having it
+# (matters for the Tauri-packaged build crossing dev machines).
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[dev-dependencies]
+# Temp directories for migration-shim tests that need real files on disk.
+tempfile = "3"

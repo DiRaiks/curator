@@ -1,23 +1,40 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import {
+  archiveSession,
+  deleteSession,
   getRunStatus,
+  getSession,
+  listSessions,
   onRunEvents,
+  resumeFreeformRun,
   resumeRun,
+  saveSession,
+  startFreeformRun,
   stopRun,
   type RunExitEvent,
   type RunStartedEvent,
 } from "../api";
+import type { Project, SessionFull, SessionSummary } from "../types";
 import { Tooltip } from "./Tooltip";
 
 /**
- * Persistent bottom drawer that streams the active run's output. The slice 1
- * shape is intentionally rigid:
+ * Persistent bottom drawer that streams the active run's output and hosts
+ * the free-form chat input.
  *
- * - fixed height (resize handle is slice 2)
- * - single run at a time (the Tauri shell rejects concurrent starts)
- * - in-memory output only, never persisted to disk
- * - manual collapse hides the panel; the next run auto-expands it again
+ * The chat input is always available when the panel is expanded — Send
+ * either starts a fresh freeform run (idle / fresh state) or replies to
+ * the captured session (exited + session id available). The "New chat"
+ * button discards an exited session so the user can start over without
+ * the prior conversation context.
  *
  * Lines are stored as `{ kind, text }` so the renderer can color stderr
  * differently. We don't word-wrap programmatically — the `<pre>` does it
@@ -67,21 +84,62 @@ const EMPTY_USAGE: SessionUsage = {
 
 const MAX_RETAINED_LINES = 5000;
 
-export function RunPanel() {
+/** Sentinel scope value for "no project — run inside the vault". */
+const VAULT_SCOPE = "__vault__";
+
+interface RunPanelProps {
+  /** Canonical vault root. Forwarded to `start_freeform_run`. */
+  vaultRoot: string;
+  /** All projects from the current scan. The scope dropdown filters down
+   *  to those with a `localPath` (the rest can't be a cwd target). */
+  projects: Project[];
+}
+
+/** Imperative handle exposed to Dashboard so the History tab can ask
+ *  the panel to reopen a saved session without lifting state up. */
+export interface RunPanelHandle {
+  reopenSession: (session: SessionFull) => void;
+}
+
+export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
+  function RunPanel({ vaultRoot, projects }, ref) {
   const [status, setStatus] = useState<RunStatus>({ kind: "idle" });
   const [lines, setLines] = useState<OutputLine[]>([]);
   const [collapsed, setCollapsed] = useState(true);
   const outputRef = useRef<HTMLPreElement | null>(null);
 
   // Claude session id captured from the first `system init` event in the
-  // stream. Once it's set, the user can resume the conversation via the
-  // Reply box after the run exits. It survives `run:started` of a resumed
+  // stream. Once it's set, the user can continue the conversation via the
+  // chat input after the run exits. It survives `run:started` of a resumed
   // run (claude reuses the same session id under `--resume`).
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [replyDraft, setReplyDraft] = useState("");
+  const [chatDraft, setChatDraft] = useState("");
   const [sending, setSending] = useState(false);
-  const [replyError, setReplyError] = useState<string | null>(null);
+  const [chatError, setChatError] = useState<string | null>(null);
   const [usage, setUsage] = useState<SessionUsage>(EMPTY_USAGE);
+  const [selectedScope, setSelectedScope] = useState<string>(VAULT_SCOPE);
+
+  // Session-history bookkeeping. `pendingTitle` is set when the user
+  // sends a fresh freeform message — it survives the run lifecycle and
+  // becomes the History row's title at save time. `startedAtMs` marks
+  // the wall-clock origin so the History view can sort by recency
+  // independent of run order.
+  const [pendingTitle, setPendingTitle] = useState<string | null>(null);
+  const [startedAtMs, setStartedAtMs] = useState<number | null>(null);
+
+  // Recent active sessions, populated when the user opens the dropdown.
+  // Lazy-loaded so the panel mount cost stays unchanged for users who
+  // never touch the chat history.
+  const [recentSessions, setRecentSessions] = useState<SessionSummary[] | null>(null);
+  const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
+  const [sessionMenuError, setSessionMenuError] = useState<string | null>(null);
+
+  // Projects eligible as a chat scope. Without a `localPath` the backend
+  // can't validate/canonicalize a cwd, so the project can't be a target.
+  const scopeOptions = useMemo(
+    () => projects.filter((p) => p.localPath != null),
+    [projects],
+  );
 
   // Append helper — caps the retained tail at MAX_RETAINED_LINES so a
   // pathological run doesn't blow up the DOM. The backend's own 4 MB cap
@@ -122,8 +180,10 @@ export function RunPanel() {
               promptId: "?",
               vaultRoot: "",
               workdir: "",
+              additionalDirs: [],
               runner: "claude-code",
               resume: false,
+              freeform: false,
             },
           });
           setCollapsed(false);
@@ -157,14 +217,18 @@ export function RunPanel() {
             ]);
             setSessionId(null);
             setUsage(EMPTY_USAGE);
+            // Mark the wall-clock start so the History row's
+            // started_at_ms matches the user's perception of when the
+            // conversation began.
+            setStartedAtMs(Date.now());
           }
-          setReplyDraft("");
-          setReplyError(null);
+          setChatDraft("");
+          setChatError(null);
           setStatus({ kind: "running", started: ev });
           setCollapsed(false);
         },
         onStdout: (ev) => {
-          // Capture the session id once per stream so the Reply box can
+          // Capture the session id once per stream so the chat input can
           // resume the conversation after exit. Subsequent system events
           // in the same run carry the same id; setSessionId is idempotent
           // on identical values.
@@ -252,51 +316,133 @@ export function RunPanel() {
   }, []);
 
   /**
-   * Reply box is shown only when:
-   * - the run has finished (so we're not racing with claude's stdin), AND
-   * - we captured a session id from the stream (resume target known), AND
-   * - we still know the (project, prompt) we ran against (so the backend
-   *   can re-derive cwd / `--add-dir` for the resumed spawn).
+   * Whether the chat input is currently continuing an existing session
+   * (Reply path) vs. starting a fresh freeform run. True iff:
+   * - the previous run has exited, AND
+   * - we captured a session id from its stream, AND
+   * - we still know what context that run ran against.
    */
-  const canReply =
+  const canResume =
     status.kind === "exited" &&
     sessionId !== null &&
     status.started !== null;
 
-  const onSendReply = useCallback(async () => {
-    if (status.kind !== "exited" || status.started === null || sessionId === null) {
-      return;
+  // The scope dropdown locks to the active session's scope when resuming —
+  // switching scope mid-conversation would change cwd / --add-dir for the
+  // spawned process and almost certainly confuse the agent.
+  const effectiveScope = useMemo(() => {
+    if (canResume && status.kind === "exited" && status.started !== null) {
+      const slug = status.started.projectSlug;
+      // "(vault)" is the sentinel `start_freeform_run` uses when no
+      // project scope was selected. Artifact runs carry the real slug.
+      if (slug === "(vault)") return VAULT_SCOPE;
+      if (scopeOptions.some((p) => p.slug === slug)) return slug;
+      // Original scope project isn't in the current scan (renamed,
+      // removed); fall back to vault so the dropdown still has a value.
+      return VAULT_SCOPE;
     }
-    const trimmed = replyDraft.trim();
-    if (trimmed === "") return;
-    const started = status.started;
-    // Defensive: if mount-time sync ever fails to recover real context
-    // (backend doesn't know about the run, ancient IDE state, etc.),
-    // surface a clear error instead of relaying the cryptic
-    // "vault root not accessible: <empty>" the spawn would emit.
-    if (started.vaultRoot === "" || started.projectSlug === "(in progress)") {
-      setReplyError(
-        "Lost track of which vault this run started against — try a fresh run.",
-      );
-      return;
-    }
+    return selectedScope;
+  }, [canResume, status, scopeOptions, selectedScope]);
+
+  const scopeLocked =
+    canResume ||
+    status.kind === "running" ||
+    status.kind === "stopping";
+
+  /**
+   * Discard the captured session and clear the output / usage so the
+   * next Send starts a fresh freeform run. Only available when there's
+   * an exited run to discard — the button just doesn't render otherwise.
+   */
+  const onNewChat = useCallback(() => {
+    setStatus({ kind: "idle" });
+    setLines([]);
+    setSessionId(null);
+    setUsage(EMPTY_USAGE);
+    setChatDraft("");
+    setChatError(null);
+    setPendingTitle(null);
+    setStartedAtMs(null);
+  }, []);
+
+  const onSend = useCallback(async () => {
+    if (sending) return;
+    if (status.kind === "running" || status.kind === "stopping") return;
+    const text = chatDraft.trim();
+    if (text === "") return;
+
+    setChatError(null);
     setSending(true);
-    setReplyError(null);
+
     try {
-      await resumeRun({
-        vaultRoot: started.vaultRoot,
-        projectSlug: started.projectSlug,
-        promptId: started.promptId,
-        sessionId,
-        reply: trimmed,
+      // Continue an existing session.
+      if (
+        canResume &&
+        status.kind === "exited" &&
+        status.started !== null &&
+        sessionId !== null
+      ) {
+        const started = status.started;
+        // Defensive: if mount-time sync ever fails to recover real
+        // context (backend doesn't know about the run, ancient IDE
+        // state), surface a clear error instead of relaying the cryptic
+        // "vault root not accessible: <empty>" the spawn would emit.
+        if (started.vaultRoot === "" || started.projectSlug === "(in progress)") {
+          throw new Error(
+            "Lost track of which vault this run started against — click New chat.",
+          );
+        }
+        if (started.freeform) {
+          await resumeFreeformRun({
+            vaultRoot: started.vaultRoot,
+            workdir: started.workdir,
+            additionalDirs: started.additionalDirs,
+            projectSlug: started.projectSlug,
+            sessionId,
+            reply: text,
+          });
+        } else {
+          await resumeRun({
+            vaultRoot: started.vaultRoot,
+            projectSlug: started.projectSlug,
+            promptId: started.promptId,
+            sessionId,
+            reply: text,
+          });
+        }
+        return;
+      }
+
+      // Fresh freeform run. Capture the user's first message as the
+      // pending title BEFORE startFreeformRun resolves and the
+      // onStarted handler clears the draft. The title persists across
+      // the run lifecycle and surfaces as the History row's heading.
+      setPendingTitle(text.slice(0, 200));
+      const scopeProject =
+        effectiveScope === VAULT_SCOPE
+          ? null
+          : scopeOptions.find((p) => p.slug === effectiveScope) ?? null;
+      await startFreeformRun({
+        vaultRoot,
+        prompt: text,
+        scopeProjectSlug: scopeProject?.slug,
+        scopeRepoPath: scopeProject?.localPath ?? undefined,
       });
-      // `run:started` flips status to "running" and clears replyDraft.
     } catch (err) {
-      setReplyError(err instanceof Error ? err.message : String(err));
+      setChatError(err instanceof Error ? err.message : String(err));
     } finally {
       setSending(false);
     }
-  }, [status, sessionId, replyDraft]);
+  }, [
+    sending,
+    status,
+    chatDraft,
+    canResume,
+    sessionId,
+    effectiveScope,
+    scopeOptions,
+    vaultRoot,
+  ]);
 
   const onStop = useCallback(async () => {
     if (status.kind !== "running") return;
@@ -319,19 +465,232 @@ export function RunPanel() {
     }
   }, [status, appendLine]);
 
-  const statusLabel = useMemo(() => describeStatus(status), [status]);
+  // ---------- Session persistence ----------
 
-  if (collapsed && status.kind === "idle") return null;
+  // Persist the run when it exits. Upserts by `(vault_root,
+  // claude_session_id)` so reply turns within the same Claude session
+  // overwrite the same DB row, growing the saved output buffer with
+  // each turn. We run on every transition INTO "exited" — including
+  // user-initiated Stop, which also lands here via the `run:exit`
+  // event after the runner shuts the subprocess down.
+  useEffect(() => {
+    if (status.kind !== "exited") return;
+    if (sessionId === null) return;
+    if (status.started === null) return;
+    // Skip placeholder context from a failed mount-time sync — saving
+    // with empty vault_root would create a junk row keyed under "".
+    if (status.started.vaultRoot === "") return;
+
+    const started = status.started;
+    const exit = status.exit;
+    const title = pendingTitle ?? `${started.projectSlug}/${started.promptId}`;
+    const started_at = startedAtMs ?? Date.now();
+
+    void saveSession({
+      vaultRoot: started.vaultRoot,
+      claudeSessionId: sessionId,
+      projectSlug: started.projectSlug,
+      promptId: started.promptId,
+      workdir: started.workdir,
+      additionalDirs: started.additionalDirs,
+      freeform: started.freeform,
+      title,
+      outputLines: lines.map((l) => ({ kind: l.kind, text: l.text })),
+      startedAtMs: started_at,
+      endedAtMs: Date.now(),
+      exitCode: exit.code,
+      exitSuccess: exit.success,
+      usage: {
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cacheCreationTokens: usage.cacheCreationTokens,
+        cacheReadTokens: usage.cacheReadTokens,
+        costUsd: usage.costUsd,
+        model: usage.model,
+      },
+    }).catch((err) => {
+      // Persistence is best-effort — don't blow up the UI. Surface a
+      // small line so the user knows the run won't appear in history.
+      const text = err instanceof Error ? err.message : String(err);
+      appendLine({
+        kind: "system",
+        text: `! failed to save chat to history: ${text}`,
+      });
+    });
+    // We deliberately depend only on `status` here. `lines`, `usage`,
+    // etc. are read at the moment status flips to "exited" (which is
+    // the same render where their final values land via the same
+    // event-handler batch). Adding them to deps would trigger spurious
+    // re-saves on every render while exited (e.g. if the user types
+    // in the chat input).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+
+  // ---------- Reopen flow ----------
+
+  const reopenSession = useCallback((session: SessionFull) => {
+    // Restore the run state as if the saved run had just exited. The
+    // Reply path then handles `resume_*_run` using the captured session
+    // id and stashed context.
+    const synthStarted: RunStartedEvent = {
+      projectSlug: session.summary.projectSlug,
+      promptId: session.summary.promptId,
+      vaultRoot: session.summary.vaultRoot,
+      workdir: session.workdir,
+      additionalDirs: session.additionalDirs,
+      runner: "claude-code",
+      resume: false,
+      freeform: session.summary.freeform,
+    };
+    setStatus({
+      kind: "exited",
+      exit: {
+        code: session.summary.exitSuccess === false ? 1 : 0,
+        success: session.summary.exitSuccess ?? true,
+      },
+      started: synthStarted,
+    });
+    setLines(
+      session.outputLines.map((l) => ({
+        kind: l.kind as LineKind,
+        text: l.text,
+      })),
+    );
+    setSessionId(session.summary.claudeSessionId);
+    setUsage({
+      inputTokens: session.summary.inputTokens,
+      outputTokens: session.summary.outputTokens,
+      // Cache split isn't persisted separately on the summary row, so
+      // restore the visible total but leave the cache buckets at zero.
+      // Subsequent resume turns will re-accumulate them live.
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      costUsd: session.summary.costUsd,
+      model: session.summary.model,
+    });
+    setPendingTitle(session.summary.title);
+    setStartedAtMs(session.summary.startedAtMs);
+    setChatDraft("");
+    setChatError(null);
+    setCollapsed(false);
+    setSessionMenuOpen(false);
+  }, []);
+
+  useImperativeHandle(ref, () => ({ reopenSession }), [reopenSession]);
+
+  // ---------- Session quick-switch dropdown ----------
+
+  const openSessionMenu = useCallback(async () => {
+    setSessionMenuOpen((open) => !open);
+    if (recentSessions !== null) return; // already loaded
+    try {
+      const list = await listSessions(vaultRoot, false);
+      setRecentSessions(list);
+      setSessionMenuError(null);
+    } catch (err) {
+      setSessionMenuError(err instanceof Error ? err.message : String(err));
+    }
+  }, [recentSessions, vaultRoot]);
+
+  // Invalidate the dropdown cache when the panel saves a new exit —
+  // otherwise reopening the menu would show a stale list missing the
+  // run that just finished.
+  useEffect(() => {
+    if (status.kind === "exited") {
+      setRecentSessions(null);
+    }
+  }, [status.kind]);
+
+  const onPickSessionFromMenu = useCallback(
+    async (summary: SessionSummary) => {
+      try {
+        const full = await getSession(summary.id);
+        reopenSession(full);
+      } catch (err) {
+        setSessionMenuError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [reopenSession],
+  );
+
+  /**
+   * Refresh the dropdown cache without closing the popover, so the user
+   * can chain multiple actions (archive one, delete another) without
+   * the menu flickering away after each click.
+   */
+  const refreshSessionMenu = useCallback(async () => {
+    try {
+      const list = await listSessions(vaultRoot, false);
+      setRecentSessions(list);
+      setSessionMenuError(null);
+    } catch (err) {
+      setSessionMenuError(err instanceof Error ? err.message : String(err));
+    }
+  }, [vaultRoot]);
+
+  const onArchiveFromMenu = useCallback(
+    async (summary: SessionSummary) => {
+      try {
+        await archiveSession(summary.id, !summary.archived);
+        await refreshSessionMenu();
+      } catch (err) {
+        setSessionMenuError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [refreshSessionMenu],
+  );
+
+  const onDeleteFromMenu = useCallback(
+    async (summary: SessionSummary) => {
+      // Confirm before deleting — the action is irreversible and the
+      // icon target is small, so a stray click shouldn't wipe a chat.
+      const ok = window.confirm(
+        `Delete this chat from history?\n\n"${summary.title}"\n\nThis cannot be undone.`,
+      );
+      if (!ok) return;
+      try {
+        await deleteSession(summary.id);
+        // If we just deleted the currently-active session, drop the
+        // exited state too — there's no row to upsert into on resume.
+        if (summary.claudeSessionId === sessionId) {
+          setStatus({ kind: "idle" });
+          setLines([]);
+          setSessionId(null);
+          setUsage(EMPTY_USAGE);
+          setPendingTitle(null);
+          setStartedAtMs(null);
+        }
+        await refreshSessionMenu();
+      } catch (err) {
+        setSessionMenuError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [refreshSessionMenu, sessionId],
+  );
+
+  const statusLabel = useMemo(() => describeStatus(status), [status]);
+  const showChatInput =
+    !collapsed && status.kind !== "running" && status.kind !== "stopping";
 
   return (
     <aside
-      className={
-        "run-panel" + (collapsed ? " run-panel--collapsed" : "")
-      }
+      className={"run-panel" + (collapsed ? " run-panel--collapsed" : "")}
       aria-label="Agent run output"
     >
       <header className="run-panel__header">
-        <span className="run-panel__title">Run</span>
+        <span className="run-panel__title">Chat</span>
+        <SessionMenuButton
+          open={sessionMenuOpen}
+          loading={recentSessions === null && sessionMenuError === null}
+          sessions={recentSessions ?? []}
+          error={sessionMenuError}
+          activeSessionId={sessionId}
+          onToggle={() => void openSessionMenu()}
+          onPick={(s) => void onPickSessionFromMenu(s)}
+          onArchive={(s) => void onArchiveFromMenu(s)}
+          onDelete={(s) => void onDeleteFromMenu(s)}
+          onDismiss={() => setSessionMenuOpen(false)}
+        />
         <span className={"run-panel__status run-panel__status--" + status.kind}>
           {statusLabel}
         </span>
@@ -365,6 +724,16 @@ export function RunPanel() {
             Stopping…
           </button>
         )}
+        {canResume && (
+          <button
+            type="button"
+            className="btn btn--small"
+            onClick={onNewChat}
+            title="Discard the current session and start a fresh chat"
+          >
+            New chat
+          </button>
+        )}
         <button
           type="button"
           className="btn btn--small"
@@ -374,68 +743,242 @@ export function RunPanel() {
           {collapsed ? "Show" : "Hide"}
         </button>
       </header>
-      {!collapsed && (
+      {!collapsed && lines.length > 0 && (
         <pre
           ref={outputRef}
           className="run-panel__output"
           onScroll={onScroll}
         >
-          {lines.length === 0 ? (
-            <span className="run-panel__empty">No output yet.</span>
-          ) : (
-            lines.map((l, i) => (
-              <span
-                key={i}
-                className={"run-panel__line run-panel__line--" + l.kind}
-              >
-                {l.text}
-                {"\n"}
-              </span>
-            ))
-          )}
+          {lines.map((l, i) => (
+            <span
+              key={i}
+              className={"run-panel__line run-panel__line--" + l.kind}
+            >
+              {l.text}
+              {"\n"}
+            </span>
+          ))}
         </pre>
       )}
-      {!collapsed && canReply && (
+      {showChatInput && (
         <form
-          className="run-panel__reply"
+          className="run-panel__chat"
           onSubmit={(e) => {
             e.preventDefault();
-            void onSendReply();
+            void onSend();
           }}
         >
+          <div className="run-panel__chat-scope">
+            <label
+              htmlFor="run-panel-scope"
+              className="run-panel__chat-scope-label"
+            >
+              Scope:
+            </label>
+            <select
+              id="run-panel-scope"
+              className="run-panel__chat-scope-select"
+              value={effectiveScope}
+              onChange={(e) => setSelectedScope(e.target.value)}
+              disabled={scopeLocked}
+              title={
+                scopeLocked
+                  ? "Scope is locked while continuing this session"
+                  : "Where the agent runs. 'Vault only' runs in the vault; selecting a project runs in its repo with the vault available via --add-dir."
+              }
+            >
+              <option value={VAULT_SCOPE}>Vault only</option>
+              {scopeOptions.map((p) => (
+                <option key={p.slug} value={p.slug}>
+                  {p.slug} (repo)
+                </option>
+              ))}
+            </select>
+          </div>
           <textarea
-            className="run-panel__reply-input"
-            value={replyDraft}
-            onChange={(e) => setReplyDraft(e.target.value)}
-            placeholder="Reply to the agent — answer questions, refine, or continue. Cmd/Ctrl+Enter to send."
-            rows={2}
+            className="run-panel__chat-input"
+            value={chatDraft}
+            onChange={(e) => setChatDraft(e.target.value)}
+            placeholder={
+              canResume
+                ? "Reply to continue the conversation. Cmd/Ctrl+Enter to send."
+                : "Ask the agent to read, create, or edit files. Cmd/Ctrl+Enter to send."
+            }
+            rows={3}
             disabled={sending}
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
                 e.preventDefault();
-                void onSendReply();
+                void onSend();
               }
             }}
-            aria-label="Reply to the agent"
+            aria-label={canResume ? "Reply to the agent" : "Message to the agent"}
           />
-          <div className="run-panel__reply-actions">
-            {replyError && (
-              <span className="run-panel__reply-error" role="alert">
-                {replyError}
+          <div className="run-panel__chat-actions">
+            {chatError && (
+              <span className="run-panel__chat-error" role="alert">
+                {chatError}
               </span>
             )}
             <button
               type="submit"
               className="btn btn--primary btn--small"
-              disabled={sending || replyDraft.trim() === ""}
+              disabled={sending || chatDraft.trim() === ""}
             >
-              {sending ? "Sending…" : "Send"}
+              {sending
+                ? canResume
+                  ? "Replying…"
+                  : "Sending…"
+                : canResume
+                  ? "Reply"
+                  : "Send"}
             </button>
           </div>
         </form>
       )}
     </aside>
   );
+  },
+);
+
+interface SessionMenuButtonProps {
+  open: boolean;
+  loading: boolean;
+  sessions: SessionSummary[];
+  error: string | null;
+  activeSessionId: string | null;
+  onToggle: () => void;
+  onPick: (s: SessionSummary) => void;
+  onArchive: (s: SessionSummary) => void;
+  onDelete: (s: SessionSummary) => void;
+  onDismiss: () => void;
+}
+
+/**
+ * Compact "History" dropdown in the chat panel header. Each row exposes
+ * the same three actions the History tab offers (reopen / archive /
+ * delete) so the user doesn't have to leave the chat panel to clean up
+ * their list. The full History tab remains the place for bulk review,
+ * filtering, and surfacing archived items.
+ */
+function SessionMenuButton({
+  open,
+  loading,
+  sessions,
+  error,
+  activeSessionId,
+  onToggle,
+  onPick,
+  onArchive,
+  onDelete,
+  onDismiss,
+}: SessionMenuButtonProps) {
+  const visible = sessions.slice(0, 12);
+  return (
+    <div className="run-panel__history">
+      <button
+        type="button"
+        className="btn btn--small run-panel__history-toggle"
+        onClick={onToggle}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title="Reopen, archive, or delete recent chats"
+      >
+        ⌛ History
+      </button>
+      {open && (
+        <>
+          <div
+            className="run-panel__history-scrim"
+            onClick={onDismiss}
+            aria-hidden="true"
+          />
+          <div className="run-panel__history-menu" role="listbox">
+            {loading && (
+              <div className="run-panel__history-empty">Loading…</div>
+            )}
+            {error && (
+              <div className="run-panel__history-empty run-panel__history-empty--err">
+                {error}
+              </div>
+            )}
+            {!loading && !error && visible.length === 0 && (
+              <div className="run-panel__history-empty">
+                No saved chats yet.
+              </div>
+            )}
+            {!loading &&
+              !error &&
+              visible.map((s) => (
+                <div
+                  key={s.id}
+                  className={
+                    "run-panel__history-item" +
+                    (s.claudeSessionId === activeSessionId
+                      ? " run-panel__history-item--active"
+                      : "")
+                  }
+                >
+                  <button
+                    type="button"
+                    className="run-panel__history-item-main"
+                    onClick={() => onPick(s)}
+                    title={s.title}
+                  >
+                    <span className="run-panel__history-item-title">
+                      {truncateTitle(s.title)}
+                    </span>
+                    <span className="run-panel__history-item-meta">
+                      {s.freeform ? "chat" : s.projectSlug} ·{" "}
+                      {formatRelativeMs(s.startedAtMs)}
+                    </span>
+                  </button>
+                  <div className="run-panel__history-item-actions">
+                    <button
+                      type="button"
+                      className="run-panel__history-item-action"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onArchive(s);
+                      }}
+                      title="Archive — exempt from auto-trim"
+                      aria-label="Archive chat"
+                    >
+                      📥
+                    </button>
+                    <button
+                      type="button"
+                      className="run-panel__history-item-action run-panel__history-item-action--danger"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDelete(s);
+                      }}
+                      title="Delete permanently"
+                      aria-label="Delete chat"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function truncateTitle(s: string): string {
+  if (s.length <= 60) return s;
+  return s.slice(0, 59) + "…";
+}
+
+function formatRelativeMs(ms: number): string {
+  const diff = Date.now() - ms;
+  if (diff < 60_000) return "just now";
+  if (diff < 3600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
 function describeStatus(status: RunStatus): string {
@@ -687,16 +1230,17 @@ function renderClaudeStreamLine(raw: string): RenderedLine[] {
     case "user":
       return renderMessageContent(obj, "user");
     case "result": {
+      // `result.result` is a recap of the final assistant message that we
+      // already rendered from the `assistant.message.content[].text` block,
+      // so we deliberately don't emit it here — otherwise the answer
+      // appears twice. Only render the result marker line itself.
       const subtype = readString(obj, "subtype") ?? "?";
-      const result = readString(obj, "result");
       const duration = readNumber(obj, "duration_ms");
       const cost = readNumber(obj, "total_cost_usd");
       const parts = [`◆ result: ${subtype}`];
       if (duration != null) parts.push(`${Math.round(duration / 1000)}s`);
       if (cost != null) parts.push(`$${cost.toFixed(4)}`);
-      const out: RenderedLine[] = [{ kind: "system", text: parts.join(" · ") }];
-      if (result) out.push({ kind: "stdout", text: result });
-      return out;
+      return [{ kind: "system", text: parts.join(" · ") }];
     }
     case "rate_limit_event": {
       // Top-level rate-limit pings — too chatty to show inline and

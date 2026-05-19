@@ -51,3 +51,7 @@ pub mod watch;
 pub mod runner;
 
 pub mod recommendations;
+
+pub mod cve;
+
+pub mod db;
