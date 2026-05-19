@@ -36,6 +36,34 @@ type RunStatus =
   | { kind: "stopping"; started: RunStartedEvent }
   | { kind: "exited"; exit: RunExitEvent; started: RunStartedEvent | null };
 
+/**
+ * Cumulative usage across all turns of the current Claude session.
+ * Resets to `EMPTY_USAGE` on a fresh `start_run`, persists across
+ * `resume_run` turns within the same `session_id`.
+ *
+ * Tokens are summed live from `message.usage` on every `assistant`
+ * event. `costUsd` is summed from each turn's `result` event — claude
+ * only reports cost at the end of a turn, so the header cost lags the
+ * token counters by one turn boundary.
+ */
+interface SessionUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  costUsd: number;
+  model: string | null;
+}
+
+const EMPTY_USAGE: SessionUsage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheCreationTokens: 0,
+  cacheReadTokens: 0,
+  costUsd: 0,
+  model: null,
+};
+
 const MAX_RETAINED_LINES = 5000;
 
 export function RunPanel() {
@@ -52,6 +80,7 @@ export function RunPanel() {
   const [replyDraft, setReplyDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [replyError, setReplyError] = useState<string | null>(null);
+  const [usage, setUsage] = useState<SessionUsage>(EMPTY_USAGE);
 
   // Append helper — caps the retained tail at MAX_RETAINED_LINES so a
   // pathological run doesn't blow up the DOM. The backend's own 4 MB cap
@@ -115,7 +144,8 @@ export function RunPanel() {
           } else {
             // Fresh run: drop the previous output buffer and the prior
             // session id (the new stream will emit a new system init
-            // with its own session id).
+            // with its own session id). Usage counters also reset —
+            // they're per-session.
             setLines([
               {
                 kind: "system",
@@ -123,6 +153,7 @@ export function RunPanel() {
               },
             ]);
             setSessionId(null);
+            setUsage(EMPTY_USAGE);
           }
           setReplyDraft("");
           setReplyError(null);
@@ -136,6 +167,14 @@ export function RunPanel() {
           // on identical values.
           const sid = extractClaudeSessionId(ev.line);
           if (sid) setSessionId(sid);
+          // Accumulate usage / cost from this line. Token deltas come
+          // from `assistant.message.usage`; final per-turn cost comes
+          // from the `result` event. Both contribute to the running
+          // total displayed in the header.
+          const delta = extractClaudeUsageDelta(ev.line);
+          if (delta) {
+            setUsage((prev) => mergeUsage(prev, delta));
+          }
           for (const rendered of renderClaudeStreamLine(ev.line)) {
             appendLine({ kind: rendered.kind, text: rendered.text });
           }
@@ -283,6 +322,15 @@ export function RunPanel() {
         <span className={"run-panel__status run-panel__status--" + status.kind}>
           {statusLabel}
         </span>
+        {hasUsage(usage) && (
+          <span
+            className="run-panel__usage"
+            title={formatUsageTooltip(usage)}
+            aria-label="Session usage"
+          >
+            {formatUsageSummary(usage)}
+          </span>
+        )}
         {status.kind === "running" && (
           <button
             type="button"
@@ -395,6 +443,152 @@ function describeStatus(status: RunStatus): string {
  * don't recognise — the caller treats absence as "stick with whatever
  * we already had".
  */
+// ---------- Session usage tracking ----------
+
+/**
+ * A single line's contribution to cumulative usage. Token deltas come
+ * from `assistant.message.usage`; cost deltas come from `result.total_cost_usd`.
+ * `model` is captured from the first `system init` event we see.
+ */
+interface UsageDelta {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  costUsd: number;
+  model: string | null;
+}
+
+function extractClaudeUsageDelta(raw: string): UsageDelta | null {
+  const trimmed = raw.trim();
+  if (trimmed === "" || trimmed[0] !== "{") return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed)) return null;
+  const type = readString(parsed, "type");
+
+  if (type === "system") {
+    // System init carries the model — capture it once so the tooltip can
+    // show what's running. No token deltas here.
+    const model = readString(parsed, "model");
+    if (model) {
+      return {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+        costUsd: 0,
+        model,
+      };
+    }
+    return null;
+  }
+
+  if (type === "assistant") {
+    const message = parsed["message"];
+    if (!isRecord(message)) return null;
+    const usage = message["usage"];
+    if (!isRecord(usage)) return null;
+    return {
+      inputTokens: readNumber(usage, "input_tokens") ?? 0,
+      outputTokens: readNumber(usage, "output_tokens") ?? 0,
+      cacheCreationTokens: readNumber(usage, "cache_creation_input_tokens") ?? 0,
+      cacheReadTokens: readNumber(usage, "cache_read_input_tokens") ?? 0,
+      costUsd: 0,
+      model: null,
+    };
+  }
+
+  if (type === "result") {
+    // Final cost arrives at the end of each turn. We add it to the
+    // session running total. The result envelope's `usage` block
+    // repeats per-turn token counts that are already accounted for by
+    // assistant events, so we don't double-count tokens here.
+    const cost = readNumber(parsed, "total_cost_usd");
+    if (cost == null) return null;
+    return {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      costUsd: cost,
+      model: null,
+    };
+  }
+
+  return null;
+}
+
+function mergeUsage(prev: SessionUsage, delta: UsageDelta): SessionUsage {
+  return {
+    inputTokens: prev.inputTokens + delta.inputTokens,
+    outputTokens: prev.outputTokens + delta.outputTokens,
+    cacheCreationTokens: prev.cacheCreationTokens + delta.cacheCreationTokens,
+    cacheReadTokens: prev.cacheReadTokens + delta.cacheReadTokens,
+    costUsd: prev.costUsd + delta.costUsd,
+    model: delta.model ?? prev.model,
+  };
+}
+
+function hasUsage(u: SessionUsage): boolean {
+  return (
+    u.inputTokens > 0 ||
+    u.outputTokens > 0 ||
+    u.cacheReadTokens > 0 ||
+    u.cacheCreationTokens > 0 ||
+    u.costUsd > 0
+  );
+}
+
+function formatTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) {
+    const k = n / 1000;
+    return k >= 100 ? `${Math.round(k)}K` : `${k.toFixed(1).replace(/\.0$/, "")}K`;
+  }
+  return `${(n / 1_000_000).toFixed(2)}M`;
+}
+
+function formatCost(usd: number): string {
+  if (usd === 0) return "$0";
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  if (usd < 1) return `$${usd.toFixed(3)}`;
+  return `$${usd.toFixed(2)}`;
+}
+
+function formatUsageSummary(u: SessionUsage): string {
+  const totalIn =
+    u.inputTokens + u.cacheCreationTokens + u.cacheReadTokens;
+  const parts: string[] = [];
+  if (totalIn > 0) parts.push(`${formatTokens(totalIn)} in`);
+  if (u.outputTokens > 0) parts.push(`${formatTokens(u.outputTokens)} out`);
+  if (u.costUsd > 0) parts.push(formatCost(u.costUsd));
+  return parts.join(" · ");
+}
+
+function formatUsageTooltip(u: SessionUsage): string {
+  const lines: string[] = [];
+  lines.push("Session usage (cumulative across resume turns)");
+  if (u.model) lines.push(`Model: ${u.model}`);
+  lines.push("");
+  const totalIn =
+    u.inputTokens + u.cacheCreationTokens + u.cacheReadTokens;
+  lines.push(`Input total: ${totalIn.toLocaleString()} tokens`);
+  if (u.inputTokens > 0)
+    lines.push(`  Fresh: ${u.inputTokens.toLocaleString()}`);
+  if (u.cacheCreationTokens > 0)
+    lines.push(`  Cache create: ${u.cacheCreationTokens.toLocaleString()}`);
+  if (u.cacheReadTokens > 0)
+    lines.push(`  Cache read: ${u.cacheReadTokens.toLocaleString()}`);
+  lines.push(`Output: ${u.outputTokens.toLocaleString()} tokens`);
+  if (u.costUsd > 0) lines.push(`Cost so far: ${formatCost(u.costUsd)}`);
+  return lines.join("\n");
+}
+
 function extractClaudeSessionId(raw: string): string | null {
   const trimmed = raw.trim();
   if (trimmed === "" || trimmed[0] !== "{") return null;

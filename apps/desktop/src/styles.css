@@ -1503,6 +1503,22 @@ button {
   color: var(--muted);
 }
 
+/* Session usage chip — tokens + cost, summed across resume turns.
+ * Sits between status and the action buttons so it's always glanceable
+ * but doesn't compete with the run state for primary attention. */
+.run-panel__usage {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: color-mix(in srgb, var(--accent) 80%, var(--text));
+  white-space: nowrap;
+  cursor: help;
+  /* Tooltip is multi-line plain text via the `title` attribute, so we
+   * don't need fancy positioning. Native tooltip is good enough. */
+}
+
 .run-panel__output {
   flex: 1;
   min-height: 0;
