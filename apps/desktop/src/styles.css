@@ -2350,6 +2350,95 @@ button {
   word-break: break-word;
 }
 
+/* `+ Add field` button in the form header. Subtle by default —
+ * structural edits are infrequent — but always available so users can
+ * grow the YAML block without leaving the editor. */
+.fm-form__add-btn {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius);
+}
+
+.fm-form__add-btn:hover {
+  background: var(--accent-soft);
+}
+
+/* Override the regular `display: contents` on the new-field row so the
+ * key input / type select / Add / Cancel sit in a single flex line
+ * spanning both grid columns. */
+.fm-form__row--add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+}
+
+.fm-form__row--add .fm-form__input {
+  flex: 1;
+  min-width: 140px;
+}
+
+.fm-form__row--add .fm-form__input[aria-invalid="true"] {
+  border-color: var(--err);
+}
+
+.fm-form__add-type {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.fm-form__add-commit,
+.fm-form__add-cancel {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.fm-form__add-commit {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+
+.fm-form__add-commit:disabled {
+  background: transparent;
+  color: var(--muted);
+  border-color: var(--border-soft);
+  cursor: not-allowed;
+}
+
+.fm-form__add-commit:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+
+.fm-form__add-cancel:hover {
+  background: var(--panel-2);
+}
+
+.fm-form__add-error {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--err);
+}
+
 /* ---------- Run panel (bottom drawer) ---------- */
 
 .run-panel {
@@ -2494,19 +2583,20 @@ button {
   background: transparent;
 }
 
+/* Position is computed by SessionMenuButton at open-time and applied
+ * as inline `top` / `left` / `right` so the popup stays anchored to
+ * the toggle button but never overflows the viewport. CSS here owns
+ * size and visual chrome only. */
 .run-panel__history-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
+  position: fixed;
   z-index: 10;
-  min-width: 320px;
-  max-width: 420px;
-  max-height: 360px;
+  width: min(420px, calc(100vw - 24px));
+  max-height: min(360px, calc(100vh - 120px));
   overflow-y: auto;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 6px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
   padding: 4px;
   display: flex;
   flex-direction: column;

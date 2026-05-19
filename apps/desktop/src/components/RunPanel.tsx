@@ -1043,9 +1043,12 @@ function SessionMenuButton({
       ? `☰ ${sessionsCount}`
       : "☰"
     : "⌛ History";
+  const toggleRef = useRef<HTMLButtonElement | null>(null);
+  const menuStyle = useHistoryMenuPosition(toggleRef, open);
   return (
     <div className="run-panel__history">
       <button
+        ref={toggleRef}
         type="button"
         className="btn btn--small run-panel__history-toggle"
         onClick={onToggle}
@@ -1062,7 +1065,11 @@ function SessionMenuButton({
             onClick={onDismiss}
             aria-hidden="true"
           />
-          <div className="run-panel__history-menu" role="listbox">
+          <div
+            className="run-panel__history-menu"
+            role="listbox"
+            style={menuStyle}
+          >
             {loading && (
               <div className="run-panel__history-empty">Loading…</div>
             )}
@@ -1135,6 +1142,61 @@ function SessionMenuButton({
       )}
     </div>
   );
+}
+
+/**
+ * Compute fixed-position coords for the history dropdown so it stays
+ * anchored to the toggle button but never overflows the viewport. The
+ * RunPanel sits at the bottom of the window, so the menu opens
+ * UPWARD; the horizontal side flips based on which half of the screen
+ * the toggle is in — left half → menu's left edge tracks the toggle,
+ * right half → menu's right edge tracks the toggle. Both edges are
+ * then clamped to a 12px inset from the viewport so the menu can
+ * never spill off-screen.
+ *
+ * Recomputed when `open` flips to true so a window resize between
+ * opens picks up the new geometry; recomputing on every render would
+ * be wasted work since the toggle position is stable while the menu
+ * is showing.
+ */
+function useHistoryMenuPosition(
+  toggleRef: React.RefObject<HTMLElement>,
+  open: boolean,
+): React.CSSProperties {
+  const [style, setStyle] = useState<React.CSSProperties>({});
+  useEffect(() => {
+    if (!open) return;
+    const el = toggleRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const inset = 12;
+    const bottomFromViewportBottom = Math.max(inset, vh - rect.top + 6);
+    const toggleCenter = rect.left + rect.width / 2;
+    if (toggleCenter > vw / 2) {
+      // Right-half toggle: anchor menu's right edge to toggle's right
+      // edge. Clamp so the menu's right edge stays at least `inset`
+      // away from the viewport's right border.
+      const rightOffset = Math.max(inset, vw - rect.right);
+      setStyle({
+        bottom: bottomFromViewportBottom,
+        right: rightOffset,
+        left: "auto",
+        top: "auto",
+      });
+    } else {
+      // Left-half toggle: mirror — anchor left edges.
+      const leftOffset = Math.max(inset, rect.left);
+      setStyle({
+        bottom: bottomFromViewportBottom,
+        left: leftOffset,
+        right: "auto",
+        top: "auto",
+      });
+    }
+  }, [open, toggleRef]);
+  return style;
 }
 
 function truncateTitle(s: string): string {

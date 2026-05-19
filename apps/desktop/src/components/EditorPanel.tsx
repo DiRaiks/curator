@@ -180,14 +180,17 @@ export function EditorPanel({
         </p>
       )}
       {error && <p className="welcome__error">{error}</p>}
-      {viewMode !== "prev" && (
-        <FrontmatterForm
-          frontmatter={parsed.frontmatter}
-          hasFrontmatter={parsed.hasFrontmatter}
-          readOnly={false}
-          onChange={updateFrontmatter}
-        />
-      )}
+      {/* Frontmatter form is always rendered so users can read the
+       * metadata even in `prev` mode — `react-markdown` doesn't have a
+       * frontmatter extension wired up, so without this the YAML block
+       * just disappears from view. In `prev` the form switches to
+       * read-only so it stays an inspection surface, not an editor. */}
+      <FrontmatterForm
+        frontmatter={parsed.frontmatter}
+        hasFrontmatter={parsed.hasFrontmatter}
+        readOnly={viewMode === "prev"}
+        onChange={updateFrontmatter}
+      />
       {/* Both panes are always mounted — only their visibility flips via
        * the body modifier class. Keeps CodeMirror's scroll/selection +
        * the preview's scroll position alive across mode switches. */}

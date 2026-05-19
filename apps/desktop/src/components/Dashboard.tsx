@@ -640,14 +640,18 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
 
   /**
    * Open (or switch to) a project's tab. Used by sidebar PROJECTS row
-   * clicks and TitleBar tab-switch clicks. Spec-defined behaviors:
+   * clicks and TitleBar tab-switch clicks. Unified landing:
    *
    *   1. Add `slug` to `openProjects` if not already there.
    *   2. Set `activeProject = slug`.
-   *   3. `view = "editor"`.
-   *   4. Open the project's `_index.md` — switching to an already-open
-   *      tab instead of re-reading from disk so an in-flight dirty
-   *      buffer survives.
+   *   3. `view = "projects"` with `selectedProject` set to the project,
+   *      so the main pane renders that project's `ProjectDetail`
+   *      (Run plans, Source Repo, Recommendations, ContextPreview).
+   *
+   * Two entry points (sidebar click + ProjectList click on the main
+   * Projects view) now lead to the same place. `_index.md` is just a
+   * file — open it from FILES tree or from inside ProjectDetail when
+   * you actually want to edit the description.
    *
    * Refuses gracefully if the slug isn't in the current scan (project
    * may have been deleted between renders).
@@ -660,37 +664,25 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
         prev.includes(slug) ? prev : [...prev, slug],
       );
       setActiveProject(slug);
-      setView("editor");
-
-      const indexPath = project.indexFile;
-      const existingIdx = openFiles.findIndex((f) => f.path === indexPath);
-      if (existingIdx >= 0) {
-        // Already open in another tab — just switch to it. Keeps the
-        // dirty buffer intact and avoids an unnecessary disk read.
-        setActiveFileIdx(existingIdx);
-        setOpenFiles((prev) =>
-          prev.map((f, i) =>
-            i === existingIdx ? { ...f, lastAccessedAt: Date.now() } : f,
-          ),
-        );
-      } else {
-        attemptOpenFile(indexPath);
-      }
+      setSelectedProject(project);
+      setView("projects");
     },
-    [result.projects, openFiles, attemptOpenFile],
+    [result.projects],
   );
 
   /**
    * Close a project tab. If the closed tab was the active one, fall
    * back to the previous tab in the strip; or to the new first tab
    * when the closed tab was at the head; or to `null` when no tabs
-   * remain. The new active project's `_index.md` is opened/refocused
-   * so the editor pane has something to render.
+   * remain. `selectedProject` mirrors the fallback so a ProjectDetail
+   * currently on screen re-renders to the new active's content (or
+   * collapses back to the ProjectList when nothing's left). `view` is
+   * NOT touched — a user editing a file shouldn't get yanked out of
+   * the editor by a tab-close.
    *
    * The file buffers themselves are intentionally NOT closed — a user
    * might have other files from that project open and want to keep
-   * editing them. PR C scope is the tab-strip-as-project-list, not
-   * "close-all-project-files".
+   * editing them.
    */
   const closeProject = useCallback(
     (slug: string) => {
@@ -703,13 +695,13 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
         const fallback =
           idx > 0 ? openProjects[idx - 1] : remaining[0] ?? null;
         setActiveProject(fallback);
-        if (fallback) {
-          const proj = result.projects.find((p) => p.slug === fallback);
-          if (proj) attemptOpenFile(proj.indexFile);
-        }
+        const fallbackProj = fallback
+          ? result.projects.find((p) => p.slug === fallback) ?? null
+          : null;
+        setSelectedProject(fallbackProj);
       }
     },
-    [openProjects, activeProject, result.projects, attemptOpenFile],
+    [openProjects, activeProject, result.projects],
   );
 
   /**

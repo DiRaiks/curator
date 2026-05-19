@@ -123,6 +123,17 @@ fn build_args(req: &RunRequest) -> Vec<String> {
     args.push("--permission-mode".to_string());
     args.push("acceptEdits".to_string());
 
+    // Disable AskUserQuestion. It's a built-in tool that opens an
+    // interactive multi-choice prompt; in `-p --input-format stream-json`
+    // mode without a host-side dialog handler, claude calls the tool
+    // and gets an immediate `is_error` tool_result back ("Answer
+    // questions?"), which surfaces as a confusing error line in our
+    // chat output. With the tool removed from the toolset, claude
+    // adapts by asking the user inline in plain chat text — which
+    // routes naturally through our bottom-drawer reply flow.
+    args.push("--disallowed-tools".to_string());
+    args.push("AskUserQuestion".to_string());
+
     // Resume an existing conversation when the caller asked. Claude
     // keeps prior turns under the session id; the next user message
     // (sent via stdin) becomes the next turn.
@@ -978,6 +989,29 @@ mod tests {
         assert!(!args.iter().any(|a| a == "text"));
         // -p (print/non-interactive) is still required.
         assert!(args.iter().any(|a| a == "-p"));
+    }
+
+    #[test]
+    fn ask_user_question_disabled() {
+        // Regression guard for the "Answer questions?" tool_result
+        // error that surfaced when claude tried the interactive
+        // AskUserQuestion tool without a host-side dialog handler.
+        let req = RunRequest {
+            workdir: std::env::temp_dir(),
+            additional_dirs: Vec::new(),
+            prompt: "p".into(),
+            runtime_input: None,
+            resume_session_id: None,
+        };
+        let args = build_args(&req);
+        let pos = args
+            .iter()
+            .position(|a| a == "--disallowed-tools")
+            .expect("--disallowed-tools flag is required");
+        assert_eq!(
+            args.get(pos + 1).map(String::as_str),
+            Some("AskUserQuestion"),
+        );
     }
 
     #[test]

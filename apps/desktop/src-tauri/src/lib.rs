@@ -519,21 +519,31 @@ fn resume_freeform_run(
     })
 }
 
-/// Wrap the user's chat prompt with a short context preamble so the agent
-/// knows where it is and which conventions to follow. Kept minimal — the
-/// authoritative rules live in the vault's `00_meta/AGENTS.md` and the
-/// agent will read it on demand.
+/// Wrap the user's chat prompt with a short context preamble.
+///
+/// We point the agent at the vault's root `README.md` (17 lines, just a
+/// table of contents) instead of eagerly loading `00_meta/AGENTS.md`
+/// (280 lines + cascading references). The README itself routes to
+/// AGENTS.md when the task warrants — so a "read these 10 files"
+/// request stays cheap, while a "create a new note" task still finds
+/// the conventions via one extra cheap hop. Previously the eager
+/// AGENTS.md read kicked off broad vault exploration (every freeform
+/// chat ran `ls 02_projects/*` then `ls -la` on every project), eating
+/// millions of cached input tokens.
 fn build_freeform_prompt(vault_path: &Path, user_prompt: &str, has_repo_scope: bool) -> String {
     let vault = vault_path.display();
     let preamble = if has_repo_scope {
         format!(
-            "You're running inside a source repository (your cwd) with a Markdown knowledge vault at `{vault}` available via `--add-dir`. \
-Before creating or editing notes in the vault, read `00_meta/AGENTS.md` for mandatory frontmatter, tag conventions, and structure."
+            "You're in a project source repository (cwd). A Markdown knowledge vault \
+is available at `{vault}` via `--add-dir`. For vault layout and pointers to \
+conventions, see `{vault}/README.md` (small file at the vault root) — read it \
+only if the task touches the vault."
         )
     } else {
         format!(
-            "You're running inside a Markdown knowledge vault at `{vault}` (your cwd). \
-Before creating or editing notes, read `00_meta/AGENTS.md` for mandatory frontmatter, tag conventions, and structure."
+            "You're inside a Markdown knowledge vault at `{vault}` (cwd). For vault \
+layout and pointers to conventions, see `./README.md` (small file at the vault \
+root) — read it only if the task needs vault structure."
         )
     };
     format!("{preamble}\n\nUser request:\n{user_prompt}")

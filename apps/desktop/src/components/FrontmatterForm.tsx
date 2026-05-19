@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import type { FrontmatterValue } from "../utils/frontmatter";
 
@@ -26,10 +26,27 @@ interface FrontmatterFormProps {
  *   - null    → text input with `(null)` placeholder
  *   - string  → text input (default)
  *
- * The MVP intentionally does **not** support adding or removing keys here;
- * structural edits go through source mode. This keeps the form
- * conservative — the same key set goes in and comes out, only values change.
+ * A small `+ Add field` affordance in the header lets the user create
+ * a new key with an explicit type — the only way to add structure
+ * since CodeMirror displays the body (`parsed.body`), not the YAML
+ * block. Deleting keys still requires editing the file outside the
+ * IDE for now.
  */
+type NewFieldType = "string" | "number" | "boolean" | "array";
+
+function defaultForType(t: NewFieldType): FrontmatterValue {
+  switch (t) {
+    case "string":
+      return "";
+    case "number":
+      return 0;
+    case "boolean":
+      return false;
+    case "array":
+      return [];
+  }
+}
+
 export function FrontmatterForm({
   frontmatter,
   hasFrontmatter,
@@ -37,11 +54,18 @@ export function FrontmatterForm({
   onChange,
 }: FrontmatterFormProps) {
   const keys = useMemo(() => Object.keys(frontmatter), [frontmatter]);
+  const existingKeys = useMemo(() => new Set(keys), [keys]);
+  const [adding, setAdding] = useState(false);
 
   if (!hasFrontmatter || keys.length === 0) return null;
 
   const update = (key: string, next: FrontmatterValue) => {
     onChange({ ...frontmatter, [key]: next });
+  };
+
+  const commitNewField = (name: string, type: NewFieldType) => {
+    onChange({ ...frontmatter, [name]: defaultForType(type) });
+    setAdding(false);
   };
 
   return (
@@ -53,12 +77,22 @@ export function FrontmatterForm({
           title={
             readOnly
               ? "Switch to source mode to edit."
-              : "Structural edits — adding or removing keys — go through source mode."
+              : "Removing keys still requires editing the file outside the IDE."
           }
         >
           {keys.length} field{keys.length === 1 ? "" : "s"}
           {readOnly && " · read-only"}
         </span>
+        {!readOnly && !adding && (
+          <button
+            type="button"
+            className="fm-form__add-btn"
+            onClick={() => setAdding(true)}
+            title="Add a new frontmatter field"
+          >
+            + Add field
+          </button>
+        )}
       </header>
       <div className="fm-form__rows">
         {keys.map((key) =>
@@ -76,6 +110,13 @@ export function FrontmatterForm({
               onChange={(next) => update(key, next)}
             />
           ),
+        )}
+        {!readOnly && adding && (
+          <AddFieldRow
+            existingKeys={existingKeys}
+            onCommit={commitNewField}
+            onCancel={() => setAdding(false)}
+          />
         )}
       </div>
     </section>
@@ -194,5 +235,102 @@ function FrontmatterInput({ name, value, onChange }: FrontmatterInputProps) {
       onChange={(e) => onChange(e.target.value)}
       aria-label={name}
     />
+  );
+}
+
+interface AddFieldRowProps {
+  existingKeys: Set<string>;
+  onCommit: (name: string, type: NewFieldType) => void;
+  onCancel: () => void;
+}
+
+/**
+ * Inline new-field row revealed by the `+ Add field` header button.
+ * The user picks a key name + a type (so we can default the value to
+ * the right primitive — `""` / `0` / `false` / `[]` — and the existing
+ * row renderer infers the input shape from that primitive without any
+ * special casing).
+ *
+ * Validation is local: non-empty key, not already in `existingKeys`,
+ * matches a conservative YAML-friendly identifier pattern (letter or
+ * underscore start, then letters / digits / underscore / dash).
+ * `Enter` commits, `Esc` cancels — both fire even when focused inside
+ * the text input.
+ */
+function AddFieldRow({ existingKeys, onCommit, onCancel }: AddFieldRowProps) {
+  const [name, setName] = useState("");
+  const [type, setType] = useState<NewFieldType>("string");
+  const trimmed = name.trim();
+  const validShape = /^[A-Za-z_][A-Za-z0-9_-]*$/.test(trimmed);
+  const duplicate = existingKeys.has(trimmed);
+  const error =
+    trimmed === ""
+      ? null
+      : duplicate
+        ? `\`${trimmed}\` already exists`
+        : !validShape
+          ? "use letters, digits, _ and -"
+          : null;
+  const canCommit = trimmed !== "" && !duplicate && validShape;
+
+  const commit = () => {
+    if (canCommit) onCommit(trimmed, type);
+  };
+
+  return (
+    <div className="fm-form__row fm-form__row--add" role="group" aria-label="Add new field">
+      <input
+        type="text"
+        autoFocus
+        className="fm-form__input"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="field name"
+        aria-label="New field name"
+        aria-invalid={error !== null}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commit();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            onCancel();
+          }
+        }}
+      />
+      <select
+        className="fm-form__add-type"
+        value={type}
+        onChange={(e) => setType(e.target.value as NewFieldType)}
+        aria-label="New field type"
+      >
+        <option value="string">text</option>
+        <option value="number">number</option>
+        <option value="boolean">true/false</option>
+        <option value="array">list</option>
+      </select>
+      <button
+        type="button"
+        className="fm-form__add-commit"
+        onClick={commit}
+        disabled={!canCommit}
+        title={error ?? "Add field (Enter)"}
+      >
+        Add
+      </button>
+      <button
+        type="button"
+        className="fm-form__add-cancel"
+        onClick={onCancel}
+        title="Cancel (Esc)"
+      >
+        Cancel
+      </button>
+      {error && (
+        <span className="fm-form__add-error" role="alert">
+          {error}
+        </span>
+      )}
+    </div>
   );
 }
