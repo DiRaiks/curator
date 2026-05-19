@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createMarkdownFile,
   initVault,
+  listSessions,
   onRunEvents,
   readMarkdownFile,
   writeMarkdownFile,
@@ -14,20 +15,42 @@ import { ArtifactList } from "./ArtifactList";
 import { ConfirmDirtyDialog } from "./ConfirmDirtyDialog";
 import { Diagnostics } from "./Diagnostics";
 import { EditorPanel } from "./EditorPanel";
+import { EditorTabs, type EditorViewMode } from "./EditorTabs";
 import { EmptyVaultFresh } from "./EmptyVaultFresh";
 import { EmptyVaultNoProjects } from "./EmptyVaultNoProjects";
 import { HistoryPanel } from "./HistoryPanel";
 import { NewFileDialog } from "./NewFileDialog";
 import { Sidebar, type ViewId } from "./Sidebar";
+import { StatusBar } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
+import { Tooltip } from "./Tooltip";
+
+/** Most open editor buffers we keep around. Spec: LRU eviction at 8. */
+const MAX_OPEN_FILES = 8;
+
+/** `localStorage` key holding the persisted editor view mode. Carried
+ *  over from slice 5's EditorPanel-owned state so users don't lose
+ *  their preference on upgrade. */
+const EDITOR_VIEW_MODE_STORAGE_KEY = "vide.editor.viewMode";
+
+/** Slice 8 PR C — persisted multi-project tabs. We store the slug list
+ *  and the active slug separately because writing one without the
+ *  other (e.g. switching active without changing openProjects) is the
+ *  common case; bundling them into a single JSON blob would force a
+ *  serialize-everything-on-every-switch pattern. */
+const OPEN_PROJECTS_STORAGE_KEY = "vide.openProjects";
+const ACTIVE_PROJECT_STORAGE_KEY = "vide.activeProject";
 import { useRecommendations } from "../hooks/useRecommendations";
 import { DraftsList } from "./DraftsList";
 import { ProjectDetail } from "./ProjectDetail";
 import { ProjectList } from "./ProjectList";
 import { RecommendationsBell } from "./RecommendationsBell";
-import { RunPanel, type RunPanelHandle } from "./RunPanel";
+import {
+  RunPanel,
+  type RunPanelHandle,
+  type RunStatusInfo,
+} from "./RunPanel";
 import { SecurityPanel } from "./SecurityPanel";
-import { Tooltip } from "./Tooltip";
 import { ZoneList } from "./ZoneList";
 
 interface DashboardProps {
@@ -51,6 +74,11 @@ interface OpenFile {
    *  it was deleted or moved outside the IDE. Set by the post-rescan
    *  reconciliation effect. */
   missing?: boolean;
+  /** `Date.now()` of the last time this buffer was activated. Used to
+   *  evict the least-recently-used buffer when the user opens a 9th
+   *  file. The tab order in `openFiles` stays stable (insertion
+   *  order); only eviction consults this timestamp. */
+  lastAccessedAt: number;
 }
 
 type PendingAction = (() => Promise<void> | void) | null;
@@ -109,10 +137,10 @@ interface VaultFormatPillProps {
   hasVaultConfig: boolean;
   vaultFormatVersion: string | null;
   vaultFormatSupported: boolean;
-  /** When set, the pill renders as a button that calls this handler.
-   *  Used only in legacy-vault state (existing structure but no
-   *  config.yml yet) — gives the user a one-click way to fix the
-   *  "format: none" warning without leaving the Dashboard. */
+  /** When set, the pill renders a small "fix" link that calls this
+   *  handler. Used only in the legacy-vault case (existing vault
+   *  structure but no `.vault/config.yml` yet) — gives the user a
+   *  one-click way to fix the warning without leaving the dashboard. */
   onClickFix?: () => void;
 }
 
@@ -130,12 +158,12 @@ function VaultFormatPill({
     label = "format: none";
     ok = false;
     tooltip =
-      "Vault has no .vault/config.yml. Add the file with `version: \"1\"` to lock the format contract.";
+      'Vault has no .vault/config.yml. Add the file with `version: "1"` to lock the format contract.';
   } else if (!vaultFormatVersion) {
     label = "format: ?";
     ok = false;
     tooltip =
-      ".vault/config.yml has no parseable `version:` field. Add `version: \"1\"`.";
+      '.vault/config.yml has no parseable `version:` field. Add `version: "1"`.';
   } else if (!vaultFormatSupported) {
     label = `format: ${vaultFormatVersion} (too new)`;
     ok = false;
@@ -146,14 +174,7 @@ function VaultFormatPill({
     tooltip = `Vault format ${vaultFormatVersion} declared in .vault/config.yml.`;
   }
 
-  // The fix-link only renders when:
-  //  - The pill is in a warn state (`ok === false`), AND
-  //  - The host wired `onClickFix` (Dashboard only does that for the
-  //    legacy-vault case `!hasVaultConfig && hasMeta` — for "config
-  //    exists but version unparseable" or "version too new" there's no
-  //    safe automatic fix; the user has to edit the existing file).
   const showFix = !ok && !!onClickFix;
-
   return (
     <span className={"pill " + (ok ? "pill--ok" : "pill--warn")} title={tooltip}>
       {label}
@@ -163,7 +184,7 @@ function VaultFormatPill({
           className="pill__fix-link"
           onClick={onClickFix}
           aria-label="Create .vault/config.yml"
-          title='Create .vault/config.yml with version: "1"'
+          title={'Create .vault/config.yml with version: "1"'}
         >
           fix
         </button>
@@ -188,10 +209,192 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
   const [view, setView] = useState<ViewId>("projects");
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
 
-  const [openFile, setOpenFile] = useState<OpenFile | null>(null);
+  // Slice 8 PR C — open project tabs in the titlebar and which one
+  // is the active context. Slugs (not Project objects) are the source
+  // of truth so we can persist them across restarts; the full Project
+  // is looked up via `result.projects` when needed.
+  const [openProjects, setOpenProjects] = useState<string[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const raw = window.localStorage.getItem(OPEN_PROJECTS_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed: unknown = JSON.parse(raw);
+      if (
+        Array.isArray(parsed) &&
+        parsed.every((s) => typeof s === "string")
+      ) {
+        return parsed as string[];
+      }
+    } catch {
+      // Malformed JSON or missing key — fall through to the empty default.
+      // Mistyped values shouldn't crash the dashboard.
+    }
+    return [];
+  });
+  const [activeProject, setActiveProject] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return window.localStorage.getItem(ACTIVE_PROJECT_STORAGE_KEY);
+  });
+
+  // Slice 8 PR B — multi-buffer editor state. `openFiles` holds every
+  // open buffer in insertion order (stable for the tab strip);
+  // `activeFileIdx` is the index of the buffer currently shown in the
+  // editor. `-1` means "no active file" (derived `activeFile` returns
+  // `null` and the editor pane falls back to projects).
+  const [openFiles, setOpenFiles] = useState<OpenFile[]>([]);
+  const [activeFileIdx, setActiveFileIdx] = useState<number>(-1);
+  // Editor view mode lifted from EditorPanel (slice 5) into Dashboard
+  // so the new EditorTabs strip can own the segmented toggle and the
+  // ⌘1/2/3 shortcut applies regardless of which view is active.
+  const [editorViewMode, setEditorViewMode] = useState<EditorViewMode>(
+    () => {
+      if (typeof window === "undefined") return "split";
+      const raw = window.localStorage.getItem(EDITOR_VIEW_MODE_STORAGE_KEY);
+      return raw === "src" || raw === "split" || raw === "prev"
+        ? raw
+        : "split";
+    },
+  );
   const [editorSaving, setEditorSaving] = useState(false);
   const [editorError, setEditorError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
+
+  // Derived view of the currently-active buffer. Everything in
+  // Dashboard that used to read `openFile` reads this instead; writes
+  // go through the multi-buffer helpers below.
+  const activeFile: OpenFile | null =
+    activeFileIdx >= 0 && activeFileIdx < openFiles.length
+      ? openFiles[activeFileIdx]
+      : null;
+
+  /** Patch the currently-active buffer. No-op when none. */
+  const updateActiveFile = useCallback(
+    (patch: Partial<OpenFile>) => {
+      setOpenFiles((prev) =>
+        prev.map((f, i) =>
+          i === activeFileIdx ? { ...f, ...patch } : f,
+        ),
+      );
+    },
+    [activeFileIdx],
+  );
+
+  /** Open a file at `path` with already-loaded `content`. Switches to
+   *  an existing tab if the path is already open; otherwise pushes a
+   *  new tab and (if cap exceeded) evicts the least-recently-used
+   *  buffer in-place to keep the visible tab order stable. */
+  const addOrSwitchTab = useCallback(
+    (file: Omit<OpenFile, "lastAccessedAt">) => {
+      setOpenFiles((prev) => {
+        const now = Date.now();
+        const existing = prev.findIndex((f) => f.path === file.path);
+        if (existing >= 0) {
+          setActiveFileIdx(existing);
+          return prev.map((f, i) =>
+            i === existing ? { ...f, lastAccessedAt: now } : f,
+          );
+        }
+        const next: OpenFile = { ...file, lastAccessedAt: now };
+        if (prev.length < MAX_OPEN_FILES) {
+          setActiveFileIdx(prev.length);
+          return [...prev, next];
+        }
+        // Cap reached — evict LRU in-place so the surviving tabs keep
+        // their positions.
+        let lruIdx = 0;
+        let lruAt = prev[0].lastAccessedAt;
+        for (let i = 1; i < prev.length; i++) {
+          if (prev[i].lastAccessedAt < lruAt) {
+            lruAt = prev[i].lastAccessedAt;
+            lruIdx = i;
+          }
+        }
+        setActiveFileIdx(lruIdx);
+        return prev.map((f, i) => (i === lruIdx ? next : f));
+      });
+    },
+    [],
+  );
+
+  /** Close the tab at `idx`. Adjusts `activeFileIdx` so a sensible
+   *  neighbour stays active; falls through to `-1` when the last tab
+   *  was closed. */
+  const closeTabAt = useCallback((idx: number) => {
+    setOpenFiles((prev) => prev.filter((_, i) => i !== idx));
+    setActiveFileIdx((prevIdx) => {
+      // Index math is over the PRE-filter array — at the moment this
+      // setter runs, openFiles still has the closed tab in it. After
+      // setOpenFiles commits, indices ≥ the closed one shift left by 1.
+      if (idx < prevIdx) return prevIdx - 1;
+      if (idx > prevIdx) return prevIdx;
+      // Closing the active tab: prefer the previous one; -1 if none
+      // remain.
+      return prevIdx === 0 ? -1 : prevIdx - 1;
+    });
+  }, []);
+
+  // Persist the view mode and bind the global ⌘1/2/3 shortcut. Both
+  // moved from EditorPanel (slice 5) so the chord works from any
+  // view, not just when the editor pane has focus.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(EDITOR_VIEW_MODE_STORAGE_KEY, editorViewMode);
+  }, [editorViewMode]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.key === "1") {
+        e.preventDefault();
+        setEditorViewMode("src");
+      } else if (e.key === "2") {
+        e.preventDefault();
+        setEditorViewMode("split");
+      } else if (e.key === "3") {
+        e.preventDefault();
+        setEditorViewMode("prev");
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  // Persist open-project tabs + active slug separately. Two writes
+  // because the common case is "switch active project" which doesn't
+  // need to re-serialize the openProjects array.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(
+      OPEN_PROJECTS_STORAGE_KEY,
+      JSON.stringify(openProjects),
+    );
+  }, [openProjects]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (activeProject) {
+      window.localStorage.setItem(ACTIVE_PROJECT_STORAGE_KEY, activeProject);
+    } else {
+      window.localStorage.removeItem(ACTIVE_PROJECT_STORAGE_KEY);
+    }
+  }, [activeProject]);
+
+  // Drop stale slugs after a rescan — a project may have been renamed
+  // or deleted between sessions. `result.projects` is the source of
+  // truth; persisted slugs that don't exist in it any more get
+  // silently discarded so the title bar doesn't hold ghost tabs.
+  useEffect(() => {
+    const validSlugs = new Set(result.projects.map((p) => p.slug));
+    setOpenProjects((prev) => {
+      const filtered = prev.filter((s) => validSlugs.has(s));
+      // Identity-preserve when nothing changed so the persist effect
+      // doesn't fire on every rescan.
+      return filtered.length === prev.length ? prev : filtered;
+    });
+    setActiveProject((prev) =>
+      prev && !validSlugs.has(prev) ? null : prev,
+    );
+  }, [result.projects]);
 
   const [showNewFile, setShowNewFile] = useState(false);
   const [newFileSuggestion, setNewFileSuggestion] = useState<string>(
@@ -242,15 +445,57 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
   const [pendingPermission, setPendingPermission] =
     useState<RunPermissionRequestEvent | null>(null);
 
+  // Live run-status snapshot, populated via RunPanel's imperative
+  // handle. Ambient UI (TitleBar AI handle pulse, StatusBar chat
+  // counter) reads from here instead of reaching into RunPanel's
+  // private useState.
+  const [runStatusInfo, setRunStatusInfo] = useState<RunStatusInfo>({
+    state: "idle",
+    runningSkill: null,
+    runningProject: null,
+    lastUsage: null,
+  });
+  // Total saved chat sessions for this vault. Drives the AI handle's
+  // `AI N` count and the StatusBar `N total` segment. Refetched on
+  // mount and on every `run:exit` (a fresh exit means one more saved
+  // session lives on disk).
+  const [savedSessionCount, setSavedSessionCount] = useState<number>(0);
+  const vaultRoot = result.vaultRoot;
+  const refetchSessions = useCallback(async () => {
+    if (!vaultRoot) return;
+    try {
+      const list = await listSessions(vaultRoot, false);
+      setSavedSessionCount(list.length);
+    } catch {
+      // Best-effort — leave the previous count alone if the IPC fails.
+    }
+  }, [vaultRoot]);
+
+  useEffect(() => {
+    void refetchSessions();
+  }, [refetchSessions]);
+
+  // Subscribe to RunPanel status updates. The handle is populated by
+  // `useImperativeHandle` during the commit phase, which runs BEFORE
+  // this effect, so `runPanelRef.current` is non-null by now.
+  useEffect(() => {
+    const handle = runPanelRef.current;
+    if (!handle) return;
+    return handle.subscribeToStatus(setRunStatusInfo);
+  }, []);
+
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let cancelled = false;
     void onRunEvents({
       onPermissionRequest: (ev) => setPendingPermission(ev),
-      // Defensive: if the run exits before the user resolves the modal
-      // (Stop, crash), clear the prompt so it doesn't hang around for
-      // the next session.
-      onExit: () => setPendingPermission(null),
+      // On exit: clear the permission prompt (defensive — Stop / crash
+      // could leave it open) AND refetch the session list so the
+      // AI/StatusBar counter picks up the newly-persisted row.
+      onExit: () => {
+        setPendingPermission(null);
+        void refetchSessions();
+      },
     }).then((un) => {
       if (cancelled) {
         un();
@@ -262,7 +507,20 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
       cancelled = true;
       if (unlisten) unlisten();
     };
-  }, []);
+  }, [refetchSessions]);
+
+  // Auto-include the running chat's project in the title-bar tab strip
+  // so a user who started a chat via RunPanel scope dropdown (rather
+  // than a sidebar click) still gets a visible tab for it. The tab
+  // sticks around after the chat exits — closing it is up to the user.
+  useEffect(() => {
+    const slug = runStatusInfo.runningProject;
+    if (!slug) return;
+    setOpenProjects((prev) =>
+      prev.includes(slug) ? prev : [...prev, slug],
+    );
+    setActiveProject((prev) => prev ?? slug);
+  }, [runStatusInfo.runningProject]);
 
   const [refreshing, setRefreshing] = useState(false);
   /** Bumped after every successful rescan so child panels (Project Detail's
@@ -298,34 +556,50 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
 
   const privacy = computePrivacyState(result);
   const isDirty =
-    openFile != null && openFile.content !== openFile.savedContent;
+    activeFile != null && activeFile.content !== activeFile.savedContent;
+  /** Total unsaved buffers across all tabs — surfaced in the status bar
+   *  for at-a-glance "how much work is pending" awareness. */
+  const dirtyCount = openFiles.reduce(
+    (n, f) => (f.content !== f.savedContent ? n + 1 : n),
+    0,
+  );
   // Fall back to the projects view when the user explicitly chose the
   // editor but no file is open — otherwise the main pane renders
   // nothing. Renamed from `effectiveTab` in slice 8 PR A; behavior
   // unchanged.
   const effectiveView: ViewId =
-    view === "editor" && !openFile ? "projects" : view;
+    view === "editor" && !activeFile ? "projects" : view;
 
   /**
-   * Reconcile the open editor file with the latest scan after each refresh.
-   * If the file vanished from the vault, mark it as `missing` so the editor
-   * can show a banner instead of silently failing on Save. If it reappears
-   * (e.g. the user re-created it externally and refreshed), drop the flag.
+   * Reconcile every open editor buffer with the latest scan. Files that
+   * vanished from disk get `missing: true` (the editor pane shows a
+   * banner and disables Save); reappearing files drop the flag. We
+   * compare per-buffer because each tab tracks its own file independent
+   * of which one is active.
    *
-   * Future: a live filesystem watcher with debounce could replace the manual
-   * Refresh button entirely. Out of scope for this slice.
+   * Bails out by returning `prev` unchanged when nothing flips — keeps
+   * React from looping on the new array reference `.map` produces.
    */
   useEffect(() => {
-    if (!openFile) return;
-    const stillIndexed = result.markdownFiles.some(
-      (f) => f.path === openFile.path,
-    );
-    if (!stillIndexed && !openFile.missing) {
-      setOpenFile({ ...openFile, missing: true });
-    } else if (stillIndexed && openFile.missing) {
-      setOpenFile({ ...openFile, missing: false });
-    }
-  }, [result.markdownFiles, openFile]);
+    setOpenFiles((prev) => {
+      let changed = false;
+      const next = prev.map((f) => {
+        const stillIndexed = result.markdownFiles.some(
+          (m) => m.path === f.path,
+        );
+        if (!stillIndexed && !f.missing) {
+          changed = true;
+          return { ...f, missing: true };
+        }
+        if (stillIndexed && f.missing) {
+          changed = true;
+          return { ...f, missing: false };
+        }
+        return f;
+      });
+      return changed ? next : prev;
+    });
+  }, [result.markdownFiles]);
 
   const onSwitchView = (next: ViewId) => {
     setView(next);
@@ -341,7 +615,7 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
       try {
         const content = await readMarkdownFile(result.vaultRoot, path);
         const scope = result.markdownFiles.find((f) => f.path === path)?.scope;
-        setOpenFile({ path, content, savedContent: content, scope });
+        addOrSwitchTab({ path, content, savedContent: content, scope });
         setView("editor");
       } catch (err: unknown) {
         // Surface inline; `window.alert` is silently disabled in the Tauri
@@ -350,7 +624,7 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
         setOpenError(`Open failed for ${path}: ${errorMessage(err)}`);
       }
     },
-    [result.vaultRoot, result.markdownFiles],
+    [result.vaultRoot, result.markdownFiles, addOrSwitchTab],
   );
 
   const attemptOpenFile = useCallback(
@@ -363,6 +637,92 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
     },
     [isDirty, doOpenFile],
   );
+
+  /**
+   * Open (or switch to) a project's tab. Used by sidebar PROJECTS row
+   * clicks and TitleBar tab-switch clicks. Spec-defined behaviors:
+   *
+   *   1. Add `slug` to `openProjects` if not already there.
+   *   2. Set `activeProject = slug`.
+   *   3. `view = "editor"`.
+   *   4. Open the project's `_index.md` — switching to an already-open
+   *      tab instead of re-reading from disk so an in-flight dirty
+   *      buffer survives.
+   *
+   * Refuses gracefully if the slug isn't in the current scan (project
+   * may have been deleted between renders).
+   */
+  const openProject = useCallback(
+    (slug: string) => {
+      const project = result.projects.find((p) => p.slug === slug);
+      if (!project) return;
+      setOpenProjects((prev) =>
+        prev.includes(slug) ? prev : [...prev, slug],
+      );
+      setActiveProject(slug);
+      setView("editor");
+
+      const indexPath = project.indexFile;
+      const existingIdx = openFiles.findIndex((f) => f.path === indexPath);
+      if (existingIdx >= 0) {
+        // Already open in another tab — just switch to it. Keeps the
+        // dirty buffer intact and avoids an unnecessary disk read.
+        setActiveFileIdx(existingIdx);
+        setOpenFiles((prev) =>
+          prev.map((f, i) =>
+            i === existingIdx ? { ...f, lastAccessedAt: Date.now() } : f,
+          ),
+        );
+      } else {
+        attemptOpenFile(indexPath);
+      }
+    },
+    [result.projects, openFiles, attemptOpenFile],
+  );
+
+  /**
+   * Close a project tab. If the closed tab was the active one, fall
+   * back to the previous tab in the strip; or to the new first tab
+   * when the closed tab was at the head; or to `null` when no tabs
+   * remain. The new active project's `_index.md` is opened/refocused
+   * so the editor pane has something to render.
+   *
+   * The file buffers themselves are intentionally NOT closed — a user
+   * might have other files from that project open and want to keep
+   * editing them. PR C scope is the tab-strip-as-project-list, not
+   * "close-all-project-files".
+   */
+  const closeProject = useCallback(
+    (slug: string) => {
+      const idx = openProjects.indexOf(slug);
+      if (idx < 0) return;
+      const remaining = openProjects.filter((s) => s !== slug);
+      setOpenProjects(remaining);
+
+      if (activeProject === slug) {
+        const fallback =
+          idx > 0 ? openProjects[idx - 1] : remaining[0] ?? null;
+        setActiveProject(fallback);
+        if (fallback) {
+          const proj = result.projects.find((p) => p.slug === fallback);
+          if (proj) attemptOpenFile(proj.indexFile);
+        }
+      }
+    },
+    [openProjects, activeProject, result.projects, attemptOpenFile],
+  );
+
+  /**
+   * Titlebar `+` handler. Spec offers two implementations: a popover
+   * picker or just routing to the existing Projects view. Going with
+   * the latter — re-using `ProjectList` in the main pane is simpler
+   * than building a popover, and the ProjectList click already opens
+   * a project (now wired through `openProject`).
+   */
+  const onAddProject = useCallback(() => {
+    setSelectedProject(null);
+    setView("projects");
+  }, []);
 
   /**
    * Resolve a wikilink target (the text between `[[…]]`, alias stripped)
@@ -422,27 +782,62 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
     [result.markdownFiles, attemptOpenFile],
   );
 
-  const closeEditor = useCallback(() => {
-    setOpenFile(null);
+  /** Close the currently-active editor buffer. When it was the last
+   *  buffer, fall back to the projects view so the main pane has
+   *  something meaningful to render. */
+  const closeActiveEditor = useCallback(() => {
+    if (activeFileIdx < 0) return;
+    const wasLast = openFiles.length === 1;
+    closeTabAt(activeFileIdx);
     setEditorError(null);
-    setView("projects");
-  }, []);
+    if (wasLast) setView("projects");
+  }, [activeFileIdx, openFiles.length, closeTabAt]);
 
   const attemptCloseEditor = useCallback(() => {
     if (isDirty) {
-      setPendingAction(() => closeEditor);
+      setPendingAction(() => closeActiveEditor);
     } else {
-      closeEditor();
+      closeActiveEditor();
     }
-  }, [isDirty, closeEditor]);
+  }, [isDirty, closeActiveEditor]);
+
+  /** Close any tab by index. Used by EditorTabs' `×` affordance. Runs
+   *  the dirty-buffer dialog when the targeted tab has unsaved work,
+   *  even if it isn't the currently-active one. */
+  const attemptCloseTab = useCallback(
+    (idx: number) => {
+      if (idx < 0 || idx >= openFiles.length) return;
+      const tab = openFiles[idx];
+      const tabDirty = tab.content !== tab.savedContent;
+      const closeFn = () => {
+        const wasLast = openFiles.length === 1;
+        closeTabAt(idx);
+        if (wasLast) setView("projects");
+      };
+      if (tabDirty) {
+        // Switch to the dirty tab so the existing ConfirmDirtyDialog
+        // — which speaks about the ACTIVE buffer — narrates the right
+        // file. After the user picks save/discard, `closeFn` runs.
+        setActiveFileIdx(idx);
+        setPendingAction(() => closeFn);
+      } else {
+        closeFn();
+      }
+    },
+    [openFiles, closeTabAt],
+  );
 
   const saveOpenFile = useCallback(async (): Promise<boolean> => {
-    if (!openFile) return false;
+    if (!activeFile) return false;
     setEditorSaving(true);
     setEditorError(null);
     try {
-      await writeMarkdownFile(result.vaultRoot, openFile.path, openFile.content);
-      setOpenFile({ ...openFile, savedContent: openFile.content });
+      await writeMarkdownFile(
+        result.vaultRoot,
+        activeFile.path,
+        activeFile.content,
+      );
+      updateActiveFile({ savedContent: activeFile.content });
       return true;
     } catch (err: unknown) {
       setEditorError(errorMessage(err));
@@ -450,12 +845,12 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
     } finally {
       setEditorSaving(false);
     }
-  }, [openFile, result.vaultRoot]);
+  }, [activeFile, result.vaultRoot, updateActiveFile]);
 
   const discardOpenFile = useCallback(() => {
-    if (!openFile) return;
-    setOpenFile({ ...openFile, content: openFile.savedContent });
-  }, [openFile]);
+    if (!activeFile) return;
+    updateActiveFile({ content: activeFile.savedContent });
+  }, [activeFile, updateActiveFile]);
 
   /** Wrap the app-level rescan so dependent panels can subscribe to changes
    *  via a single counter dep. */
@@ -470,12 +865,12 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
   const createAndOpenFile = useCallback(
     async (path: string): Promise<void> => {
       const content = await createMarkdownFile(result.vaultRoot, path);
-      setOpenFile({ path, content, savedContent: content });
+      addOrSwitchTab({ path, content, savedContent: content });
       setEditorError(null);
       setView("editor");
       await rescanWithTick();
     },
-    [result.vaultRoot, rescanWithTick],
+    [result.vaultRoot, rescanWithTick, addOrSwitchTab],
   );
 
   const openNewFileDialog = useCallback(() => {
@@ -576,44 +971,22 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
     );
   }
 
-  // PR A stub for the title-bar's "open projects" list: just the
-  // currently-drilled-in project, if any. Multi-project state arrives
-  // in PR C.
-  const openProjects = selectedProject ? [selectedProject.slug] : [];
-  const activeProjectSlug = selectedProject?.slug ?? null;
+  const runningChats = runStatusInfo.state === "running" ? 1 : 0;
 
   return (
     <div className="dashboard">
       <TitleBar
         openProjects={openProjects}
-        activeProject={activeProjectSlug}
-        totalChats={0}
-        runningChats={0}
-        onSwitchProject={() => {
-          // PR A stub — only one project tab can be active so nothing
-          // to switch. PR C wires multi-project state.
-        }}
-        onCloseProject={() => {
-          // PR A stub — close-tab is meaningless without multi-open.
-        }}
-        onAddProject={() => {
-          // PR A stub — opening additional projects is PR C.
-        }}
-        onToggleChat={() => {
-          // PR A stub — chat collapse state still lives inside RunPanel
-          // (slice 2). PR B lifts it.
-        }}
-        onOpenPalette={() => {
-          // PR A stub — palette UI doesn't exist yet.
-        }}
-        vaultPath={displayedVaultRoot}
-        meta={{
-          format: result.vaultFormatVersion ?? "?",
-          mdCount: result.markdownFiles.length,
-          projectCount: result.projects.length,
-          artifactCount: result.artifacts.length,
-        }}
+        activeProject={activeProject}
+        onSwitchProject={openProject}
+        onCloseProject={closeProject}
+        onAddProject={onAddProject}
       />
+
+      {/* Single chrome row carrying every status pill + utility button.
+       * Project tabs live in the `<TitleBar>` above; everything else is
+       * here so the user has one obvious place to scan for vault
+       * state. */}
       <header className="dashboard__header">
         <div className="dashboard__title">
           <span className="dashboard__label">Vault</span>
@@ -629,8 +1002,7 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
             vaultFormatSupported={result.vaultFormatSupported}
             onClickFix={
               isLegacyVault
-                ? () =>
-                    setCreateConfigDialog({ busy: false, error: null })
+                ? () => setCreateConfigDialog({ busy: false, error: null })
                 : undefined
             }
           />
@@ -656,6 +1028,47 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
             onGoToProject={goToProject}
             onOpenFile={attemptOpenFile}
           />
+          {/* Palette + AI handle — moved here from the short-lived
+            * TitleBar pass so they share one chrome row with the rest
+            * of the vault meta. Palette is still a no-op; AI handle
+            * pulses with the live `runStatusInfo` from RunPanel. */}
+          <button
+            type="button"
+            className="header-palette"
+            aria-label="Open command palette"
+            title="Command palette (coming soon)"
+            onClick={() => {
+              // Palette UI doesn't exist yet.
+            }}
+          >
+            <span className="header-palette__kbd">⌘K</span>
+            <span>palette</span>
+          </button>
+          <button
+            type="button"
+            className="header-ai"
+            aria-label="Toggle chat panel"
+            title="Toggle chat panel"
+            onClick={() => {
+              // Chat collapse state still lives inside RunPanel
+              // (slice 2). Wiring this requires an additional
+              // imperative-handle method; out of scope right now.
+            }}
+          >
+            <span
+              className={
+                "header-ai__dot" +
+                (runningChats > 0 ? " header-ai__dot--running" : "")
+              }
+              aria-hidden="true"
+            />
+            <span>AI</span>
+            <span className="header-ai__count">{savedSessionCount}</span>
+            {runningChats > 0 && (
+              <span className="header-ai__live">{runningChats} live</span>
+            )}
+            <span className="header-ai__kbd">⌘J</span>
+          </button>
           <button
             type="button"
             className="btn btn--small"
@@ -685,17 +1098,11 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
           sessionCount={0}
           files={filePaths}
           activeView={effectiveView}
-          activeProject={activeProjectSlug}
-          activeFilePath={openFile?.path ?? null}
+          activeProject={activeProject}
+          activeFilePath={activeFile?.path ?? null}
           openError={openError}
           onSwitchView={onSwitchView}
-          onOpenProject={(slug) => {
-            const project = result.projects.find((p) => p.slug === slug);
-            if (project) {
-              setSelectedProject(project);
-              setView("projects");
-            }
-          }}
+          onOpenProject={openProject}
           onOpenFile={attemptOpenFile}
           onOpenDraft={() => setView("drafts")}
           onNewFile={attemptNewFile}
@@ -802,22 +1209,43 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
               <Diagnostics diagnostics={result.diagnostics} />
             </section>
           )}
-          {effectiveView === "editor" && openFile && (
+          {effectiveView === "editor" && openFiles.length > 0 && (
+            <EditorTabs
+              tabs={openFiles.map((f) => ({
+                path: f.path,
+                modified: f.content !== f.savedContent,
+              }))}
+              activeIndex={activeFileIdx}
+              viewMode={editorViewMode}
+              onSwitch={(idx) => {
+                setActiveFileIdx(idx);
+                // Touch the LRU timestamp on user-initiated switch so
+                // a freshly-focused tab doesn't get evicted next.
+                setOpenFiles((prev) =>
+                  prev.map((f, i) =>
+                    i === idx ? { ...f, lastAccessedAt: Date.now() } : f,
+                  ),
+                );
+              }}
+              onClose={attemptCloseTab}
+              onSetViewMode={setEditorViewMode}
+            />
+          )}
+          {effectiveView === "editor" && activeFile && (
             <section
               id="panel-editor"
               className="panel panel--editor"
             >
               <EditorPanel
-                path={openFile.path}
-                scope={openFile.scope}
-                content={openFile.content}
-                savedContent={openFile.savedContent}
+                path={activeFile.path}
+                scope={activeFile.scope}
+                content={activeFile.content}
+                savedContent={activeFile.savedContent}
                 saving={editorSaving}
                 error={editorError}
-                missing={openFile.missing}
-                onChange={(next) =>
-                  setOpenFile({ ...openFile, content: next })
-                }
+                missing={activeFile.missing}
+                viewMode={editorViewMode}
+                onChange={(next) => updateActiveFile({ content: next })}
                 onSave={() => {
                   void saveOpenFile();
                 }}
@@ -836,14 +1264,28 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
         projects={result.projects}
       />
 
+      <StatusBar
+        activeProject={activeProject ?? runStatusInfo.runningProject}
+        // Branch + cursor still aren't lifted — keep `null` so those
+        // slots collapse silently until a future PR plumbs
+        // `inspect_source_repo` / CodeMirror cursor events through.
+        branch={null}
+        dirtyCount={dirtyCount}
+        totalChats={savedSessionCount}
+        runningChats={runStatusInfo.state === "running" ? 1 : 0}
+        runningSkill={runStatusInfo.runningSkill}
+        fileMode={activeFile ? "md gfm" : null}
+        cursor={null}
+      />
+
       <ApproveToolsModal
         request={pendingPermission}
         onResolved={() => setPendingPermission(null)}
       />
 
-      {pendingAction && openFile && isDirty && (
+      {pendingAction && activeFile && isDirty && (
         <ConfirmDirtyDialog
-          path={openFile.path}
+          path={activeFile.path}
           saving={editorSaving}
           onSave={() => {
             void onConfirmSave();

@@ -80,9 +80,15 @@ export function RecommendationsBell({
         aria-label={`${total} recommendations`}
         title={`${total} recommendations`}
       >
-        <span className="recs-bell__icon" aria-hidden>
-          ★
-        </span>
+        <span
+          className={
+            "recs-bell__dot" +
+            (total > 0
+              ? " recs-bell__dot--active"
+              : " recs-bell__dot--muted")
+          }
+          aria-hidden="true"
+        />
         <span className="recs-bell__label">recs</span>
         {total > 0 && (
           <span className="recs-bell__count">{total}</span>

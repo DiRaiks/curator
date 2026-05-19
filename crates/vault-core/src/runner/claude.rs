@@ -66,6 +66,11 @@ const WAITER_POLL_MS: u64 = 50;
 /// up in the user-facing output stream.
 const INIT_REQUEST_ID: &str = "vide-init-1";
 
+/// Request id we attach to the `end_session` control_request sent after
+/// the turn's `result` event. Claude echoes a control_response with this
+/// same id which the reader also silently swallows.
+const END_SESSION_REQUEST_ID: &str = "vide-end-1";
+
 pub struct ClaudeRunner;
 
 impl ClaudeRunner {
@@ -232,12 +237,18 @@ pub(crate) fn spawn_with_command(
         tx.clone(),
         Arc::clone(&trunc),
         ReaderKind::Stdout,
+        // Hand the stdout reader its own clone of the stdin tx so it
+        // can queue an end_session control_request after seeing the
+        // turn's `result` event. The writer thread serializes the
+        // shutdown line behind any in-flight permission responses.
+        Some(stdin_tx.clone()),
     );
     let stderr_handle = spawn_reader(
         stderr,
         tx.clone(),
         Arc::clone(&trunc),
         ReaderKind::Stderr,
+        None,
     );
 
     spawn_coordinator(
@@ -265,6 +276,25 @@ pub(crate) fn spawn_with_command(
 /// Tauri commands use this to keep the wire format in one place — the
 /// shell only sees a typed `(request_id, PermissionDecision)`, never the
 /// raw JSON.
+/// JSON line telling claude to break its stream-json input loop and
+/// shut down cleanly. Without this, the runner spawned with
+/// `--input-format stream-json` would hang after a single turn —
+/// claude waits indefinitely for another user message on stdin and the
+/// subprocess never exits, leaving the IDE stuck in "running" state.
+///
+/// The reader thread queues this line right after parsing the first
+/// `type: "result"` event (turn complete). Claude acks via a
+/// `control_response` (silently swallowed by `classify_stdout_line`),
+/// shuts down, and the coordinator's `wait()` finally unblocks.
+fn build_end_session_line() -> String {
+    serde_json::json!({
+        "type": "control_request",
+        "request_id": END_SESSION_REQUEST_ID,
+        "request": { "subtype": "end_session", "reason": "result-emitted" }
+    })
+    .to_string()
+}
+
 pub fn build_permission_response_line(
     request_id: &str,
     decision: &super::PermissionDecision,
@@ -349,13 +379,34 @@ enum ReaderKind {
     Stderr,
 }
 
+/// What to do with a single line after classification: optionally emit
+/// an event, and optionally signal that this line ended the turn
+/// (claude's `result` event in stream-json mode) so the reader can ask
+/// claude to break its input loop.
+struct LineHandled {
+    event: Option<RunEvent>,
+    end_of_turn: bool,
+}
+
+// `stdin_tx`: sender into the per-run stdin writer. Only the stdout
+// reader gets it — when that reader sees claude's `result` event it
+// queues an `end_session` control_request so the subprocess exits
+// cleanly. `None` for the stderr reader and for fixtures that don't
+// speak the SDK protocol.
 fn spawn_reader<R: Read + Send + 'static>(
     src: R,
     tx: mpsc::Sender<RunEvent>,
     trunc: Arc<Mutex<TruncationState>>,
     kind: ReaderKind,
+    stdin_tx: Option<mpsc::Sender<String>>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
+        // Send `end_session` at most once per run. Defensive — claude in
+        // `-p` mode emits exactly one `result` per turn and we feed it
+        // one user message, so multiple result events shouldn't occur,
+        // but a stray duplicate from a buggy version shouldn't double-
+        // queue the shutdown signal.
+        let mut end_session_sent = false;
         let reader = BufReader::new(src);
         for line in reader.lines() {
             let line = match line {
@@ -378,15 +429,27 @@ fn spawn_reader<R: Read + Send + 'static>(
             };
             match outcome {
                 AccountResult::Emit => {
-                    let event = match kind {
+                    let handled = match kind {
                         ReaderKind::Stdout => classify_stdout_line(line),
-                        ReaderKind::Stderr => Some(RunEvent::Stderr(line)),
+                        ReaderKind::Stderr => LineHandled {
+                            event: Some(RunEvent::Stderr(line)),
+                            end_of_turn: false,
+                        },
                     };
-                    if let Some(event) = event {
+                    if let Some(event) = handled.event {
                         if tx.send(event).is_err() {
                             // Receiver dropped — the consumer no longer cares.
                             break;
                         }
+                    }
+                    if handled.end_of_turn && !end_session_sent {
+                        if let Some(stdin_tx) = &stdin_tx {
+                            // Fire-and-forget: if the writer thread is
+                            // already gone (subprocess crashed), the
+                            // coordinator will surface that via Exit.
+                            let _ = stdin_tx.send(build_end_session_line());
+                        }
+                        end_session_sent = true;
                     }
                 }
                 AccountResult::FirstDrop { dropped_bytes } => {
@@ -406,39 +469,51 @@ fn spawn_reader<R: Read + Send + 'static>(
 
 /// Inspect one stdout line and decide what RunEvent (if any) it maps to.
 ///
-/// Non-JSON lines and ordinary assistant/result/system messages flow
-/// through as `Stdout` so the frontend's existing stream-json renderer
-/// keeps working. Two control-protocol shapes are intercepted:
+/// Non-JSON lines and ordinary assistant/system messages flow through
+/// as `Stdout` so the frontend's existing stream-json renderer keeps
+/// working. Three control-protocol shapes are intercepted:
 ///
-/// - `control_request` with `subtype: "can_use_tool"` is converted into
-///   a typed `PermissionRequest` event — that's how the modal-flow Tauri
-///   shell learns claude is paused awaiting a decision.
+/// - `control_request` with `subtype: "can_use_tool"` becomes a typed
+///   `PermissionRequest` event — that's how the modal-flow Tauri shell
+///   learns claude is paused awaiting a decision.
 /// - `control_response` (claude acknowledging our own control_requests,
-///   e.g. the initialize handshake) is swallowed silently — it's
-///   protocol-level metadata that would otherwise pollute the chat log.
+///   e.g. initialize / end_session) is swallowed silently — protocol
+///   metadata that would otherwise pollute the chat log.
+/// - `result` is forwarded as `Stdout` AND flagged `end_of_turn = true`
+///   so the reader can fire the `end_session` control_request that
+///   tells claude to break its stream-json input loop. Without that
+///   the subprocess would hang waiting for another user message and
+///   the IDE would stay stuck in "running" forever.
 ///
 /// Any unrecognised JSON or parse failure falls through to `Stdout` so
 /// we never silently drop legitimate output. The frontend handles
 /// unknown shapes gracefully.
-fn classify_stdout_line(line: String) -> Option<RunEvent> {
+fn classify_stdout_line(line: String) -> LineHandled {
     // Cheap byte-level prefix check — most stream-json lines start with
     // '{' but log lines from claude may not. Avoids paying for a parse
     // attempt on every non-JSON line.
     let trimmed = line.trim_start();
     if !trimmed.starts_with('{') {
-        return Some(RunEvent::Stdout(line));
+        return LineHandled {
+            event: Some(RunEvent::Stdout(line)),
+            end_of_turn: false,
+        };
     }
     let parsed: serde_json::Value = match serde_json::from_str(trimmed) {
         Ok(v) => v,
-        Err(_) => return Some(RunEvent::Stdout(line)),
+        Err(_) => {
+            return LineHandled {
+                event: Some(RunEvent::Stdout(line)),
+                end_of_turn: false,
+            };
+        }
     };
     let ty = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
     match ty {
-        "control_response" => {
-            // claude's ack of an SDK host control_request (e.g. our
-            // initialize). Not user-visible — swallow.
-            None
-        }
+        "control_response" => LineHandled {
+            event: None,
+            end_of_turn: false,
+        },
         "control_request" => {
             let subtype = parsed
                 .get("request")
@@ -447,18 +522,36 @@ fn classify_stdout_line(line: String) -> Option<RunEvent> {
                 .unwrap_or("");
             if subtype == "can_use_tool" {
                 if let Some(req) = parse_permission_request(&parsed) {
-                    return Some(RunEvent::PermissionRequest(req));
+                    return LineHandled {
+                        event: Some(RunEvent::PermissionRequest(req)),
+                        end_of_turn: false,
+                    };
                 }
-                // Malformed — fall through so the frontend at least sees
-                // the raw JSON instead of silently dropping it.
-                Some(RunEvent::Stdout(line))
+                // Malformed — surface the raw JSON so we don't drop it.
+                LineHandled {
+                    event: Some(RunEvent::Stdout(line)),
+                    end_of_turn: false,
+                }
             } else {
-                // Other control_request subtypes from claude aren't
-                // expected in normal flow; surface them for debugging.
-                Some(RunEvent::Stdout(line))
+                LineHandled {
+                    event: Some(RunEvent::Stdout(line)),
+                    end_of_turn: false,
+                }
             }
         }
-        _ => Some(RunEvent::Stdout(line)),
+        "result" => {
+            // Turn complete. Emit the line so the frontend renders the
+            // result summary, and flag end_of_turn so the reader can
+            // hand-shake the shutdown.
+            LineHandled {
+                event: Some(RunEvent::Stdout(line)),
+                end_of_turn: true,
+            }
+        }
+        _ => LineHandled {
+            event: Some(RunEvent::Stdout(line)),
+            end_of_turn: false,
+        },
     }
 }
 
@@ -985,28 +1078,34 @@ mod tests {
 
     #[test]
     fn classify_stdout_passes_through_plain_lines() {
-        match classify_stdout_line("hello".into()) {
+        let h = classify_stdout_line("hello".into());
+        match h.event {
             Some(RunEvent::Stdout(s)) => assert_eq!(s, "hello"),
             other => panic!("expected Stdout, got {:?}", other),
         }
+        assert!(!h.end_of_turn);
     }
 
     #[test]
     fn classify_stdout_passes_through_non_control_json() {
         let line = r#"{"type":"assistant","message":{"content":[]}}"#.to_string();
-        match classify_stdout_line(line.clone()) {
+        let h = classify_stdout_line(line.clone());
+        match h.event {
             Some(RunEvent::Stdout(s)) => assert_eq!(s, line),
             other => panic!("expected Stdout, got {:?}", other),
         }
+        assert!(!h.end_of_turn);
     }
 
     #[test]
     fn classify_stdout_swallows_control_response() {
         let line = r#"{"type":"control_response","response":{"subtype":"success","request_id":"vide-init-1"}}"#;
+        let h = classify_stdout_line(line.into());
         assert!(
-            classify_stdout_line(line.into()).is_none(),
-            "control_response (init ack) must not surface as Stdout"
+            h.event.is_none(),
+            "control_response (init / end_session ack) must not surface as Stdout"
         );
+        assert!(!h.end_of_turn);
     }
 
     #[test]
@@ -1025,7 +1124,8 @@ mod tests {
             }
         }"#
         .to_string();
-        match classify_stdout_line(line) {
+        let h = classify_stdout_line(line);
+        match h.event {
             Some(RunEvent::PermissionRequest(req)) => {
                 assert_eq!(req.request_id, "perm-7");
                 assert_eq!(req.tool_name, "Bash");
@@ -1036,6 +1136,33 @@ mod tests {
             }
             other => panic!("expected PermissionRequest, got {:?}", other),
         }
+        assert!(!h.end_of_turn);
+    }
+
+    #[test]
+    fn classify_stdout_flags_result_as_end_of_turn() {
+        // Regression: before this flag, the runner kept stdin open
+        // forever after `result` and the subprocess hung in `-p` mode.
+        let line = r#"{"type":"result","subtype":"success","total_cost_usd":0.1}"#
+            .to_string();
+        let h = classify_stdout_line(line.clone());
+        match h.event {
+            Some(RunEvent::Stdout(s)) => assert_eq!(s, line),
+            other => panic!("expected Stdout, got {:?}", other),
+        }
+        assert!(
+            h.end_of_turn,
+            "result event must flag end_of_turn so the reader can fire end_session"
+        );
+    }
+
+    #[test]
+    fn build_end_session_line_has_correct_shape() {
+        let line = build_end_session_line();
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["type"], "control_request");
+        assert_eq!(parsed["request_id"], END_SESSION_REQUEST_ID);
+        assert_eq!(parsed["request"]["subtype"], "end_session");
     }
 
     #[test]

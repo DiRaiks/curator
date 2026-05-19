@@ -3,9 +3,7 @@ import {
   cloneElement,
   isValidElement,
   useCallback,
-  useEffect,
   useMemo,
-  useState,
   type ReactNode,
 } from "react";
 import CodeMirror from "@uiw/react-codemirror";
@@ -14,6 +12,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import type { Scope } from "../types";
+import type { EditorViewMode } from "./EditorTabs";
 import {
   parseMarkdown,
   serializeMarkdown,
@@ -32,6 +31,10 @@ interface EditorPanelProps {
    *  externally). Save/Discard are disabled and a banner is shown; the
    *  in-memory buffer is preserved so the user doesn't lose work. */
   missing?: boolean;
+  /** View mode driven by the parent (Dashboard) — lifted out of the
+   *  editor in slice 8 PR B so the new `EditorTabs` strip can own the
+   *  segmented control and the ⌘1/2/3 shortcut applies globally. */
+  viewMode: EditorViewMode;
   onChange: (next: string) => void;
   onSave: () => void;
   onDiscard: () => void;
@@ -42,28 +45,7 @@ interface EditorPanelProps {
   onOpenWikilink?: (target: string) => void;
 }
 
-type ViewMode = "src" | "split" | "prev";
-
-const VIEW_MODES: readonly ViewMode[] = ["src", "split", "prev"] as const;
-const VIEW_MODE_STORAGE_KEY = "vide.editor.viewMode";
-
-/** Label for the segmented control, in display order matching VIEW_MODES. */
-const VIEW_MODE_LABELS: Record<ViewMode, string> = {
-  src: "source",
-  split: "split",
-  prev: "preview",
-};
-
 const WIKILINK_RE = /\[\[([^\]\n]+)\]\]/g;
-
-/** Modifier-key symbol the host platform uses. Lets the kbd hints in
- *  the mode toggle show ⌘1/⌘2/⌘3 on macOS and Ctrl+1/2/3 elsewhere
- *  without per-keystroke checks. The keyboard handler itself accepts
- *  either modifier so the shortcut works everywhere regardless. */
-const isMac =
-  typeof navigator !== "undefined" &&
-  /mac/i.test(navigator.platform || navigator.userAgent || "");
-const MOD_LABEL = isMac ? "⌘" : "Ctrl+";
 
 /**
  * Markdown editor with three view modes:
@@ -74,11 +56,10 @@ const MOD_LABEL = isMac ? "⌘" : "Ctrl+";
  *   hidden in this mode since react-markdown already renders the file's
  *   metadata block.
  *
- * Cmd/Ctrl + 1/2/3 toggle between modes. The choice persists across
- * mounts via `localStorage` under `vide.editor.viewMode`. Both panes
- * stay mounted at all times — the hidden one uses `display: none` so
- * CodeMirror keeps its scroll/selection state when the user switches
- * back.
+ * The view mode itself is owned by Dashboard since slice 8 PR B — the
+ * editor receives it as a prop and renders accordingly. The ⌘1/2/3
+ * shortcut and the segmented toggle UI both live above this component
+ * now (Dashboard keyboard handler + `EditorTabs` strip respectively).
  *
  * Save/Discard/Close + dirty + missing-on-disk state work the same in
  * all modes. `react-markdown` + GFM powers the preview, with
@@ -93,6 +74,7 @@ export function EditorPanel({
   saving,
   error,
   missing = false,
+  viewMode,
   onChange,
   onSave,
   onDiscard,
@@ -103,38 +85,6 @@ export function EditorPanel({
   const sizeBytes = useMemo(() => new Blob([content]).size, [content]);
   const saveDisabled = !isDirty || saving || missing;
   const discardDisabled = !isDirty || saving || missing;
-
-  // Initial mode is read from localStorage once. We don't subscribe to
-  // storage events — each editor instance owns its own state and writes
-  // back on change, so cross-tab sync isn't a goal.
-  const [viewMode, setViewMode] = useState<ViewMode>(() => {
-    if (typeof window === "undefined") return "split";
-    const raw = window.localStorage.getItem(VIEW_MODE_STORAGE_KEY);
-    return raw === "src" || raw === "split" || raw === "prev" ? raw : "split";
-  });
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, viewMode);
-  }, [viewMode]);
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      if (e.key === "1") {
-        e.preventDefault();
-        setViewMode("src");
-      } else if (e.key === "2") {
-        e.preventDefault();
-        setViewMode("split");
-      } else if (e.key === "3") {
-        e.preventDefault();
-        setViewMode("prev");
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, []);
 
   const cmExtensions = useMemo(() => [markdown()], []);
 
@@ -189,31 +139,8 @@ export function EditorPanel({
           )}
         </div>
         <div className="editor__actions">
-          <div
-            className="editor-mode-toggle"
-            role="group"
-            aria-label="View mode"
-          >
-            {VIEW_MODES.map((m, i) => (
-              <button
-                key={m}
-                type="button"
-                className={
-                  "editor-mode-toggle__btn" +
-                  (m === viewMode ? " editor-mode-toggle__btn--active" : "")
-                }
-                onClick={() => setViewMode(m)}
-                aria-pressed={m === viewMode}
-                title={`${VIEW_MODE_LABELS[m]} (${MOD_LABEL}${i + 1})`}
-              >
-                {VIEW_MODE_LABELS[m]}
-                <span className="editor-mode-toggle__kbd">
-                  {MOD_LABEL}
-                  {i + 1}
-                </span>
-              </button>
-            ))}
-          </div>
+          {/* The view-mode segmented control moved to `EditorTabs` in
+              slice 8 PR B — Save / Discard / Close remain here. */}
           <button
             type="button"
             className="btn btn--primary btn--small"

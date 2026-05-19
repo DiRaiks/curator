@@ -95,10 +95,36 @@ interface RunPanelProps {
   projects: Project[];
 }
 
-/** Imperative handle exposed to Dashboard so the History tab can ask
- *  the panel to reopen a saved session without lifting state up. */
+/** Snapshot of the live run state suitable for ambient UI surfaces
+ *  outside the panel itself (TitleBar AI handle, StatusBar). Keep this
+ *  derived view minimal — the RunPanel internals carry richer state,
+ *  but Dashboard / chrome consumers should never reach into that. */
+export interface RunStatusInfo {
+  /** Compressed lifecycle. `running` covers both the live-streaming
+   *  state and the brief `stopping` window (cosmetic distinction not
+   *  worth exposing to ambient UI). */
+  state: "idle" | "running" | "exited";
+  /** Skill / prompt id when running an artifact run (e.g.
+   *  `"session-reflect"`). `null` for freeform chats. */
+  runningSkill: string | null;
+  /** Project slug of the active chat (e.g. `"subgraph"`). `null` for
+   *  vault-scope freeform runs. */
+  runningProject: string | null;
+  /** Last reported usage totals across the live session, or `null`
+   *  before any usage event has arrived. */
+  lastUsage: { in: number; out: number; cost: number } | null;
+}
+
+/** Imperative handle exposed to Dashboard. Used today for two things:
+ *  reopening a saved session into the editor's chat panel, and
+ *  letting ambient surfaces subscribe to run-status updates so the AI
+ *  handle / status bar can pulse in lockstep with the bottom drawer. */
 export interface RunPanelHandle {
   reopenSession: (session: SessionFull) => void;
+  /** Subscribe to live status updates. The callback fires once
+   *  immediately with the current snapshot, then on every transition
+   *  thereafter. Returns an unsubscribe function. */
+  subscribeToStatus: (cb: (info: RunStatusInfo) => void) => () => void;
 }
 
 export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
@@ -582,7 +608,64 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     setSessionMenuOpen(false);
   }, []);
 
-  useImperativeHandle(ref, () => ({ reopenSession }), [reopenSession]);
+  // Live status subscribers — ambient UI (TitleBar AI handle, StatusBar
+  // chat counter) attaches via `subscribeToStatus` to get notified on
+  // every status / usage transition without lifting RunPanel state into
+  // its parent. The Set lives in a ref so subscribers can register from
+  // an effect with empty deps and never need to re-subscribe.
+  const statusSubscribersRef = useRef<Set<(info: RunStatusInfo) => void>>(
+    new Set(),
+  );
+  // Latest snapshot mirror — read by the immediate-fire branch of
+  // subscribeToStatus and by the publish effect. Kept in a ref so
+  // subscribeToStatus itself can stay stable (no deps); React state
+  // changes still propagate via the publish effect below.
+  const statusInfoSnapshotRef = useRef<RunStatusInfo>({
+    state: "idle",
+    runningSkill: null,
+    runningProject: null,
+    lastUsage: null,
+  });
+
+  // Publish status info to all subscribers whenever the live state or
+  // usage totals shift. The effect deliberately doesn't gate on a
+  // shallow-equal check — Set iteration over a handful of callbacks
+  // costs less than the equality check itself, and React already
+  // dedupes identical render outputs downstream.
+  useEffect(() => {
+    const info = buildRunStatusInfo(status, usage);
+    statusInfoSnapshotRef.current = info;
+    for (const cb of statusSubscribersRef.current) {
+      try {
+        cb(info);
+      } catch {
+        // Don't let a misbehaving subscriber take down the dispatch loop.
+      }
+    }
+  }, [status, usage]);
+
+  const subscribeToStatus = useCallback(
+    (cb: (info: RunStatusInfo) => void) => {
+      statusSubscribersRef.current.add(cb);
+      // Fire-on-subscribe with the latest snapshot so the consumer
+      // doesn't render a stale default before the next transition.
+      try {
+        cb(statusInfoSnapshotRef.current);
+      } catch {
+        // ignore — same rationale as the publish loop
+      }
+      return () => {
+        statusSubscribersRef.current.delete(cb);
+      };
+    },
+    [],
+  );
+
+  useImperativeHandle(
+    ref,
+    () => ({ reopenSession, subscribeToStatus }),
+    [reopenSession, subscribeToStatus],
+  );
 
   // ---------- Session quick-switch dropdown ----------
 
@@ -1160,6 +1243,51 @@ function scopeLabel(started: RunStartedEvent): string {
     return started.projectSlug === "(vault)" ? "vault" : started.projectSlug;
   }
   return `${started.projectSlug}/${started.promptId}`;
+}
+
+/**
+ * Project the internal `RunStatus + SessionUsage` pair into the compact
+ * snapshot ambient surfaces consume (TitleBar AI handle, StatusBar).
+ * `running` and `stopping` collapse into the same exposed `running`
+ * state — the cosmetic stop-pending distinction lives only inside the
+ * panel header.
+ */
+function buildRunStatusInfo(
+  status: RunStatus,
+  usage: SessionUsage,
+): RunStatusInfo {
+  const lastUsage = hasUsage(usage)
+    ? {
+        in: usage.inputTokens + usage.cacheCreationTokens + usage.cacheReadTokens,
+        out: usage.outputTokens,
+        cost: usage.costUsd,
+      }
+    : null;
+
+  if (status.kind === "running" || status.kind === "stopping") {
+    const started = status.started;
+    return {
+      state: "running",
+      runningProject:
+        started.projectSlug === "(vault)" ? null : started.projectSlug,
+      runningSkill: started.freeform ? null : started.promptId,
+      lastUsage,
+    };
+  }
+  if (status.kind === "exited") {
+    return {
+      state: "exited",
+      runningProject: null,
+      runningSkill: null,
+      lastUsage,
+    };
+  }
+  return {
+    state: "idle",
+    runningProject: null,
+    runningSkill: null,
+    lastUsage,
+  };
 }
 
 /**

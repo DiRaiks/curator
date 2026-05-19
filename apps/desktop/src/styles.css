@@ -916,19 +916,20 @@ button {
   display: inline-flex;
 }
 
-/* Flat pill — star glyph, "recs" label, optional accent count badge.
- * Two visual states: count==0 → transparent + muted (the bell still
- * shows because dismissed items exist), count>0 → accent-soft tint
- * with full fg text so the active state is visible at a glance. */
+/* Compact trigger sitting in the TitleBar's right rail. Two visual
+ * states: count==0 renders as `○ recs` (hollow dot, muted), count>0
+ * as `● recs [N]` (filled accent dot, accent-soft count badge). The
+ * border is reset to keep the bell flush with neighbouring titlebar
+ * buttons — the bell-slot container handles surrounding chrome. */
 .recs-bell {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   height: 22px;
-  padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  padding: 0 10px;
   background: transparent;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
   color: var(--muted);
   cursor: pointer;
   font-family: var(--font-mono);
@@ -940,29 +941,49 @@ button {
 }
 
 .recs-bell--has-active {
-  background: var(--accent-soft);
   color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border-soft));
 }
 
-.recs-bell__icon {
-  font-size: 12px;
-  line-height: 1;
+/* Filled accent circle when count > 0 — drives the "something to look
+ * at" signal. */
+.recs-bell__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--muted-2);
+}
+
+.recs-bell__dot--active {
+  background: var(--accent);
+}
+
+/* Hollow ring when count is 0 — same footprint, different language:
+ * "empty / nothing pending". Implemented via a thinner inset border
+ * over a transparent core. */
+.recs-bell__dot--muted {
+  background: transparent;
+  border: 1.5px solid var(--muted-2);
+  width: 5px;
+  height: 5px;
 }
 
 .recs-bell__label {
   line-height: 1;
 }
 
-/* Count badge — solid accent pill, accent-fg text. Sits to the right of
- * "recs" so the eye lands on the number after parsing the label. */
+/* Count badge — accent-soft background with accent text, mono. Reads
+ * as a secondary detail next to the label, not the primary signal
+ * (that's the filled dot). */
 .recs-bell__count {
   display: inline-flex;
   align-items: center;
   height: 14px;
   padding: 0 5px;
   border-radius: 7px;
-  background: var(--accent);
-  color: var(--accent-fg);
+  background: var(--accent-soft);
+  color: var(--accent);
   font-size: 9px;
   font-weight: 700;
   line-height: 1;
@@ -4149,46 +4170,22 @@ button {
 /* Topmost row — macOS dots, project tabs, vault meta cluster, palette
  * + AI handle. Sits above the existing `dashboard__header` in PR A;
  * PR B/C may reconcile the two rows. */
+/* Project tab strip — sits above the dashboard header. The vault
+ * meta cluster, palette/AI handle, recs bell, refresh and close all
+ * live in `.dashboard__header` below; this row carries only the open
+ * project tabs + `+`. Tauri's `decorations: true` paints the real
+ * close/min/zoom controls above us, so no fake dots here. */
 .titlebar {
   display: flex;
   align-items: stretch;
-  height: 34px;
+  padding-left: 8px;
+  height: 30px;
   flex-shrink: 0;
   background: var(--bg-sub);
   border-bottom: 1px solid var(--border);
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--fg-2);
-}
-
-.titlebar__dots {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 12px;
-  border-right: 1px solid var(--border-soft);
-}
-
-/* Decorative only — Tauri's window decorations own the real
- * close/min/zoom. Colours echo the macOS palette without trying to
- * pass for a real chrome target. */
-.titlebar__dot {
-  display: inline-block;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-}
-
-.titlebar__dot--close {
-  background: #d97e6c;
-}
-
-.titlebar__dot--min {
-  background: #d4b46b;
-}
-
-.titlebar__dot--zoom {
-  background: #9ab87d;
 }
 
 .titlebar__tabs {
@@ -4202,7 +4199,7 @@ button {
   align-items: center;
   gap: 6px;
   padding: 0 14px;
-  height: 34px;
+  height: 30px;
   background: transparent;
   border: 0;
   border-right: 1px solid var(--border-soft);
@@ -4253,74 +4250,52 @@ button {
   color: var(--err);
 }
 
-.titlebar__spacer {
-  flex: 1;
-}
+/* ---------- Header palette + AI handle ---------- */
 
-.titlebar__meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 12px;
-  white-space: nowrap;
-  flex-shrink: 0;
-  color: var(--muted);
-}
-
-.titlebar__meta-path {
-  color: var(--fg-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 260px;
-}
-
-.titlebar__meta-sep {
-  color: var(--muted-2);
-}
-
-.titlebar__meta-text {
-  color: var(--muted);
-}
-
-.titlebar__palette,
-.titlebar__ai {
-  display: flex;
+/* Both buttons live inside the existing `.dashboard__header` next to
+ * the pill row. They share a compact 22px-tall pill silhouette so
+ * they read as a coherent rail with the RecommendationsBell trigger
+ * to their left. */
+.header-palette,
+.header-ai {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 34px;
-  padding: 0 14px;
+  height: 22px;
+  padding: 0 10px;
   background: transparent;
-  border: 0;
-  border-left: 1px solid var(--border-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
   color: var(--muted);
-  font: inherit;
+  font-family: var(--font-mono);
   font-size: 11px;
   cursor: pointer;
   white-space: nowrap;
 }
 
-.titlebar__palette:hover,
-.titlebar__ai:hover {
+.header-palette:hover,
+.header-ai:hover {
   color: var(--text);
 }
 
-.titlebar__ai {
+.header-ai {
   font-weight: 600;
 }
 
-.titlebar__ai-dot {
+.header-ai__dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--muted-2);
+  flex-shrink: 0;
 }
 
-.titlebar__ai-dot--running {
+.header-ai__dot--running {
   background: var(--accent);
-  animation: titlebar-ai-pulse 1.4s ease-in-out infinite;
+  animation: header-ai-pulse 1.4s ease-in-out infinite;
 }
 
-@keyframes titlebar-ai-pulse {
+@keyframes header-ai-pulse {
   0%,
   100% {
     opacity: 1;
@@ -4330,11 +4305,15 @@ button {
   }
 }
 
-.titlebar__ai-count {
+.header-ai__count {
   color: var(--fg-2);
+  font-weight: 500;
 }
 
-.titlebar__ai-live {
+/* `N live` pill on the AI handle when something is running. Accent
+ * solid + accent-fg text so the eye finds it before parsing the
+ * sibling muted count. */
+.header-ai__live {
   display: inline-flex;
   align-items: center;
   height: 14px;
@@ -4346,9 +4325,11 @@ button {
   font-weight: 700;
 }
 
-.titlebar__kbd {
+.header-ai__kbd,
+.header-palette__kbd {
   color: var(--muted-2);
   font-size: 10px;
+  font-weight: 400;
 }
 
 /* ---------- App shell · Sidebar (slice 8 PR A) ---------- */
@@ -4551,5 +4532,234 @@ button {
   flex: 1;
   overflow: auto;
   min-height: 0;
+}
+
+/* ---------- App shell · EditorTabs (slice 8 PR B) ---------- */
+
+/* Sits at the top of the editor pane when one or more buffers are
+ * open. Three regions: scrollable tab strip on the left, flex spacer,
+ * segmented view-mode toggle on the right. Mirrors the V5 design's
+ * 26-30px shelf height. */
+.editor-tabs {
+  display: flex;
+  align-items: stretch;
+  height: 28px;
+  flex-shrink: 0;
+  background: var(--bg-sub);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.editor-tabs__strip {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* Tab is a button reset — 10px horizontal padding, mono content,
+ * accent rail along the top edge when active so the eye finds it
+ * without re-reading the basename. */
+.editor-tabs__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--border-soft);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  position: relative;
+}
+
+.editor-tabs__tab:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+}
+
+.editor-tabs__tab--active {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.editor-tabs__tab--active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: var(--accent);
+}
+
+/* Clean/dirty glyph in front of the basename. `M` mark in accent for
+ * unmodified buffers, `●` in warn for ones with unsaved changes. */
+.editor-tabs__glyph {
+  font-size: 10px;
+  width: 10px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.editor-tabs__glyph--clean {
+  color: var(--accent);
+}
+
+.editor-tabs__glyph--dirty {
+  color: var(--warn);
+}
+
+.editor-tabs__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+}
+
+.editor-tabs__close {
+  color: var(--muted-2);
+  font-size: 12px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+
+.editor-tabs__close:hover {
+  color: var(--err);
+}
+
+.editor-tabs__spacer {
+  flex: 1;
+}
+
+/* View-mode toggle — segmented row of three buttons (src / split /
+ * prev) on the right end of the strip. Active mode reads as accent
+ * with the same top-edge rail the active tab gets. */
+.editor-tabs__view-mode {
+  display: flex;
+  align-items: stretch;
+  border-left: 1px solid var(--border-soft);
+  flex-shrink: 0;
+}
+
+.editor-tabs__mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--border-soft);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 500;
+  cursor: pointer;
+  position: relative;
+}
+
+.editor-tabs__mode-btn:last-child {
+  border-right: 0;
+}
+
+.editor-tabs__mode-btn:hover {
+  color: var(--text);
+}
+
+.editor-tabs__mode-btn--active {
+  background: var(--bg);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.editor-tabs__mode-btn--active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: var(--accent);
+}
+
+.editor-tabs__mode-kbd {
+  color: var(--muted-2);
+  font-size: 9px;
+}
+
+/* ---------- App shell · StatusBar (slice 8 PR B) ---------- */
+
+/* Pinned to the bottom of the dashboard, BELOW the RunPanel. Mono
+ * 10.5px line of grouped signals separated by 1px dividers; pieces
+ * with no data collapse out (no em-dash placeholders). */
+.status-bar {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  flex-shrink: 0;
+  padding: 0 12px;
+  gap: 12px;
+  background: var(--bg-sub);
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.status-bar__sep {
+  width: 1px;
+  height: 12px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.status-bar__spacer {
+  flex: 1;
+}
+
+.status-bar__run {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+}
+
+.status-bar__run-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: status-bar-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes status-bar-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.status-bar__project {
+  color: var(--fg-2);
+}
+
+.status-bar__branch {
+  color: var(--muted);
+}
+
+.status-bar__dirty {
+  color: var(--warn);
+}
+
+.status-bar__chats {
+  color: var(--muted);
 }
 
