@@ -182,6 +182,10 @@ export interface RunExitEvent {
 
 export interface RunStatus {
   active: boolean;
+  /** When `active` is true, the same payload the original `run:started`
+   *  event carried. Use this on mount to recover context (vault root,
+   *  project + prompt ids) across remounts and IDE restarts. */
+  started?: RunStartedEvent;
 }
 
 export async function startRun(args: {

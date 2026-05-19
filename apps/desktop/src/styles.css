@@ -209,9 +209,79 @@ button {
 }
 
 .privacy-status {
-  cursor: help;
   font-weight: 600;
   letter-spacing: 0.02em;
+}
+
+/* ---------- Generic hover/focus tooltip ---------- */
+
+/* `<Tooltip>` component. Used wherever the user hovers an element to
+ * see extra detail — native HTML `title` attribute is unreliable in
+ * Tauri webviews (especially multiline), so we render our own.
+ *
+ * The host is a span wrapping the trigger. The popover is a sibling
+ * absolutely-positioned element revealed by :hover / :focus-within. */
+.tooltip-host {
+  position: relative;
+  cursor: help;
+  outline: none;
+  display: inline-flex;
+}
+
+.tooltip-pop {
+  position: absolute;
+  z-index: 100;
+  min-width: 200px;
+  max-width: 360px;
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  white-space: pre-line;
+  text-align: left;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 100ms ease 200ms, visibility 0s 300ms;
+  cursor: default;
+}
+
+/* Placement modifiers. */
+.tooltip-host--top .tooltip-pop {
+  bottom: calc(100% + 8px);
+}
+
+.tooltip-host--bottom .tooltip-pop {
+  top: calc(100% + 8px);
+}
+
+/* Horizontal alignment. `center` centers on the trigger; `start` /
+ * `end` align the popover to the trigger's left / right edge so a
+ * trigger near the viewport edge doesn't push the popover off-screen. */
+.tooltip-host--align-center .tooltip-pop {
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.tooltip-host--align-start .tooltip-pop {
+  left: 0;
+}
+
+.tooltip-host--align-end .tooltip-pop {
+  right: 0;
+}
+
+.tooltip-host:hover .tooltip-pop,
+.tooltip-host:focus .tooltip-pop,
+.tooltip-host:focus-within .tooltip-pop {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 100ms ease 100ms, visibility 0s 100ms;
 }
 
 .privacy-status--protected {
@@ -1723,7 +1793,8 @@ button {
 
 /* Session usage chip — tokens + cost, summed across resume turns.
  * Sits between status and the action buttons so it's always glanceable
- * but doesn't compete with the run state for primary attention. */
+ * but doesn't compete with the run state for primary attention. Hover
+ * detail comes from the generic <Tooltip> component wrapping the chip. */
 .run-panel__usage {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
@@ -1732,9 +1803,6 @@ button {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: color-mix(in srgb, var(--accent) 80%, var(--text));
   white-space: nowrap;
-  cursor: help;
-  /* Tooltip is multi-line plain text via the `title` attribute, so we
-   * don't need fancy positioning. Native tooltip is good enough. */
 }
 
 .run-panel__output {

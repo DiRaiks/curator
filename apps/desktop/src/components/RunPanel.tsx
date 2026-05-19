@@ -8,6 +8,7 @@ import {
   type RunExitEvent,
   type RunStartedEvent,
 } from "../api";
+import { Tooltip } from "./Tooltip";
 
 /**
  * Persistent bottom drawer that streams the active run's output. The slice 1
@@ -108,13 +109,15 @@ export function RunPanel() {
         const snapshot = await getRunStatus();
         if (cancelled) return;
         if (snapshot.active) {
-          // Mount-time sync: backend knows a run is alive but the events
-          // we missed contain the real metadata. Fill placeholders; the
-          // Reply box stays disabled until a real `run:started` event
-          // populates `started` with usable vaultRoot/projectSlug/promptId.
+          // Mount-time sync: the backend hands back the same payload
+          // the original `run:started` carried, so a remount during an
+          // active run (HMR in dev, IDE restart) recovers the full
+          // context — including vaultRoot — needed for Reply / Resume.
+          // Falls back to placeholders only when backend somehow lacks
+          // the snapshot, which shouldn't happen but isn't fatal.
           setStatus({
             kind: "running",
-            started: {
+            started: snapshot.started ?? {
               projectSlug: "(in progress)",
               promptId: "?",
               vaultRoot: "",
@@ -267,6 +270,16 @@ export function RunPanel() {
     const trimmed = replyDraft.trim();
     if (trimmed === "") return;
     const started = status.started;
+    // Defensive: if mount-time sync ever fails to recover real context
+    // (backend doesn't know about the run, ancient IDE state, etc.),
+    // surface a clear error instead of relaying the cryptic
+    // "vault root not accessible: <empty>" the spawn would emit.
+    if (started.vaultRoot === "" || started.projectSlug === "(in progress)") {
+      setReplyError(
+        "Lost track of which vault this run started against — try a fresh run.",
+      );
+      return;
+    }
     setSending(true);
     setReplyError(null);
     try {
@@ -323,13 +336,16 @@ export function RunPanel() {
           {statusLabel}
         </span>
         {hasUsage(usage) && (
-          <span
-            className="run-panel__usage"
-            title={formatUsageTooltip(usage)}
-            aria-label="Session usage"
+          <Tooltip
+            content={formatUsageTooltip(usage)}
+            placement="top"
+            align="end"
+            ariaLabel="Session usage"
           >
-            {formatUsageSummary(usage)}
-          </span>
+            <span className="run-panel__usage">
+              {formatUsageSummary(usage)}
+            </span>
+          </Tooltip>
         )}
         {status.kind === "running" && (
           <button
@@ -585,7 +601,16 @@ function formatUsageTooltip(u: SessionUsage): string {
   if (u.cacheReadTokens > 0)
     lines.push(`  Cache read: ${u.cacheReadTokens.toLocaleString()}`);
   lines.push(`Output: ${u.outputTokens.toLocaleString()} tokens`);
-  if (u.costUsd > 0) lines.push(`Cost so far: ${formatCost(u.costUsd)}`);
+  if (u.costUsd > 0) {
+    lines.push(`Cost so far: ${formatCost(u.costUsd)}`);
+  } else {
+    // Subscription accounts (Claude Pro / Max / Team / Enterprise)
+    // don't get per-call billing; claude omits `total_cost_usd` or
+    // emits 0. Token counters still work because `message.usage` is
+    // always populated. Make the absence explicit instead of leaving
+    // the user wondering whether the run was free.
+    lines.push("Cost: not reported (subscription plan)");
+  }
   return lines.join("\n");
 }
 

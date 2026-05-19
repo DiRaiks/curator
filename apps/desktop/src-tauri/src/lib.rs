@@ -161,6 +161,13 @@ struct RunStateInner {
 struct ActiveRun {
     gen: RunGen,
     killer: vault_core::runner::Killer,
+    /// Snapshot of the `run:started` payload, kept so a frontend that
+    /// remounts mid-run (HMR in dev, app restart during a long run) can
+    /// re-sync via `get_run_status` and recover the context needed to
+    /// resume the conversation. Without this, the mount-time sync
+    /// installs a placeholder with empty fields and Reply later fails
+    /// with "vault root not accessible: <empty>".
+    started: RunStartedPayload,
 }
 
 /// Holds the active CLI run's kill switch (if any) plus a monotonic
@@ -378,6 +385,18 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
         resume_session_id,
     };
 
+    // Build the started payload once — it gets emitted to the frontend
+    // AND stashed in RunState so a later `get_run_status` can return
+    // the same context after a mount-time resync.
+    let started_payload = RunStartedPayload {
+        project_slug,
+        prompt_id,
+        vault_root: vault_path.to_string_lossy().to_string(),
+        workdir: workdir.to_string_lossy().to_string(),
+        runner: "claude-code",
+        resume: is_resume,
+    };
+
     // Hold the RunState lock across the spawn so the "is_some" check and
     // the killer insert are atomic. The spawn itself is synchronous; no
     // async / await in this block. This closes the TOCTOU window where
@@ -397,21 +416,15 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
 
         let gen = inner.next_gen.wrapping_add(1);
         inner.next_gen = gen;
-        inner.active = Some(ActiveRun { gen, killer });
+        inner.active = Some(ActiveRun {
+            gen,
+            killer,
+            started: started_payload.clone(),
+        });
         (events, gen)
     };
 
-    let _ = app.emit(
-        "run:started",
-        RunStartedPayload {
-            project_slug,
-            prompt_id,
-            vault_root: vault_path.to_string_lossy().to_string(),
-            workdir: workdir.to_string_lossy().to_string(),
-            runner: "claude-code",
-            resume: is_resume,
-        },
-    );
+    let _ = app.emit("run:started", started_payload);
 
     // Emit pump. Drains the receiver and forwards each event as a typed
     // Tauri event. On `Exit` the slot is cleared, but only if this thread
@@ -477,15 +490,18 @@ fn stop_run(state: State<'_, RunState>) -> Result<(), String> {
     Ok(())
 }
 
-/// Query whether a run is currently active. Used by the frontend on
-/// mount to synchronise its local `running` flag with reality — without
-/// this, a component remounting while a run is alive would show the Run
-/// button enabled.
+/// Query whether a run is currently active, and if so return the full
+/// `run:started` context (project_slug, prompt_id, vault_root, workdir,
+/// runner). Used by the frontend on mount to recover state across
+/// remounts (HMR in dev) and IDE restarts during a long run —
+/// without the started context, Reply / Resume would fail with
+/// "vault root not accessible: <empty>".
 #[tauri::command]
 fn get_run_status(state: State<'_, RunState>) -> Result<RunStatusPayload, String> {
     let inner = lock_recovering(&state.0);
     Ok(RunStatusPayload {
         active: inner.active.is_some(),
+        started: inner.active.as_ref().map(|a| a.started.clone()),
     })
 }
 
@@ -493,6 +509,10 @@ fn get_run_status(state: State<'_, RunState>) -> Result<RunStatusPayload, String
 #[serde(rename_all = "camelCase")]
 struct RunStatusPayload {
     active: bool,
+    /// Present when `active` is `true`. Same payload shape as the
+    /// `run:started` event so the frontend can drop it in directly.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    started: Option<RunStartedPayload>,
 }
 
 // ---------- Recommendations + dismiss store ----------

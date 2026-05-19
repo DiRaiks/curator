@@ -18,6 +18,7 @@ import { ProjectDetail } from "./ProjectDetail";
 import { ProjectList } from "./ProjectList";
 import { RecommendationsBell } from "./RecommendationsBell";
 import { RunPanel } from "./RunPanel";
+import { Tooltip } from "./Tooltip";
 import { ZoneList } from "./ZoneList";
 
 interface DashboardProps {
@@ -80,14 +81,14 @@ function PrivacyBadge({ state, reason }: PrivacyBadgeProps) {
     state === "protected" ? "privacy: protected" : "privacy: at risk";
   const tip = state === "protected" ? PRIVACY_TOOLTIP : (reason ?? PRIVACY_TOOLTIP);
   return (
-    <span
-      className={"pill privacy-status privacy-status--" + state}
-      title={tip}
-      aria-label={tip}
-      role="status"
-    >
-      {label}
-    </span>
+    <Tooltip content={tip} placement="bottom" align="start" ariaLabel={tip}>
+      <span
+        className={"pill privacy-status privacy-status--" + state}
+        role="status"
+      >
+        {label}
+      </span>
+    </Tooltip>
   );
 }
 
