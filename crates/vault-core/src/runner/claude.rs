@@ -61,6 +61,18 @@ use super::{
 const CLAUDE_BIN: &str = "claude";
 const WAITER_POLL_MS: u64 = 50;
 
+/// Resolve which binary to spawn for the Claude runner. Honors `CLAUDE_BIN`
+/// as an escape hatch for non-standard installs (corporate wrappers,
+/// pinned versions, custom paths); falls back to the bare `claude` name
+/// which is resolved via `PATH` by the OS at spawn time.
+fn resolve_claude_bin() -> String {
+    std::env::var("CLAUDE_BIN")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| CLAUDE_BIN.to_string())
+}
+
 /// Request id of the initialize control_request. Claude echoes this back
 /// in a control_response; we silently swallow that ack so it doesn't show
 /// up in the user-facing output stream.
@@ -93,7 +105,8 @@ impl Runner for ClaudeRunner {
     fn start(&self, req: RunRequest) -> Result<RunHandle, RunnerError> {
         let args = build_args(&req);
         let init_messages = build_stdin_messages(&req);
-        spawn_with_command(CLAUDE_BIN, args, req, init_messages)
+        let bin = resolve_claude_bin();
+        spawn_with_command(&bin, args, req, init_messages)
     }
 }
 

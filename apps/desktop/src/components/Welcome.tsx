@@ -74,7 +74,7 @@ export function Welcome({
   return (
     <div className="welcome">
       <div className="welcome__card">
-        <h1 className="welcome__title">Vault Workflow IDE</h1>
+        <h1 className="welcome__title">Curator</h1>
         <p className="welcome__subtitle">
           A workflow tool for Markdown vaults. Open a vault folder to get started.
         </p>

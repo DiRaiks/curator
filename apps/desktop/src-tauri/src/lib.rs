@@ -1129,8 +1129,153 @@ fn delete_session(
     db.delete_session(id).map_err(|e| e.to_string())
 }
 
+/// PNG bytes embedded at compile time. macOS uses a template image
+/// (pure-black on transparent) that the OS inverts for light/dark
+/// menubars; other platforms get the colored amber variant.
+#[cfg(target_os = "macos")]
+const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/tray-template-64.png");
+#[cfg(not(target_os = "macos"))]
+const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray/tray-amber-64.png");
+
+/// Build the system tray: amber/template icon + Show/Quit menu on
+/// right-click, left-click toggles the main window.
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::image::Image;
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let show = MenuItem::with_id(app, "tray:show", "Show", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "tray:quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+
+    let icon = Image::from_bytes(TRAY_ICON_BYTES)?;
+
+    TrayIconBuilder::with_id("main")
+        .icon(icon)
+        .icon_as_template(cfg!(target_os = "macos"))
+        .tooltip("Curator")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "tray:show" => show_main_window(app),
+            "tray:quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                toggle_main_window(tray.app_handle());
+            }
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
+fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+fn toggle_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let Some(w) = app.get_webview_window("main") else {
+        return;
+    };
+    let visible = w.is_visible().unwrap_or(false);
+    let focused = w.is_focused().unwrap_or(false);
+    if visible && focused {
+        let _ = w.hide();
+    } else {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+/// On macOS, a `.app` launched via Finder / LaunchServices inherits only
+/// the system default `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`), missing
+/// the directories where the user installs CLI tools (`/opt/homebrew/bin`,
+/// `~/.npm-global/bin`, `~/.bun/bin`, nvm/volta/mise shims, …). Without
+/// this, `Command::new("claude")` — and anything the runner shells out to
+/// (git, node, bun) — fails with `NotFound` even though the binary is
+/// installed.
+///
+/// Fix: spawn the user's login shell once at startup with `-ilc` so it
+/// sources `~/.zshrc` / `~/.bash_profile` / etc., capture its `$PATH`,
+/// and merge it into the current process. Subsequent subprocess spawns
+/// inherit the augmented `PATH`.
+///
+/// Best-effort: any failure is logged and ignored — users can still set
+/// `CLAUDE_BIN` to an absolute path as an escape hatch.
+#[cfg(target_os = "macos")]
+fn prime_user_path() {
+    use std::collections::HashSet;
+    use std::process::Command;
+
+    const START: &str = "__VIDE_PATH_START__";
+    const END: &str = "__VIDE_PATH_END__";
+
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "/bin/zsh".to_string());
+
+    // `-l` (login) + `-i` (interactive) sources the user's rc files where
+    // PATH exports live. Sentinels bracket the value so banner output
+    // from a chatty shell (e.g. "Last login: …") doesn't corrupt parsing.
+    let out = match Command::new(&shell)
+        .args(["-ilc", &format!("printf '{START}%s{END}' \"$PATH\"")])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("prime_user_path: failed to spawn {shell}: {e}");
+            return;
+        }
+    };
+    if !out.status.success() {
+        eprintln!("prime_user_path: {shell} exited non-zero");
+        return;
+    }
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let Some(s) = stdout.find(START) else { return };
+    let Some(e) = stdout.find(END) else { return };
+    let shell_path = &stdout[s + START.len()..e];
+    if shell_path.is_empty() {
+        return;
+    }
+
+    let current = std::env::var("PATH").unwrap_or_default();
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut parts: Vec<&str> = Vec::new();
+    for p in shell_path.split(':').chain(current.split(':')) {
+        if p.is_empty() {
+            continue;
+        }
+        if seen.insert(p) {
+            parts.push(p);
+        }
+    }
+    std::env::set_var("PATH", parts.join(":"));
+}
+
+#[cfg(not(target_os = "macos"))]
+fn prime_user_path() {}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Must run before any subprocess spawn so the runner can locate
+    // `claude` on a GUI-launched `.app`. Cheap (~one shell startup).
+    prime_user_path();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -1152,6 +1297,12 @@ pub fn run() {
                 init_app_db(app, &data_dir);
             } else {
                 eprintln!("no app_local_data_dir available — persistence disabled");
+            }
+
+            // Failure to install the tray is non-fatal — log and
+            // keep going. The app is still usable via the dock.
+            if let Err(e) = setup_tray(app) {
+                eprintln!("failed to install system tray: {e}");
             }
 
             Ok(())
