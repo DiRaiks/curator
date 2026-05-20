@@ -193,7 +193,7 @@ function RecommendationCard({
     <li
       className={
         "recs-card recs-card--" +
-        severitySlug(rec.severity) +
+        rec.severity +
         (dismissed ? " recs-card--dismissed" : "")
       }
     >
@@ -282,10 +282,6 @@ function severityIcon(s: RecommendationSeverity): string {
     case "warn":
       return "⚠";
   }
-}
-
-function severitySlug(s: RecommendationSeverity): string {
-  return s;
 }
 
 function categoryLabel(c: RecommendationCategory): string {

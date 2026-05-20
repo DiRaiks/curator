@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::thread;
@@ -243,11 +243,11 @@ struct ActiveRun {
     /// with "vault root not accessible: <empty>".
     started: RunStartedPayload,
     /// Pending `can_use_tool` requests claude is currently waiting on.
-    /// Keyed by `request_id`. Cleared when the user picks approve/deny
-    /// via [`approve_tool_use`] / [`deny_tool_use`] (which both
-    /// validate the id exists before writing to claude's stdin so a
-    /// stale modal click doesn't desync the protocol).
-    pending_permissions: HashMap<String, ()>,
+    /// Cleared when the user picks approve/deny via [`approve_tool_use`]
+    /// / [`deny_tool_use`] (which both validate the id exists before
+    /// writing to claude's stdin so a stale modal click doesn't desync
+    /// the protocol).
+    pending_permissions: HashSet<String>,
 }
 
 /// Holds the active CLI run's kill switch (if any) plus a monotonic
@@ -350,8 +350,13 @@ struct RunPermissionRequestPayload {
 /// canonicalized and the resolved workdir is checked against a deny-list
 /// of sensitive paths (system dirs, `~/.ssh`, `~/.aws`, etc.) so a vault
 /// can't redirect the agent into reading credentials.
+///
+/// `async` + `spawn_blocking` offloads the disk-touching prep work
+/// (canonicalize + frontmatter parse in `preview_context` + workdir
+/// validation) so the main thread stays responsive — see the
+/// `scan_project_vulnerabilities` doc comment for the rationale.
 #[tauri::command]
-fn start_run(
+async fn start_run(
     vault_root: String,
     project_slug: String,
     prompt_id: String,
@@ -359,17 +364,31 @@ fn start_run(
     app: AppHandle,
     state: State<'_, RunState>,
 ) -> Result<(), String> {
-    let vault_path = canonicalize_vault_root(&vault_root)?;
-    let preview = vault_core::preview_context(&vault_path, &project_slug, &prompt_id)
-        .map_err(|e| e.to_string())?;
-    let (workdir, additional_dirs) =
-        resolve_workdir(&vault_path, preview.source_repo.local_path.as_deref());
+    let prep_slug = project_slug.clone();
+    let prep_prompt = prompt_id.clone();
+    let (vault_path, workdir, additional_dirs, prompt) =
+        tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+            let vault_path = canonicalize_vault_root(&vault_root)?;
+            let preview =
+                vault_core::preview_context(&vault_path, &prep_slug, &prep_prompt)
+                    .map_err(|e| e.to_string())?;
+            let (workdir, additional_dirs) =
+                resolve_workdir(&vault_path, preview.source_repo.local_path.as_deref());
+            Ok((
+                vault_path,
+                workdir,
+                additional_dirs,
+                preview.external_runner_prompt.clone(),
+            ))
+        })
+        .await
+        .map_err(|e| format!("start_run task failed: {e}"))??;
 
     spawn_and_pump(SpawnArgs {
         vault_path,
         workdir,
         additional_dirs,
-        prompt: preview.external_runner_prompt.clone(),
+        prompt,
         runtime_input,
         resume_session_id: None,
         project_slug,
@@ -386,7 +405,7 @@ fn start_run(
 /// cached under the session id. Cwd and `--add-dir` are re-derived from
 /// the same `(project, prompt)` pair so tool access keeps working.
 #[tauri::command]
-fn resume_run(
+async fn resume_run(
     vault_root: String,
     project_slug: String,
     prompt_id: String,
@@ -401,11 +420,20 @@ fn resume_run(
     if reply.trim().is_empty() {
         return Err("reply text is required to resume a run".into());
     }
-    let vault_path = canonicalize_vault_root(&vault_root)?;
-    let preview = vault_core::preview_context(&vault_path, &project_slug, &prompt_id)
-        .map_err(|e| e.to_string())?;
-    let (workdir, additional_dirs) =
-        resolve_workdir(&vault_path, preview.source_repo.local_path.as_deref());
+    let prep_slug = project_slug.clone();
+    let prep_prompt = prompt_id.clone();
+    let (vault_path, workdir, additional_dirs) =
+        tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+            let vault_path = canonicalize_vault_root(&vault_root)?;
+            let preview =
+                vault_core::preview_context(&vault_path, &prep_slug, &prep_prompt)
+                    .map_err(|e| e.to_string())?;
+            let (workdir, additional_dirs) =
+                resolve_workdir(&vault_path, preview.source_repo.local_path.as_deref());
+            Ok((vault_path, workdir, additional_dirs))
+        })
+        .await
+        .map_err(|e| format!("resume_run task failed: {e}"))??;
 
     spawn_and_pump(SpawnArgs {
         vault_path,
@@ -432,7 +460,7 @@ fn resume_run(
 /// "running · vault/chat". The backend does not validate it against the
 /// scan — it never touches the filesystem with it.
 #[tauri::command]
-fn start_freeform_run(
+async fn start_freeform_run(
     vault_root: String,
     prompt: String,
     scope_project_slug: Option<String>,
@@ -443,14 +471,21 @@ fn start_freeform_run(
     if prompt.trim().is_empty() {
         return Err("prompt is required".into());
     }
-    let vault_path = canonicalize_vault_root(&vault_root)?;
-    let (workdir, additional_dirs) =
-        resolve_workdir(&vault_path, scope_repo_path.as_deref());
+    let (vault_path, workdir, additional_dirs, wrapped) =
+        tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+            let vault_path = canonicalize_vault_root(&vault_root)?;
+            let (workdir, additional_dirs) =
+                resolve_workdir(&vault_path, scope_repo_path.as_deref());
+            let wrapped =
+                build_freeform_prompt(&vault_path, &prompt, workdir != vault_path);
+            Ok((vault_path, workdir, additional_dirs, wrapped))
+        })
+        .await
+        .map_err(|e| format!("start_freeform_run task failed: {e}"))??;
 
     let project_slug = scope_project_slug
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "(vault)".to_string());
-    let wrapped = build_freeform_prompt(&vault_path, &prompt, workdir != vault_path);
 
     spawn_and_pump(SpawnArgs {
         vault_path,
@@ -476,7 +511,7 @@ fn start_freeform_run(
 /// every resume so a stale or tampered echo can't redirect the agent
 /// into a denied path (`~/.ssh`, system dirs, etc.).
 #[tauri::command]
-fn resume_freeform_run(
+async fn resume_freeform_run(
     vault_root: String,
     workdir: String,
     additional_dirs: Vec<String>,
@@ -492,11 +527,17 @@ fn resume_freeform_run(
     if reply.trim().is_empty() {
         return Err("reply text is required to resume a run".into());
     }
-    let vault_path = canonicalize_vault_root(&vault_root)?;
-    let workdir = vault_core::runner::validate_workdir(&PathBuf::from(workdir))
-        .map_err(|e| e.to_string())?;
-    let additional_dirs: Vec<PathBuf> =
-        additional_dirs.into_iter().map(PathBuf::from).collect();
+    let (vault_path, workdir, additional_dirs) =
+        tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+            let vault_path = canonicalize_vault_root(&vault_root)?;
+            let workdir = vault_core::runner::validate_workdir(&PathBuf::from(workdir))
+                .map_err(|e| e.to_string())?;
+            let additional_dirs: Vec<PathBuf> =
+                additional_dirs.into_iter().map(PathBuf::from).collect();
+            Ok((vault_path, workdir, additional_dirs))
+        })
+        .await
+        .map_err(|e| format!("resume_freeform_run task failed: {e}"))??;
 
     let display_slug = if project_slug.trim().is_empty() {
         "(vault)".to_string()
@@ -672,7 +713,7 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
             gen,
             killer,
             started: started_payload.clone(),
-            pending_permissions: HashMap::new(),
+            pending_permissions: HashSet::new(),
         });
         (events, gen)
     };
@@ -719,7 +760,7 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
                         if let Some(active) = inner.active.as_mut() {
                             if active.gen == gen {
                                 active.pending_permissions
-                                    .insert(req.request_id.clone(), ());
+                                    .insert(req.request_id.clone());
                             }
                         }
                     }
@@ -795,7 +836,7 @@ fn approve_tool_use(
         .active
         .as_mut()
         .ok_or_else(|| "no active run".to_string())?;
-    if active.pending_permissions.remove(&request_id).is_none() {
+    if !active.pending_permissions.remove(&request_id) {
         return Err(format!("unknown or already-resolved request_id: {request_id}"));
     }
     let decision = vault_core::runner::PermissionDecision::Allow {
@@ -823,7 +864,7 @@ fn deny_tool_use(
         .active
         .as_mut()
         .ok_or_else(|| "no active run".to_string())?;
-    if active.pending_permissions.remove(&request_id).is_none() {
+    if !active.pending_permissions.remove(&request_id) {
         return Err(format!("unknown or already-resolved request_id: {request_id}"));
     }
     let decision = vault_core::runner::PermissionDecision::Deny {

@@ -2743,6 +2743,20 @@ button {
   color: var(--warn);
 }
 
+.run-panel__line--user {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* Marker so a multi-line user message still reads as "this is what
+ * the user said" without forcing the renderer to bake a prefix into
+ * the stored text (which would leak into save_session payloads and
+ * complicate copy/paste). */
+.run-panel__line--user::before {
+  content: "▸ you · ";
+  opacity: 0.75;
+}
+
 .run-panel__line--system {
   color: var(--muted);
   font-style: italic;

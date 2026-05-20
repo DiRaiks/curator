@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createMarkdownFile,
   initVault,
-  listSessions,
   onRunEvents,
   readMarkdownFile,
   writeMarkdownFile,
@@ -447,33 +446,22 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
 
   // Live run-status snapshot, populated via RunPanel's imperative
   // handle. Ambient UI (TitleBar AI handle pulse, StatusBar chat
-  // counter) reads from here instead of reaching into RunPanel's
-  // private useState.
+  // counter) reads from here — including the saved-session count,
+  // which RunPanel owns since it does the writes via `save_session`
+  // and refreshes the list immediately after each UPSERT (no race
+  // with a Dashboard-side refetch).
   const [runStatusInfo, setRunStatusInfo] = useState<RunStatusInfo>({
     state: "idle",
     runningSkill: null,
     runningProject: null,
     lastUsage: null,
+    savedCount: null,
   });
-  // Total saved chat sessions for this vault. Drives the AI handle's
-  // `AI N` count and the StatusBar `N total` segment. Refetched on
-  // mount and on every `run:exit` (a fresh exit means one more saved
-  // session lives on disk).
-  const [savedSessionCount, setSavedSessionCount] = useState<number>(0);
-  const vaultRoot = result.vaultRoot;
-  const refetchSessions = useCallback(async () => {
-    if (!vaultRoot) return;
-    try {
-      const list = await listSessions(vaultRoot, false);
-      setSavedSessionCount(list.length);
-    } catch {
-      // Best-effort — leave the previous count alone if the IPC fails.
-    }
-  }, [vaultRoot]);
-
-  useEffect(() => {
-    void refetchSessions();
-  }, [refetchSessions]);
+  /** Saved-session count derived from `runStatusInfo`. `null` (pre-fetch)
+   *  collapses to 0 for display so the badge doesn't flash an "empty"
+   *  intermediate before RunPanel reports — first paint just shows the
+   *  zero baseline. */
+  const savedSessionCount = runStatusInfo.savedCount ?? 0;
 
   // Subscribe to RunPanel status updates. The handle is populated by
   // `useImperativeHandle` during the commit phase, which runs BEFORE
@@ -489,12 +477,13 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
     let cancelled = false;
     void onRunEvents({
       onPermissionRequest: (ev) => setPendingPermission(ev),
-      // On exit: clear the permission prompt (defensive — Stop / crash
-      // could leave it open) AND refetch the session list so the
-      // AI/StatusBar counter picks up the newly-persisted row.
+      // Defensive: a Stop / crash mid-prompt could leave a stale
+      // permission modal up. Clear it on every exit. The saved-session
+      // count is updated by RunPanel's save-completion path — no
+      // extra `listSessions` round-trip here, which used to race the
+      // UPSERT and occasionally surface a stale N.
       onExit: () => {
         setPendingPermission(null);
-        void refetchSessions();
       },
     }).then((un) => {
       if (cancelled) {
@@ -507,7 +496,7 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
       cancelled = true;
       if (unlisten) unlisten();
     };
-  }, [refetchSessions]);
+  }, []);
 
   // Auto-include the running chat's project in the title-bar tab strip
   // so a user who started a chat via RunPanel scope dropdown (rather
@@ -532,15 +521,24 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
   // surface fresh hints.
   const recs = useRecommendations(result.vaultRoot, refreshTick);
 
-  // Navigate to a project's detail view from the bell. Looks up the
-  // project by slug in the current scan.
+  // Navigate to a project's detail view from the bell. Reuses the
+  // same flow as a TitleBar tab click / sidebar PROJECTS row click so
+  // the project gets added to the open-tabs strip and becomes active —
+  // not just rendered as a one-off detail page that leaves the tab
+  // strip out of sync. `openProject` is defined further below; the
+  // body is replicated inline here to keep the existing top-down
+  // declaration order (RecommendationsBell renders before openProject
+  // would be available via hoisting).
   const goToProject = useCallback(
     (slug: string) => {
       const project = result.projects.find((p) => p.slug === slug);
-      if (project) {
-        setView("projects");
-        setSelectedProject(project);
-      }
+      if (!project) return;
+      setOpenProjects((prev) =>
+        prev.includes(slug) ? prev : [...prev, slug],
+      );
+      setActiveProject(slug);
+      setSelectedProject(project);
+      setView("projects");
     },
     [result.projects],
   );
@@ -1020,32 +1018,18 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
             onGoToProject={goToProject}
             onOpenFile={attemptOpenFile}
           />
-          {/* Palette + AI handle — moved here from the short-lived
-            * TitleBar pass so they share one chrome row with the rest
-            * of the vault meta. Palette is still a no-op; AI handle
-            * pulses with the live `runStatusInfo` from RunPanel. */}
-          <button
-            type="button"
-            className="header-palette"
-            aria-label="Open command palette"
-            title="Command palette (coming soon)"
-            onClick={() => {
-              // Palette UI doesn't exist yet.
-            }}
-          >
-            <span className="header-palette__kbd">⌘K</span>
-            <span>palette</span>
-          </button>
+          {/* AI handle — toggles the bottom chat drawer via RunPanel's
+            * imperative handle. Pulses with the live `runStatusInfo`
+            * from RunPanel; the count reflects saved chat sessions for
+            * this vault. (The ⌘K palette button that used to live next
+            * to this one was a no-op; removed until the palette UI
+            * actually exists.) */}
           <button
             type="button"
             className="header-ai"
             aria-label="Toggle chat panel"
             title="Toggle chat panel"
-            onClick={() => {
-              // Chat collapse state still lives inside RunPanel
-              // (slice 2). Wiring this requires an additional
-              // imperative-handle method; out of scope right now.
-            }}
+            onClick={() => runPanelRef.current?.toggleCollapsed()}
           >
             <span
               className={
@@ -1059,7 +1043,6 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
             {runningChats > 0 && (
               <span className="header-ai__live">{runningChats} live</span>
             )}
-            <span className="header-ai__kbd">⌘J</span>
           </button>
           <button
             type="button"

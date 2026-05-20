@@ -23,6 +23,7 @@ import {
   type RunExitEvent,
   type RunStartedEvent,
 } from "../api";
+import { usePopoverPosition } from "../hooks/usePopoverPosition";
 import type { Project, SessionFull, SessionSummary } from "../types";
 import { Tooltip } from "./Tooltip";
 
@@ -41,7 +42,15 @@ import { Tooltip } from "./Tooltip";
  * via CSS so the renderer stays cheap on long outputs.
  */
 
-type LineKind = "stdout" | "stderr" | "system";
+/** Visual kind for an output line.
+ *  - `stdout`: model text / tool output (default body color)
+ *  - `stderr`: error stream / denied tools (warn color)
+ *  - `system`: structural markers — `▶ start`, `✔ exit`, tool calls, etc.
+ *  - `user`: the user's chat input echoed locally before the IPC fires,
+ *    so the buffer reads as a conversation rather than a one-sided stream
+ *    of the model's replies. Persisted with the session so re-opening a
+ *    saved chat shows what the user actually said. */
+type LineKind = "stdout" | "stderr" | "system" | "user";
 
 interface OutputLine {
   kind: LineKind;
@@ -113,14 +122,23 @@ export interface RunStatusInfo {
   /** Last reported usage totals across the live session, or `null`
    *  before any usage event has arrived. */
   lastUsage: { in: number; out: number; cost: number } | null;
+  /** Total saved sessions for this vault. `null` before the first
+   *  `listSessions` call resolves. RunPanel is the single source of
+   *  truth — it refetches after every save_session UPSERT so the
+   *  count stays consistent with what's actually on disk. */
+  savedCount: number | null;
 }
 
-/** Imperative handle exposed to Dashboard. Used today for two things:
- *  reopening a saved session into the editor's chat panel, and
- *  letting ambient surfaces subscribe to run-status updates so the AI
- *  handle / status bar can pulse in lockstep with the bottom drawer. */
+/** Imperative handle exposed to Dashboard. Used today for three things:
+ *  reopening a saved session into the editor's chat panel, toggling
+ *  the panel collapsed state from the header AI button, and letting
+ *  ambient surfaces subscribe to run-status updates so the AI handle
+ *  / status bar can pulse in lockstep with the bottom drawer. */
 export interface RunPanelHandle {
   reopenSession: (session: SessionFull) => void;
+  /** Flip the panel between collapsed (compact header) and expanded
+   *  (full output + chat input). Wired to the header AI button. */
+  toggleCollapsed: () => void;
   /** Subscribe to live status updates. The callback fires once
    *  immediately with the current snapshot, then on every transition
    *  thereafter. Returns an unsubscribe function. */
@@ -237,11 +255,15 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
               },
             ]);
           } else {
-            // Fresh run: drop the previous output buffer and the prior
-            // session id (the new stream will emit a new system init
-            // with its own session id). Usage counters also reset —
-            // they're per-session.
-            setLines([
+            // Fresh run: APPEND (don't replace) so the just-echoed
+            // user message survives. The "New chat" button is the only
+            // path that clears the buffer; by the time a fresh
+            // `run:started` arrives, the only content in `lines` is
+            // the user's prompt that `onSend` echoed locally moments
+            // ago. The prior session id and usage counters DO reset —
+            // those belong to a different Claude session.
+            setLines((prev) => [
+              ...prev,
               {
                 kind: "system",
                 text: `▶ start ${ev.runner} · ${ev.projectSlug}/${ev.promptId} · cwd: ${ev.workdir}`,
@@ -260,21 +282,26 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
           setCollapsed(false);
         },
         onStdout: (ev) => {
+          // Single JSON.parse per stream line — three downstream
+          // consumers (session id capture, usage accumulation, the
+          // pretty-printer) all read the same object. Parsing once
+          // and dispatching keeps long bursts cheap.
+          const parsed = parseClaudeLine(ev.line);
           // Capture the session id once per stream so the chat input can
           // resume the conversation after exit. Subsequent system events
           // in the same run carry the same id; setSessionId is idempotent
           // on identical values.
-          const sid = extractClaudeSessionId(ev.line);
+          const sid = extractClaudeSessionId(parsed.obj);
           if (sid) setSessionId(sid);
           // Accumulate usage / cost from this line. Token deltas come
           // from `assistant.message.usage`; final per-turn cost comes
           // from the `result` event. Both contribute to the running
           // total displayed in the header.
-          const delta = extractClaudeUsageDelta(ev.line);
+          const delta = extractClaudeUsageDelta(parsed.obj);
           if (delta) {
             setUsage((prev) => mergeUsage(prev, delta));
           }
-          for (const rendered of renderClaudeStreamLine(ev.line)) {
+          for (const rendered of renderClaudeStreamLine(parsed)) {
             appendLine({ kind: rendered.kind, text: rendered.text });
           }
         },
@@ -406,6 +433,13 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     setChatError(null);
     setSending(true);
 
+    // Echo the user's message into the output buffer BEFORE the IPC
+    // fires so the buffer reads as a back-and-forth conversation. Done
+    // up front (not after the await) because once `startFreeformRun` /
+    // `resumeRun` resolves, the run is already streaming and the
+    // model's reply may interleave with anything we'd append late.
+    appendLine({ kind: "user", text });
+
     try {
       // Continue an existing session.
       if (
@@ -466,6 +500,7 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
       setSending(false);
     }
   }, [
+    appendLine,
     sending,
     status,
     chatDraft,
@@ -499,12 +534,29 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
 
   // ---------- Session persistence ----------
 
+  // Memo of the last save we wrote so a status re-entry into "exited"
+  // (e.g. reopening a saved session) doesn't trigger a duplicate UPSERT
+  // with identical data. Tracks `(sessionId, linesCount)` because the
+  // resume path legitimately grows `linesCount` and must re-save, while
+  // a re-entry without any new turns must not.
+  const lastSavedSessionRef = useRef<{
+    sessionId: string;
+    linesCount: number;
+  } | null>(null);
+
   // Persist the run when it exits. Upserts by `(vault_root,
   // claude_session_id)` so reply turns within the same Claude session
   // overwrite the same DB row, growing the saved output buffer with
   // each turn. We run on every transition INTO "exited" — including
   // user-initiated Stop, which also lands here via the `run:exit`
   // event after the runner shuts the subprocess down.
+  //
+  // After the save resolves we re-fetch the session list so the count
+  // surfaced via `RunStatusInfo.savedCount` (and through it the
+  // TitleBar AI handle + StatusBar) reflects the newly-written row.
+  // Critically, the refetch is sequenced AFTER `saveSession`'s promise
+  // resolves — otherwise the count could read the table from before
+  // the UPSERT landed.
   useEffect(() => {
     if (status.kind !== "exited") return;
     if (sessionId === null) return;
@@ -513,10 +565,28 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     // with empty vault_root would create a junk row keyed under "".
     if (status.started.vaultRoot === "") return;
 
+    // Idempotency guard against re-entry. If status flips out of
+    // "exited" (resume turn, New chat) and back without any new lines,
+    // the on-disk row hasn't moved — skip the round-trip.
+    const last = lastSavedSessionRef.current;
+    if (
+      last !== null &&
+      last.sessionId === sessionId &&
+      last.linesCount === lines.length
+    ) {
+      return;
+    }
+
     const started = status.started;
     const exit = status.exit;
     const title = pendingTitle ?? `${started.projectSlug}/${started.promptId}`;
     const started_at = startedAtMs ?? Date.now();
+    const snapshotCount = lines.length;
+
+    lastSavedSessionRef.current = {
+      sessionId,
+      linesCount: snapshotCount,
+    };
 
     void saveSession({
       vaultRoot: started.vaultRoot,
@@ -540,15 +610,27 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
         costUsd: usage.costUsd,
         model: usage.model,
       },
-    }).catch((err) => {
-      // Persistence is best-effort — don't blow up the UI. Surface a
-      // small line so the user knows the run won't appear in history.
-      const text = err instanceof Error ? err.message : String(err);
-      appendLine({
-        kind: "system",
-        text: `! failed to save chat to history: ${text}`,
+    })
+      .then(async () => {
+        try {
+          const list = await listSessions(started.vaultRoot, false);
+          setLastSessions(list);
+        } catch {
+          // Refetch is best-effort — the count just stays at its
+          // previous value until the next idle eager-fetch.
+        }
+      })
+      .catch((err) => {
+        // Persistence is best-effort — don't blow up the UI. Roll the
+        // memo back so a retry on the next render isn't blocked by
+        // the optimistic update we wrote above.
+        lastSavedSessionRef.current = last;
+        const text = err instanceof Error ? err.message : String(err);
+        appendLine({
+          kind: "system",
+          text: `! failed to save chat to history: ${text}`,
+        });
       });
-    });
     // We deliberately depend only on `status` here. `lines`, `usage`,
     // etc. are read at the moment status flips to "exited" (which is
     // the same render where their final values land via the same
@@ -573,6 +655,15 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
       runner: "claude-code",
       resume: false,
       freeform: session.summary.freeform,
+    };
+    // Pre-register the saved state so the persistence effect, which
+    // fires when we flip status to "exited" below, sees a matching
+    // memo and skips the redundant UPSERT. Reopening a saved session
+    // doesn't change the on-disk row; only the subsequent resume turn
+    // (which appends lines) needs to re-save.
+    lastSavedSessionRef.current = {
+      sessionId: session.summary.claudeSessionId,
+      linesCount: session.outputLines.length,
     };
     setStatus({
       kind: "exited",
@@ -625,15 +716,16 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     runningSkill: null,
     runningProject: null,
     lastUsage: null,
+    savedCount: null,
   });
 
-  // Publish status info to all subscribers whenever the live state or
-  // usage totals shift. The effect deliberately doesn't gate on a
-  // shallow-equal check — Set iteration over a handful of callbacks
-  // costs less than the equality check itself, and React already
-  // dedupes identical render outputs downstream.
+  // Publish status info to all subscribers whenever the live state,
+  // usage totals, or saved-session count shift. The effect deliberately
+  // doesn't gate on a shallow-equal check — Set iteration over a
+  // handful of callbacks costs less than the equality check itself,
+  // and React already dedupes identical render outputs downstream.
   useEffect(() => {
-    const info = buildRunStatusInfo(status, usage);
+    const info = buildRunStatusInfo(status, usage, lastSessions);
     statusInfoSnapshotRef.current = info;
     for (const cb of statusSubscribersRef.current) {
       try {
@@ -642,7 +734,7 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
         // Don't let a misbehaving subscriber take down the dispatch loop.
       }
     }
-  }, [status, usage]);
+  }, [status, usage, lastSessions]);
 
   const subscribeToStatus = useCallback(
     (cb: (info: RunStatusInfo) => void) => {
@@ -661,10 +753,14 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     [],
   );
 
+  const toggleCollapsed = useCallback(() => {
+    setCollapsed((c) => !c);
+  }, []);
+
   useImperativeHandle(
     ref,
-    () => ({ reopenSession, subscribeToStatus }),
-    [reopenSession, subscribeToStatus],
+    () => ({ reopenSession, toggleCollapsed, subscribeToStatus }),
+    [reopenSession, toggleCollapsed, subscribeToStatus],
   );
 
   // ---------- Session quick-switch dropdown ----------
@@ -681,25 +777,29 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     }
   }, [recentSessions, vaultRoot]);
 
-  // Invalidate the dropdown cache when the panel saves a new exit —
-  // otherwise reopening the menu would show a stale list missing the
-  // run that just finished. Also invalidate the compact-header cache so
-  // the next idle reflects the run we just stored.
+  // Invalidate the dropdown cache when the panel transitions to
+  // exited — opening the menu next time will refetch and pick up the
+  // freshly-saved row. The compact-header cache (`lastSessions`) is
+  // NOT cleared here: the save-completion path in the persistence
+  // effect refreshes it explicitly so the count flips from N → N+1
+  // in one render rather than briefly going through `null`.
   useEffect(() => {
     if (status.kind === "exited") {
       setRecentSessions(null);
-      setLastSessions(null);
     }
   }, [status.kind]);
 
-  // Eager-fetch the recent session list while idle so the collapsed
-  // compact line can show "last run X ago · $Y" without waiting for the
-  // user to open the menu. Skipped while a freeform send is in flight
-  // (pendingTitle set) — the in-flight title is the source of truth for
-  // the next history row.
+  // Eager-fetch the recent session list whenever the cache is empty.
+  // We deliberately don't gate on `status.kind === "idle"` — when the
+  // app mounts mid-run (HMR in dev, IDE restart during a long
+  // conversation), the run-status sync recovers `kind: "running"`
+  // immediately, and an idle-only fetch would never fire. The result
+  // was the AI handle and StatusBar reading `savedCount: 0` forever
+  // until the run exited. Driving solely off `lastSessions === null`
+  // catches the mount-during-running case at the cost of one extra
+  // IPC during regular start-from-idle (negligible — same call the
+  // dropdown would make on first open).
   useEffect(() => {
-    if (status.kind !== "idle") return;
-    if (pendingTitle !== null) return;
     if (lastSessions !== null) return;
     let cancelled = false;
     void (async () => {
@@ -713,7 +813,7 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     return () => {
       cancelled = true;
     };
-  }, [status.kind, pendingTitle, vaultRoot, lastSessions]);
+  }, [vaultRoot, lastSessions]);
 
   const onPickSessionFromMenu = useCallback(
     async (summary: SessionSummary) => {
@@ -1044,7 +1144,12 @@ function SessionMenuButton({
       : "☰"
     : "⌛ History";
   const toggleRef = useRef<HTMLButtonElement | null>(null);
-  const menuStyle = useHistoryMenuPosition(toggleRef, open);
+  const menuStyle = usePopoverPosition({
+    anchorRef: toggleRef,
+    open,
+    placement: "top",
+    align: "auto",
+  });
   return (
     <div className="run-panel__history">
       <button
@@ -1142,61 +1247,6 @@ function SessionMenuButton({
       )}
     </div>
   );
-}
-
-/**
- * Compute fixed-position coords for the history dropdown so it stays
- * anchored to the toggle button but never overflows the viewport. The
- * RunPanel sits at the bottom of the window, so the menu opens
- * UPWARD; the horizontal side flips based on which half of the screen
- * the toggle is in — left half → menu's left edge tracks the toggle,
- * right half → menu's right edge tracks the toggle. Both edges are
- * then clamped to a 12px inset from the viewport so the menu can
- * never spill off-screen.
- *
- * Recomputed when `open` flips to true so a window resize between
- * opens picks up the new geometry; recomputing on every render would
- * be wasted work since the toggle position is stable while the menu
- * is showing.
- */
-function useHistoryMenuPosition(
-  toggleRef: React.RefObject<HTMLElement>,
-  open: boolean,
-): React.CSSProperties {
-  const [style, setStyle] = useState<React.CSSProperties>({});
-  useEffect(() => {
-    if (!open) return;
-    const el = toggleRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const inset = 12;
-    const bottomFromViewportBottom = Math.max(inset, vh - rect.top + 6);
-    const toggleCenter = rect.left + rect.width / 2;
-    if (toggleCenter > vw / 2) {
-      // Right-half toggle: anchor menu's right edge to toggle's right
-      // edge. Clamp so the menu's right edge stays at least `inset`
-      // away from the viewport's right border.
-      const rightOffset = Math.max(inset, vw - rect.right);
-      setStyle({
-        bottom: bottomFromViewportBottom,
-        right: rightOffset,
-        left: "auto",
-        top: "auto",
-      });
-    } else {
-      // Left-half toggle: mirror — anchor left edges.
-      const leftOffset = Math.max(inset, rect.left);
-      setStyle({
-        bottom: bottomFromViewportBottom,
-        left: leftOffset,
-        right: "auto",
-        top: "auto",
-      });
-    }
-  }, [open, toggleRef]);
-  return style;
 }
 
 function truncateTitle(s: string): string {
@@ -1308,15 +1358,16 @@ function scopeLabel(started: RunStartedEvent): string {
 }
 
 /**
- * Project the internal `RunStatus + SessionUsage` pair into the compact
- * snapshot ambient surfaces consume (TitleBar AI handle, StatusBar).
- * `running` and `stopping` collapse into the same exposed `running`
- * state — the cosmetic stop-pending distinction lives only inside the
- * panel header.
+ * Project the internal `RunStatus + SessionUsage + saved list` triple
+ * into the compact snapshot ambient surfaces consume (TitleBar AI
+ * handle, StatusBar). `running` and `stopping` collapse into the same
+ * exposed `running` state — the cosmetic stop-pending distinction
+ * lives only inside the panel header.
  */
 function buildRunStatusInfo(
   status: RunStatus,
   usage: SessionUsage,
+  lastSessions: SessionSummary[] | null,
 ): RunStatusInfo {
   const lastUsage = hasUsage(usage)
     ? {
@@ -1325,6 +1376,7 @@ function buildRunStatusInfo(
         cost: usage.costUsd,
       }
     : null;
+  const savedCount = lastSessions === null ? null : lastSessions.length;
 
   if (status.kind === "running" || status.kind === "stopping") {
     const started = status.started;
@@ -1334,6 +1386,7 @@ function buildRunStatusInfo(
         started.projectSlug === "(vault)" ? null : started.projectSlug,
       runningSkill: started.freeform ? null : started.promptId,
       lastUsage,
+      savedCount,
     };
   }
   if (status.kind === "exited") {
@@ -1342,6 +1395,7 @@ function buildRunStatusInfo(
       runningProject: null,
       runningSkill: null,
       lastUsage,
+      savedCount,
     };
   }
   return {
@@ -1349,15 +1403,35 @@ function buildRunStatusInfo(
     runningProject: null,
     runningSkill: null,
     lastUsage,
+    savedCount,
   };
 }
 
-/**
- * Pull `session_id` out of Claude's `system` init event without forcing
- * the renderer pipeline to surface it. Returns `null` on any shape we
- * don't recognise — the caller treats absence as "stick with whatever
- * we already had".
- */
+// ---------- Claude stream-line parsing ----------
+
+/** Parsed representation of one stdout line from claude. `obj` is the
+ *  JSON object when the line parses; `null` for plain text / unparseable
+ *  lines. `raw` is always carried so the renderer can fall back to
+ *  printing the line verbatim. */
+interface ParsedClaudeLine {
+  obj: Record<string, unknown> | null;
+  raw: string;
+}
+
+/** Single JSON.parse per stdout line. Cheaper than the prior pipeline
+ *  where three helpers each parsed the same line; for long streams the
+ *  saving is linear in line count. */
+function parseClaudeLine(raw: string): ParsedClaudeLine {
+  const trimmed = raw.trim();
+  if (trimmed === "" || trimmed[0] !== "{") return { obj: null, raw };
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    return { obj: isRecord(parsed) ? parsed : null, raw };
+  } catch {
+    return { obj: null, raw };
+  }
+}
+
 // ---------- Session usage tracking ----------
 
 /**
@@ -1374,16 +1448,10 @@ interface UsageDelta {
   model: string | null;
 }
 
-function extractClaudeUsageDelta(raw: string): UsageDelta | null {
-  const trimmed = raw.trim();
-  if (trimmed === "" || trimmed[0] !== "{") return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return null;
-  }
-  if (!isRecord(parsed)) return null;
+function extractClaudeUsageDelta(
+  parsed: Record<string, unknown> | null,
+): UsageDelta | null {
+  if (parsed === null) return null;
   const type = readString(parsed, "type");
 
   if (type === "system") {
@@ -1513,16 +1581,10 @@ function formatUsageTooltip(u: SessionUsage): string {
   return lines.join("\n");
 }
 
-function extractClaudeSessionId(raw: string): string | null {
-  const trimmed = raw.trim();
-  if (trimmed === "" || trimmed[0] !== "{") return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch {
-    return null;
-  }
-  if (!isRecord(parsed)) return null;
+function extractClaudeSessionId(
+  parsed: Record<string, unknown> | null,
+): string | null {
+  if (parsed === null) return null;
   if (readString(parsed, "type") !== "system") return null;
   return readString(parsed, "session_id") ?? null;
 }
@@ -1557,18 +1619,15 @@ interface RenderedLine {
  *   { type: "tool_use", name: "Bash", input: {...} }
  *   { type: "tool_result", content: "..." | [...] }
  */
-function renderClaudeStreamLine(raw: string): RenderedLine[] {
-  const trimmed = raw.trim();
-  if (trimmed === "") return [];
-
-  let obj: unknown;
-  try {
-    obj = JSON.parse(trimmed);
-  } catch {
+function renderClaudeStreamLine(parsed: ParsedClaudeLine): RenderedLine[] {
+  const { obj, raw } = parsed;
+  if (obj === null) {
+    // Either the line was empty or didn't parse as a JSON object;
+    // fall back to printing it verbatim so we never silently drop
+    // output we don't recognise.
+    if (raw.trim() === "") return [];
     return [{ kind: "stdout", text: raw }];
   }
-
-  if (!isRecord(obj)) return [{ kind: "stdout", text: raw }];
   const type = readString(obj, "type");
 
   switch (type) {
