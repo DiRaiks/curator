@@ -5,9 +5,16 @@ use std::thread;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
+/// Walk the vault directory tree. Heavy I/O (walkdir + per-file head read +
+/// six artifact passes) — must run off the main thread or the UI freezes on
+/// large vaults. See `scan_project_vulnerabilities` for the same pattern.
 #[tauri::command]
-fn scan_vault(path: String) -> Result<vault_core::ScanResult, String> {
-    vault_core::scan_vault(&PathBuf::from(path)).map_err(|e| e.to_string())
+async fn scan_vault(path: String) -> Result<vault_core::ScanResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        vault_core::scan_vault(&PathBuf::from(path)).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("scan_vault task failed: {e}"))?
 }
 
 /// Turn a plain folder into a vault — writes `.vault/config.yml`, the
@@ -44,26 +51,48 @@ async fn init_project(
             repo: repo.as_deref(),
             local_path: local_path.as_deref(),
         };
-        vault_core::init_project(&PathBuf::from(&vault_root), &args)
-            .map_err(|e| e.to_string())
+        vault_core::init_project(&PathBuf::from(&vault_root), &args).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("init_project task failed: {e}"))?
 }
 
 #[tauri::command]
-fn preview_context(
+async fn preview_context(
     vault_path: String,
     project_slug: String,
     prompt_id: String,
 ) -> Result<vault_core::ContextPreview, String> {
-    vault_core::preview_context(&PathBuf::from(vault_path), &project_slug, &prompt_id)
-        .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        vault_core::preview_context(&PathBuf::from(vault_path), &project_slug, &prompt_id)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("preview_context task failed: {e}"))?
 }
 
+/// Inspect the project's source repo (git status / branch / top-level files).
+///
+/// Security: `local_path` arrives from agent-written `_index.md` frontmatter,
+/// so a hostile vault could declare `local_path: ~/.ssh`. We pass it through
+/// `runner::validate_workdir` (same deny-list used for the agent cwd) before
+/// calling `inspect_source_repo` — otherwise opening a malicious vault would
+/// leak directory listings of `~/.ssh`, `~/.aws`, system paths, etc. via
+/// `compute_recommendations` without any user interaction.
+///
+/// `async` + `spawn_blocking` — `inspect_source_repo` shells out to `git`
+/// four times per call; offload from the main thread.
 #[tauri::command]
-fn inspect_source_repo(local_path: String) -> Result<vault_core::SourceRepoInspection, String> {
-    Ok(vault_core::inspect_source_repo(&PathBuf::from(local_path)))
+async fn inspect_source_repo(
+    local_path: String,
+) -> Result<vault_core::SourceRepoInspection, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let safe = vault_core::runner::validate_workdir(&PathBuf::from(&local_path))
+            .map_err(|e| e.to_string())?;
+        Ok(vault_core::inspect_source_repo(&safe))
+    })
+    .await
+    .map_err(|e| format!("inspect_source_repo task failed: {e}"))?
 }
 
 /// Scan a project's source repository for known vulnerabilities.
@@ -100,10 +129,7 @@ async fn scan_project_vulnerabilities(
 }
 
 #[tauri::command]
-fn read_markdown_file(
-    vault_root: String,
-    relative_path: String,
-) -> Result<String, String> {
+fn read_markdown_file(vault_root: String, relative_path: String) -> Result<String, String> {
     vault_core::read_markdown_file(&PathBuf::from(vault_root), &relative_path)
         .map_err(|e| e.to_string())
 }
@@ -114,19 +140,12 @@ fn write_markdown_file(
     relative_path: String,
     content: String,
 ) -> Result<(), String> {
-    vault_core::write_markdown_file(
-        &PathBuf::from(vault_root),
-        &relative_path,
-        &content,
-    )
-    .map_err(|e| e.to_string())
+    vault_core::write_markdown_file(&PathBuf::from(vault_root), &relative_path, &content)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn create_markdown_file(
-    vault_root: String,
-    relative_path: String,
-) -> Result<String, String> {
+fn create_markdown_file(vault_root: String, relative_path: String) -> Result<String, String> {
     vault_core::create_markdown_file(&PathBuf::from(vault_root), &relative_path)
         .map_err(|e| e.to_string())
 }
@@ -134,23 +153,15 @@ fn create_markdown_file(
 /// Promote an agent-produced draft into its `proposed_destination`.
 /// Returns the new vault-relative path on success.
 #[tauri::command]
-fn promote_draft(
-    vault_root: String,
-    draft_path: String,
-) -> Result<String, String> {
-    vault_core::promote_draft(&PathBuf::from(vault_root), &draft_path)
-        .map_err(|e| e.to_string())
+fn promote_draft(vault_root: String, draft_path: String) -> Result<String, String> {
+    vault_core::promote_draft(&PathBuf::from(vault_root), &draft_path).map_err(|e| e.to_string())
 }
 
 /// Delete a draft from the vault. Idempotent on `NotFound`? No — the UI
 /// can show the rescan stale-state, so we surface NotFound as an error.
 #[tauri::command]
-fn discard_draft(
-    vault_root: String,
-    draft_path: String,
-) -> Result<(), String> {
-    vault_core::discard_draft(&PathBuf::from(vault_root), &draft_path)
-        .map_err(|e| e.to_string())
+fn discard_draft(vault_root: String, draft_path: String) -> Result<(), String> {
+    vault_core::discard_draft(&PathBuf::from(vault_root), &draft_path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -186,8 +197,7 @@ fn start_vault_watch(
     state: State<'_, WatchState>,
 ) -> Result<(), String> {
     let root = PathBuf::from(&vault_root);
-    let (token, rx) = vault_core::watch::start_watch(vec![root])
-        .map_err(|e| e.to_string())?;
+    let (token, rx) = vault_core::watch::start_watch(vec![root]).map_err(|e| e.to_string())?;
 
     {
         let mut slot = state.0.lock().map_err(|e| e.to_string())?;
@@ -369,9 +379,8 @@ async fn start_run(
     let (vault_path, workdir, additional_dirs, prompt) =
         tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
             let vault_path = canonicalize_vault_root(&vault_root)?;
-            let preview =
-                vault_core::preview_context(&vault_path, &prep_slug, &prep_prompt)
-                    .map_err(|e| e.to_string())?;
+            let preview = vault_core::preview_context(&vault_path, &prep_slug, &prep_prompt)
+                .map_err(|e| e.to_string())?;
             let (workdir, additional_dirs) =
                 resolve_workdir(&vault_path, preview.source_repo.local_path.as_deref());
             Ok((
@@ -414,8 +423,8 @@ async fn resume_run(
     app: AppHandle,
     state: State<'_, RunState>,
 ) -> Result<(), String> {
-    if session_id.trim().is_empty() {
-        return Err("session id is required to resume a run".into());
+    if !vault_core::runner::is_valid_session_id(session_id.trim()) {
+        return Err("invalid session id".into());
     }
     if reply.trim().is_empty() {
         return Err("reply text is required to resume a run".into());
@@ -425,9 +434,8 @@ async fn resume_run(
     let (vault_path, workdir, additional_dirs) =
         tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
             let vault_path = canonicalize_vault_root(&vault_root)?;
-            let preview =
-                vault_core::preview_context(&vault_path, &prep_slug, &prep_prompt)
-                    .map_err(|e| e.to_string())?;
+            let preview = vault_core::preview_context(&vault_path, &prep_slug, &prep_prompt)
+                .map_err(|e| e.to_string())?;
             let (workdir, additional_dirs) =
                 resolve_workdir(&vault_path, preview.source_repo.local_path.as_deref());
             Ok((vault_path, workdir, additional_dirs))
@@ -476,8 +484,7 @@ async fn start_freeform_run(
             let vault_path = canonicalize_vault_root(&vault_root)?;
             let (workdir, additional_dirs) =
                 resolve_workdir(&vault_path, scope_repo_path.as_deref());
-            let wrapped =
-                build_freeform_prompt(&vault_path, &prompt, workdir != vault_path);
+            let wrapped = build_freeform_prompt(&vault_path, &prompt, workdir != vault_path);
             Ok((vault_path, workdir, additional_dirs, wrapped))
         })
         .await
@@ -510,6 +517,10 @@ async fn start_freeform_run(
 /// Security: `workdir` is re-validated via `runner::validate_workdir` on
 /// every resume so a stale or tampered echo can't redirect the agent
 /// into a denied path (`~/.ssh`, system dirs, etc.).
+// Tauri commands take the request fields as positional args by design;
+// grouping them into a struct would force a wrapper layer for every
+// invoke from the frontend.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn resume_freeform_run(
     vault_root: String,
@@ -521,8 +532,8 @@ async fn resume_freeform_run(
     app: AppHandle,
     state: State<'_, RunState>,
 ) -> Result<(), String> {
-    if session_id.trim().is_empty() {
-        return Err("session id is required to resume a run".into());
+    if !vault_core::runner::is_valid_session_id(session_id.trim()) {
+        return Err("invalid session id".into());
     }
     if reply.trim().is_empty() {
         return Err("reply text is required to resume a run".into());
@@ -532,8 +543,16 @@ async fn resume_freeform_run(
             let vault_path = canonicalize_vault_root(&vault_root)?;
             let workdir = vault_core::runner::validate_workdir(&PathBuf::from(workdir))
                 .map_err(|e| e.to_string())?;
-            let additional_dirs: Vec<PathBuf> =
-                additional_dirs.into_iter().map(PathBuf::from).collect();
+            // Validate every echoed-back add-dir, not just the workdir. A
+            // tampered `run:started` event in the webview could otherwise
+            // smuggle in `~/.ssh` etc. as a read root for `claude`.
+            let additional_dirs: Vec<PathBuf> = additional_dirs
+                .into_iter()
+                .map(|d| {
+                    vault_core::runner::validate_workdir(&PathBuf::from(d))
+                        .map_err(|e| e.to_string())
+                })
+                .collect::<Result<_, _>>()?;
             Ok((vault_path, workdir, additional_dirs))
         })
         .await
@@ -600,10 +619,7 @@ fn canonicalize_vault_root(raw: &str) -> Result<PathBuf, String> {
 /// project's `local_path` is set + accessible + safe; vault root as
 /// fallback. When cwd is the repo, the vault is added explicitly so the
 /// agent can read KB; when cwd is already the vault, nothing extra.
-fn resolve_workdir(
-    vault_path: &Path,
-    local_path: Option<&str>,
-) -> (PathBuf, Vec<PathBuf>) {
+fn resolve_workdir(vault_path: &Path, local_path: Option<&str>) -> (PathBuf, Vec<PathBuf>) {
     let workdir = match local_path {
         Some(declared) => match vault_core::runner::validate_workdir(&PathBuf::from(declared)) {
             Ok(safe) => safe,
@@ -697,15 +713,13 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
     let (events, gen) = {
         let mut inner = lock_recovering(&state.0);
         if inner.active.is_some() {
-            return Err(
-                "another run is already active — stop it before starting a new one".into(),
-            );
+            return Err("another run is already active — stop it before starting a new one".into());
         }
 
         use vault_core::runner::Runner as _;
         let runner = vault_core::runner::ClaudeRunner::new();
         let handle = runner.start(req).map_err(|e| e.to_string())?;
-        let (events, killer) = handle.into_parts();
+        let (events, killer) = handle.into_parts().map_err(|e| e.to_string())?;
 
         let gen = inner.next_gen.wrapping_add(1);
         inner.next_gen = gen;
@@ -731,22 +745,14 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
         while let Ok(ev) = events.recv() {
             match ev {
                 RunEvent::Stdout(line) => {
-                    let _ = app_for_thread.emit(
-                        "run:stdout",
-                        RunStdoutPayload { line },
-                    );
+                    let _ = app_for_thread.emit("run:stdout", RunStdoutPayload { line });
                 }
                 RunEvent::Stderr(line) => {
-                    let _ = app_for_thread.emit(
-                        "run:stderr",
-                        RunStderrPayload { line },
-                    );
+                    let _ = app_for_thread.emit("run:stderr", RunStderrPayload { line });
                 }
                 RunEvent::Truncated { dropped_bytes } => {
-                    let _ = app_for_thread.emit(
-                        "run:truncated",
-                        RunTruncatedPayload { dropped_bytes },
-                    );
+                    let _ =
+                        app_for_thread.emit("run:truncated", RunTruncatedPayload { dropped_bytes });
                 }
                 RunEvent::PermissionRequest(req) => {
                     // Record the pending request so approve/deny can
@@ -759,8 +765,7 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
                         let mut inner = lock_recovering(&state.0);
                         if let Some(active) = inner.active.as_mut() {
                             if active.gen == gen {
-                                active.pending_permissions
-                                    .insert(req.request_id.clone());
+                                active.pending_permissions.insert(req.request_id.clone());
                             }
                         }
                     }
@@ -778,10 +783,7 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
                     );
                 }
                 RunEvent::Exit { code, success } => {
-                    let _ = app_for_thread.emit(
-                        "run:exit",
-                        RunExitPayload { code, success },
-                    );
+                    let _ = app_for_thread.emit("run:exit", RunExitPayload { code, success });
                     if let Some(state) = app_for_thread.try_state::<RunState>() {
                         let mut inner = lock_recovering(&state.0);
                         // Only clear the slot if it's still OUR run. A
@@ -837,7 +839,9 @@ fn approve_tool_use(
         .as_mut()
         .ok_or_else(|| "no active run".to_string())?;
     if !active.pending_permissions.remove(&request_id) {
-        return Err(format!("unknown or already-resolved request_id: {request_id}"));
+        return Err(format!(
+            "unknown or already-resolved request_id: {request_id}"
+        ));
     }
     let decision = vault_core::runner::PermissionDecision::Allow {
         updated_input,
@@ -865,7 +869,9 @@ fn deny_tool_use(
         .as_mut()
         .ok_or_else(|| "no active run".to_string())?;
     if !active.pending_permissions.remove(&request_id) {
-        return Err(format!("unknown or already-resolved request_id: {request_id}"));
+        return Err(format!(
+            "unknown or already-resolved request_id: {request_id}"
+        ));
     }
     let decision = vault_core::runner::PermissionDecision::Deny {
         message: message.unwrap_or_else(|| "user denied".to_string()),
@@ -964,32 +970,45 @@ fn init_app_db<R: tauri::Runtime>(app: &tauri::App<R>, data_dir: &Path) {
 /// repo state per project, then applies the rule set in
 /// `vault_core::recommendations`. Returns all rules' output; the frontend
 /// filters out dismissed ids client-side using `list_dismissed`.
+/// Compute recommendations for the current vault. Re-scans + inspects repo
+/// state per project, then applies the rule set in `recommendations`.
+///
+/// `async` + `spawn_blocking` is mandatory here — this calls `scan_vault`
+/// (full walk) AND loops `git` subprocesses for every project with a
+/// `local_path`. Easily the heaviest single command in the shell.
+///
+/// Security: each project's `local_path` is passed through
+/// `runner::validate_workdir` before inspection; an entry that resolves to a
+/// denied path is silently skipped (rather than aborting the whole compute)
+/// so one bad project frontmatter doesn't block recommendations for the rest.
 #[tauri::command]
-fn compute_recommendations(
+async fn compute_recommendations(
     vault_root: String,
 ) -> Result<Vec<vault_core::recommendations::Recommendation>, String> {
-    let path = PathBuf::from(&vault_root).canonicalize().map_err(|e| {
-        format!("vault root not accessible: {}: {e}", vault_root)
-    })?;
-    let scan = vault_core::scan_vault(&path).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = PathBuf::from(&vault_root)
+            .canonicalize()
+            .map_err(|e| format!("vault root not accessible: {vault_root}: {e}"))?;
+        let scan = vault_core::scan_vault(&path).map_err(|e| e.to_string())?;
 
-    // Inspect each project that declares a `local_path`. Sequential is
-    // fine — a typical vault has <30 projects and git ops are fast.
-    let mut repo_states: HashMap<String, vault_core::SourceRepoInspection> =
-        HashMap::new();
-    for project in &scan.projects {
-        if let Some(lp) = project.local_path.as_deref() {
-            let inspection =
-                vault_core::inspect_source_repo(&PathBuf::from(lp));
-            repo_states.insert(project.slug.clone(), inspection);
+        let mut repo_states: HashMap<String, vault_core::SourceRepoInspection> = HashMap::new();
+        for project in &scan.projects {
+            if let Some(lp) = project.local_path.as_deref() {
+                if let Ok(safe) = vault_core::runner::validate_workdir(&PathBuf::from(lp)) {
+                    let inspection = vault_core::inspect_source_repo(&safe);
+                    repo_states.insert(project.slug.clone(), inspection);
+                }
+            }
         }
-    }
 
-    Ok(vault_core::recommendations::compute_recommendations(
-        &path,
-        &scan,
-        &repo_states,
-    ))
+        Ok(vault_core::recommendations::compute_recommendations(
+            &path,
+            &scan,
+            &repo_states,
+        ))
+    })
+    .await
+    .map_err(|e| format!("compute_recommendations task failed: {e}"))?
 }
 
 // ---------- AppDb-backed commands (dismissed / recents / sessions) ----------
@@ -1011,7 +1030,8 @@ fn dismiss_recommendation(
     db: State<'_, vault_core::db::AppDb>,
 ) -> Result<(), String> {
     let key = vault_key(&vault_root)?;
-    db.dismiss_recommendation(&key, &rec_id).map_err(|e| e.to_string())
+    db.dismiss_recommendation(&key, &rec_id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1021,7 +1041,8 @@ fn restore_recommendation(
     db: State<'_, vault_core::db::AppDb>,
 ) -> Result<(), String> {
     let key = vault_key(&vault_root)?;
-    db.restore_recommendation(&key, &rec_id).map_err(|e| e.to_string())
+    db.restore_recommendation(&key, &rec_id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1045,16 +1066,14 @@ fn clear_dismissals(
 // ---------- Recent vaults ----------
 
 #[tauri::command]
-fn record_recent_vault(
-    path: String,
-    db: State<'_, vault_core::db::AppDb>,
-) -> Result<(), String> {
+fn record_recent_vault(path: String, db: State<'_, vault_core::db::AppDb>) -> Result<(), String> {
     let canonical = PathBuf::from(&path)
         .canonicalize()
         .map_err(|e| format!("vault path not accessible: {path}: {e}"))?
         .to_string_lossy()
         .to_string();
-    db.record_recent_vault(&canonical).map_err(|e| e.to_string())
+    db.record_recent_vault(&canonical)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1065,10 +1084,7 @@ fn list_recent_vaults(
 }
 
 #[tauri::command]
-fn remove_recent_vault(
-    path: String,
-    db: State<'_, vault_core::db::AppDb>,
-) -> Result<(), String> {
+fn remove_recent_vault(path: String, db: State<'_, vault_core::db::AppDb>) -> Result<(), String> {
     db.remove_recent_vault(&path).map_err(|e| e.to_string())
 }
 
@@ -1078,7 +1094,8 @@ fn pin_recent_vault(
     pinned: bool,
     db: State<'_, vault_core::db::AppDb>,
 ) -> Result<(), String> {
-    db.pin_recent_vault(&path, pinned).map_err(|e| e.to_string())
+    db.pin_recent_vault(&path, pinned)
+        .map_err(|e| e.to_string())
 }
 
 // ---------- Session history ----------
@@ -1101,7 +1118,8 @@ fn list_sessions(
     db: State<'_, vault_core::db::AppDb>,
 ) -> Result<Vec<vault_core::db::sessions::SessionSummary>, String> {
     let key = vault_key(&vault_root)?;
-    db.list_sessions(&key, include_archived).map_err(|e| e.to_string())
+    db.list_sessions(&key, include_archived)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1122,10 +1140,7 @@ fn archive_session(
 }
 
 #[tauri::command]
-fn delete_session(
-    id: i64,
-    db: State<'_, vault_core::db::AppDb>,
-) -> Result<(), String> {
+fn delete_session(id: i64, db: State<'_, vault_core::db::AppDb>) -> Result<(), String> {
     db.delete_session(id).map_err(|e| e.to_string())
 }
 
@@ -1207,31 +1222,56 @@ fn toggle_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 /// (git, node, bun) — fails with `NotFound` even though the binary is
 /// installed.
 ///
-/// Fix: spawn the user's login shell once at startup with `-ilc` so it
-/// sources `~/.zshrc` / `~/.bash_profile` / etc., capture its `$PATH`,
-/// and merge it into the current process. Subsequent subprocess spawns
-/// inherit the augmented `PATH`.
+/// Fix: spawn the user's login shell once at startup with `-lc` so it
+/// sources `~/.zprofile` / `~/.bash_profile` (where PATH exports
+/// conventionally live), capture its `$PATH`, and merge it into the
+/// current process.
 ///
-/// Best-effort: any failure is logged and ignored — users can still set
-/// `CLAUDE_BIN` to an absolute path as an escape hatch.
+/// **Must be called from `main()` BEFORE any thread is spawned.**
+/// `std::env::set_var` is unsound when other threads may call `getenv`
+/// concurrently (Rust 1.81+ marks the underlying syscall unsafe for this
+/// reason); Tauri's `run()` creates worker threads as part of setup, so
+/// calling this after `run()` starts is racy. Hence the `pub fn` exposed
+/// to `main.rs`.
+///
+/// Why `-lc` instead of `-ilc`: `-i` (interactive) sources `~/.zshrc` /
+/// `~/.bashrc`, which on many real machines means nvm / conda / mise /
+/// sdkman init scripts — easily 0.5–3 seconds of work at app launch,
+/// blocking the splash screen. `-l` (login) sources the lighter
+/// `~/.zprofile` / `~/.bash_profile` where users actually put their
+/// `export PATH=…` lines, so it's enough for our needs without paying the
+/// interactive-init cost. Users with non-standard PATH setups can still
+/// set `CLAUDE_BIN` to an absolute path.
 #[cfg(target_os = "macos")]
-fn prime_user_path() {
+pub fn prime_user_path() {
     use std::collections::HashSet;
     use std::process::Command;
 
-    const START: &str = "__VIDE_PATH_START__";
-    const END: &str = "__VIDE_PATH_END__";
+    const START: &str = "__CURATOR_PATH_START__";
+    const END: &str = "__CURATOR_PATH_END__";
 
+    // Reject shells with whitespace / unusual characters — `$SHELL` is
+    // attacker-controllable via Launch Services env injection, and a
+    // value like `/tmp/evil; rm` would otherwise be spawned as the
+    // shell. We deliberately accept any absolute path (users may run
+    // fish, nu, etc.) — just not values that look like shell syntax.
     let shell = std::env::var("SHELL")
         .ok()
-        .filter(|s| !s.trim().is_empty())
+        .filter(|s| {
+            let t = s.trim();
+            !t.is_empty()
+                && t.starts_with('/')
+                && !t
+                    .chars()
+                    .any(|c| c.is_whitespace() || matches!(c, ';' | '|' | '&' | '`' | '$'))
+        })
         .unwrap_or_else(|| "/bin/zsh".to_string());
 
-    // `-l` (login) + `-i` (interactive) sources the user's rc files where
-    // PATH exports live. Sentinels bracket the value so banner output
-    // from a chatty shell (e.g. "Last login: …") doesn't corrupt parsing.
+    // `-l` (login) sources `~/.zprofile` / `~/.bash_profile` where PATH
+    // exports live. Sentinels bracket the value so banner output from a
+    // chatty shell doesn't corrupt parsing.
     let out = match Command::new(&shell)
-        .args(["-ilc", &format!("printf '{START}%s{END}' \"$PATH\"")])
+        .args(["-lc", &format!("printf '{START}%s{END}' \"$PATH\"")])
         .output()
     {
         Ok(o) => o,
@@ -1264,18 +1304,18 @@ fn prime_user_path() {
             parts.push(p);
         }
     }
+    // SAFETY: called from `main()` before any thread is spawned. See the
+    // doc comment above for why this matters. `set_var` was marked
+    // `unsafe` in Rust 1.81; current toolchains accept it as safe still
+    // but will error in a future edition.
     std::env::set_var("PATH", parts.join(":"));
 }
 
 #[cfg(not(target_os = "macos"))]
-fn prime_user_path() {}
+pub fn prime_user_path() {}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Must run before any subprocess spawn so the runner can locate
-    // `claude` on a GUI-launched `.app`. Cheap (~one shell startup).
-    prime_user_path();
-
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -1293,7 +1333,7 @@ pub fn run() {
             // Failure to open is logged and the IDE keeps working;
             // commands relying on the store will surface their own
             // "store unavailable" errors.
-            if let Some(data_dir) = app.path().app_local_data_dir().ok() {
+            if let Ok(data_dir) = app.path().app_local_data_dir() {
                 init_app_db(app, &data_dir);
             } else {
                 eprintln!("no app_local_data_dir available — persistence disabled");

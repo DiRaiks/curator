@@ -47,12 +47,15 @@ pub enum OsvError {
 /// Returns one [`Advisory`] per (package, vuln) pair. A package with two
 /// vulns yields two rows; a vuln affecting two packages yields two rows.
 /// The UI renders this flat so the user can scan / sort easily.
-pub fn query_advisories(
-    packages: &[DependencyPackage],
-) -> Result<Vec<Advisory>, OsvError> {
+pub fn query_advisories(packages: &[DependencyPackage]) -> Result<Vec<Advisory>, OsvError> {
     if packages.is_empty() {
         return Ok(Vec::new());
     }
+
+    // Build one HTTP agent for the whole scan so the per-package detail
+    // fetches reuse the TCP / TLS connection to api.osv.dev instead of
+    // doing N handshakes.
+    let agent = ureq::AgentBuilder::new().timeout(HTTP_TIMEOUT).build();
 
     // Phase 1: batch filter. Track the running offset into `packages` so
     // a chunk-relative response index maps cleanly back to the absolute
@@ -71,7 +74,7 @@ pub fn query_advisories(
             })
             .collect();
         let body = BatchRequest { queries: &queries };
-        let resp = post_json::<BatchRequest<'_>, BatchResponse>(OSV_BATCH_URL, &body)?;
+        let resp = post_json::<BatchRequest<'_>, BatchResponse>(&agent, OSV_BATCH_URL, &body)?;
         for (i, result) in resp.results.iter().enumerate() {
             if !result.vulns.is_empty() {
                 affected_indices.insert(offset + i);
@@ -95,7 +98,7 @@ pub fn query_advisories(
             },
             version: pkg.version.clone(),
         };
-        let resp = match post_json::<SingleQuery, QueryResponse>(OSV_QUERY_URL, &body) {
+        let resp = match post_json::<SingleQuery, QueryResponse>(&agent, OSV_QUERY_URL, &body) {
             Ok(r) => r,
             Err(_) => continue, // skip this package; partial results are
                                 // still useful and the caller surfaces a
@@ -152,12 +155,13 @@ fn pick_severity(entries: &[OsvSeverity]) -> Option<String> {
 }
 
 fn collect_fixed_versions(affected: &[OsvAffected]) -> Vec<String> {
+    let mut seen: HashSet<&str> = HashSet::new();
     let mut out: Vec<String> = Vec::new();
     for a in affected {
         for r in &a.ranges {
             for ev in &r.events {
                 if let Some(v) = &ev.fixed {
-                    if !out.contains(v) {
+                    if seen.insert(v.as_str()) {
                         out.push(v.clone());
                     }
                 }
@@ -168,17 +172,18 @@ fn collect_fixed_versions(affected: &[OsvAffected]) -> Vec<String> {
 }
 
 fn post_json<TReq: Serialize, TResp: for<'de> Deserialize<'de>>(
+    agent: &ureq::Agent,
     url: &str,
     body: &TReq,
 ) -> Result<TResp, OsvError> {
-    let agent = ureq::AgentBuilder::new().timeout(HTTP_TIMEOUT).build();
     let resp = agent
         .post(url)
         .set("Accept", "application/json")
         .set("User-Agent", "vault-workflow-ide")
-        .send_json(serde_json::to_value(body).map_err(|e| {
-            OsvError::InvalidJson(format!("serialize request: {e}"))
-        })?);
+        .send_json(
+            serde_json::to_value(body)
+                .map_err(|e| OsvError::InvalidJson(format!("serialize request: {e}")))?,
+        );
     match resp {
         Ok(r) => r
             .into_json::<TResp>()
@@ -293,8 +298,14 @@ mod tests {
     #[test]
     fn pick_severity_prefers_v4_over_v3() {
         let entries = vec![
-            OsvSeverity { kind: "CVSS_V3".into(), score: "7.5".into() },
-            OsvSeverity { kind: "CVSS_V4".into(), score: "9.1".into() },
+            OsvSeverity {
+                kind: "CVSS_V3".into(),
+                score: "7.5".into(),
+            },
+            OsvSeverity {
+                kind: "CVSS_V4".into(),
+                score: "9.1".into(),
+            },
         ];
         assert_eq!(pick_severity(&entries), Some("CVSS_V4 9.1".into()));
     }
@@ -315,7 +326,9 @@ mod tests {
                 ranges: vec![OsvRange {
                     events: vec![
                         OsvRangeEvent { fixed: None },
-                        OsvRangeEvent { fixed: Some("1.2.3".into()) },
+                        OsvRangeEvent {
+                            fixed: Some("1.2.3".into()),
+                        },
                     ],
                 }],
             },

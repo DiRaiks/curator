@@ -40,10 +40,10 @@ pub(crate) fn compute_scope(
                 return (parsed, zone_root);
             }
         }
-        if matches!(fm_bool(m, "include_in_ai_context"), Some(false)) {
-            if !matches!(path_scope, Scope::TeamManagement) {
-                return (Scope::PersonalWork, zone_root);
-            }
+        if matches!(fm_bool(m, "include_in_ai_context"), Some(false))
+            && !matches!(path_scope, Scope::TeamManagement)
+        {
+            return (Scope::PersonalWork, zone_root);
         }
     }
 
@@ -104,10 +104,7 @@ fn segment_to_scope(name: &str) -> Option<Scope> {
     let cleaned = name.trim_start_matches('_');
     let cleaned = strip_numeric_prefix(cleaned);
     let lower = cleaned.to_lowercase();
-    let parts: Vec<&str> = lower
-        .split(|c: char| c == '-' || c == '_')
-        .filter(|s| !s.is_empty())
-        .collect();
+    let parts: Vec<&str> = lower.split(['-', '_']).filter(|s| !s.is_empty()).collect();
     if parts.is_empty() {
         return None;
     }
@@ -244,10 +241,7 @@ mod tests {
     fn project_journal_overrides_to_personal() {
         let (sc, root) = s("02_projects/staking-widget/journal/2026-05-15.md");
         assert_eq!(sc, Scope::PersonalWork);
-        assert_eq!(
-            root.as_deref(),
-            Some("02_projects/staking-widget/journal")
-        );
+        assert_eq!(root.as_deref(), Some("02_projects/staking-widget/journal"));
     }
 
     #[test]

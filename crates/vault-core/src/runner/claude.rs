@@ -111,8 +111,7 @@ impl Runner for ClaudeRunner {
 }
 
 fn build_args(req: &RunRequest) -> Vec<String> {
-    let mut args: Vec<String> =
-        Vec::with_capacity(10 + req.additional_dirs.len() * 2);
+    let mut args: Vec<String> = Vec::with_capacity(10 + req.additional_dirs.len() * 2);
     // -p (print/non-interactive) is still required even when input comes
     // via stream-json — without it claude would open a TUI and ignore the
     // streamed messages.
@@ -275,12 +274,7 @@ pub(crate) fn spawn_with_command(
         None,
     );
 
-    spawn_coordinator(
-        Arc::clone(&child_arc),
-        stdout_handle,
-        stderr_handle,
-        tx,
-    );
+    spawn_coordinator(Arc::clone(&child_arc), stdout_handle, stderr_handle, tx);
 
     let kill_arc = Arc::clone(&child_arc);
     let kill: Box<dyn FnOnce() + Send> = Box::new(move || {
@@ -323,7 +317,13 @@ pub fn build_permission_response_line(
     request_id: &str,
     decision: &super::PermissionDecision,
 ) -> String {
-    let response = serde_json::to_value(decision).unwrap_or(serde_json::Value::Null);
+    // `PermissionDecision` is `#[derive(Serialize)]` over plain owned data;
+    // serialization is infallible. `unwrap_or(Null)` would mask the very
+    // unlikely failure as a malformed `control_response` that desyncs the
+    // claude protocol and hangs the turn — `expect` lets that surface
+    // loudly during testing instead.
+    let response =
+        serde_json::to_value(decision).expect("PermissionDecision is always serializable");
     let envelope = serde_json::json!({
         "type": "control_response",
         "response": {
@@ -588,7 +588,10 @@ fn parse_permission_request(envelope: &serde_json::Value) -> Option<PermissionRe
     let request = envelope.get("request")?;
     let tool_name = request.get("tool_name")?.as_str()?.to_string();
     let tool_use_id = request.get("tool_use_id")?.as_str()?.to_string();
-    let tool_input = request.get("input").cloned().unwrap_or(serde_json::Value::Null);
+    let tool_input = request
+        .get("input")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     let title = request
         .get("title")
         .and_then(|v| v.as_str())
@@ -792,13 +795,9 @@ mod tests {
 
     #[test]
     fn non_zero_exit_code_propagates() {
-        let handle = spawn_with_command(
-            "sh",
-            vec!["-c".into(), "exit 3".into()],
-            req(),
-            Vec::new(),
-        )
-        .expect("spawn sh");
+        let handle =
+            spawn_with_command("sh", vec!["-c".into(), "exit 3".into()], req(), Vec::new())
+                .expect("spawn sh");
         let (_, exit) = collect_until_exit(handle, Duration::from_secs(5));
         match exit {
             Some(RunEvent::Exit {
@@ -811,13 +810,8 @@ mod tests {
 
     #[test]
     fn stop_terminates_long_running_subprocess() {
-        let mut handle = spawn_with_command(
-            "sleep",
-            vec!["60".into()],
-            req(),
-            Vec::new(),
-        )
-        .expect("spawn sleep");
+        let mut handle =
+            spawn_with_command("sleep", vec!["60".into()], req(), Vec::new()).expect("spawn sleep");
         // Give the child a moment to actually be running.
         thread::sleep(Duration::from_millis(100));
         handle.stop();
@@ -856,13 +850,7 @@ mod tests {
     fn truncated_event_fires_when_output_exceeds_cap() {
         // `yes` outputs "y\n" forever. The reader will hit MAX_OUTPUT_BYTES
         // (4 MiB) within a fraction of a second and emit Truncated once.
-        let mut handle = spawn_with_command(
-            "yes",
-            vec![],
-            req(),
-            Vec::new(),
-        )
-        .expect("spawn yes");
+        let mut handle = spawn_with_command("yes", vec![], req(), Vec::new()).expect("spawn yes");
 
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut got_truncated = false;
@@ -894,10 +882,7 @@ mod tests {
         // on stderr concurrently — both readers race to update the cap.
         let mut handle = spawn_with_command(
             "sh",
-            vec![
-                "-c".into(),
-                "yes >&1 & yes >&2 & wait".into(),
-            ],
+            vec!["-c".into(), "yes >&1 & yes >&2 & wait".into()],
             req(),
             Vec::new(),
         )
@@ -918,9 +903,7 @@ mod tests {
                         // chance to (incorrectly) emit a duplicate.
                         thread::sleep(Duration::from_millis(500));
                         // Drain any pending events.
-                        while let Ok(ev) =
-                            handle.recv_timeout(Duration::from_millis(50))
-                        {
+                        while let Ok(ev) = handle.recv_timeout(Duration::from_millis(50)) {
                             if matches!(ev, RunEvent::Truncated { .. }) {
                                 truncated_count += 1;
                             }
@@ -976,8 +959,7 @@ mod tests {
             resume_session_id: None,
         };
         let lines = build_stdin_messages(&req);
-        let init: serde_json::Value =
-            serde_json::from_str(&lines[0]).expect("first line is JSON");
+        let init: serde_json::Value = serde_json::from_str(&lines[0]).expect("first line is JSON");
         assert_eq!(init["type"], "control_request");
         assert_eq!(init["request"]["subtype"], "initialize");
     }
@@ -1190,8 +1172,7 @@ mod tests {
     fn classify_stdout_flags_result_as_end_of_turn() {
         // Regression: before this flag, the runner kept stdin open
         // forever after `result` and the subprocess hung in `-p` mode.
-        let line = r#"{"type":"result","subtype":"success","total_cost_usd":0.1}"#
-            .to_string();
+        let line = r#"{"type":"result","subtype":"success","total_cost_usd":0.1}"#.to_string();
         let h = classify_stdout_line(line.clone());
         match h.event {
             Some(RunEvent::Stdout(s)) => assert_eq!(s, line),
@@ -1238,6 +1219,9 @@ mod tests {
         );
         let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(parsed["response"]["response"]["behavior"], "deny");
-        assert_eq!(parsed["response"]["response"]["message"], "user denied via modal");
+        assert_eq!(
+            parsed["response"]["response"]["message"],
+            "user denied via modal"
+        );
     }
 }

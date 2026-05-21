@@ -245,14 +245,24 @@ impl RunHandle {
     /// Lets the caller stash the long-lived bits (killer + stdin) in
     /// app state while moving the receiver to a worker thread.
     ///
-    /// Panics if called after [`Self::stop`] consumed the kill closure.
-    /// Callers that may stop first should hold the handle whole.
-    pub fn into_parts(self) -> (mpsc::Receiver<RunEvent>, Killer) {
-        let RunHandle { events, kill, stdin } = self;
-        let kill = kill.expect(
-            "RunHandle::into_parts called after stop(); use the handle directly instead",
-        );
-        (events, Killer { inner: Some(kill), stdin })
+    /// Errors if called after [`Self::stop`] already consumed the kill
+    /// closure. Returning `Result` (instead of panicking, as the earlier
+    /// API did) keeps a future call-site that stops-then-unpacks from
+    /// crashing the host process — Tauri would silently kill the IDE.
+    pub fn into_parts(self) -> Result<(mpsc::Receiver<RunEvent>, Killer), &'static str> {
+        let RunHandle {
+            events,
+            kill,
+            stdin,
+        } = self;
+        let kill = kill.ok_or("RunHandle::into_parts called after stop()")?;
+        Ok((
+            events,
+            Killer {
+                inner: Some(kill),
+                stdin,
+            },
+        ))
     }
 }
 
@@ -370,9 +380,7 @@ pub fn is_safe_workdir(p: &std::path::Path) -> bool {
 /// canonical form on success — callers should pass that to
 /// `Command::current_dir`, not the original input, so symlink-based escapes
 /// are closed.
-pub fn validate_workdir(
-    p: &std::path::Path,
-) -> Result<std::path::PathBuf, String> {
+pub fn validate_workdir(p: &std::path::Path) -> Result<std::path::PathBuf, String> {
     let canonical = p
         .canonicalize()
         .map_err(|e| format!("workdir not accessible: {}: {e}", p.display()))?;
@@ -383,6 +391,27 @@ pub fn validate_workdir(
         ));
     }
     Ok(canonical)
+}
+
+/// Validate a Claude session id before passing it to `--resume`.
+///
+/// The id arrives from the frontend (originally minted by the Claude CLI
+/// itself, but persisted in our SQLite history and round-trippable through
+/// JSON / localStorage). Real ids are UUID-shaped; we accept anything that
+/// stays inside the safe-character set so we don't silently break if the
+/// CLI changes its id format. The length cap rejects accidental dumps of
+/// entire prompts into the session-id slot.
+///
+/// Without this guard, a malicious frontend (compromised webview, replay of
+/// a tampered persisted row) could pass `--resume --something-else` and at
+/// best confuse the CLI, at worst smuggle in another flag if the CLI parser
+/// ever changes how it consumes the argument.
+pub fn is_valid_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
 }
 
 #[cfg(test)]
