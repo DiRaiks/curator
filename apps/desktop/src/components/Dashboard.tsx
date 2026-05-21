@@ -2,14 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createMarkdownFile,
   initVault,
-  onRunEvents,
   readMarkdownFile,
   writeMarkdownFile,
-  type RunPermissionRequestEvent,
 } from "../api";
 import type { Project, Scope, ScanResult } from "../types";
 import { maskHome } from "../utils/path";
-import { ApproveToolsModal } from "./ApproveToolsModal";
 import { ArtifactList } from "./ArtifactList";
 import { ConfirmDirtyDialog } from "./ConfirmDirtyDialog";
 import { Diagnostics } from "./Diagnostics";
@@ -43,11 +40,8 @@ import { DraftsList } from "./DraftsList";
 import { ProjectDetail } from "./ProjectDetail";
 import { ProjectList } from "./ProjectList";
 import { RecommendationsBell } from "./RecommendationsBell";
-import {
-  RunPanel,
-  type RunPanelHandle,
-  type RunStatusInfo,
-} from "./RunPanel";
+import { type RunPanelHandle, type RunStatusInfo } from "./RunPanel";
+import { RunPanelHost } from "./RunPanelHost";
 import { SecurityPanel } from "./SecurityPanel";
 import { ZoneList } from "./ZoneList";
 
@@ -408,18 +402,21 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
    *  pre-approve permissions before sending. Returns an error string
    *  (e.g. "active run") to surface inline at the callsite. */
   const handleStagePrompt = useCallback(
-    (args: { text: string; projectSlug: string; promptId: string }) =>
-      runPanelRef.current?.stagePrompt(args) ?? "Chat panel not ready yet.",
+    (args: {
+      text: string;
+      projectSlug: string;
+      promptId: string;
+    }): string | null => {
+      // Split the "ref is null" branch from the "stagePrompt returned
+      // null (success)" branch — the prior `?? "Chat panel not ready
+      // yet."` collapsed both into the error string, surfacing a
+      // false error in the prompt card even when staging worked.
+      const handle = runPanelRef.current;
+      if (!handle) return "Chat panel not ready yet.";
+      return handle.stagePrompt(args);
+    },
     [],
   );
-
-  // Active permission request — set when claude pauses awaiting a
-  // can_use_tool decision. The modal hides as soon as approve/deny
-  // resolves and we clear this back to null. Subsequent requests just
-  // overwrite (claude only emits one pending request at a time per
-  // session, so we never queue).
-  const [pendingPermission, setPendingPermission] =
-    useState<RunPermissionRequestEvent | null>(null);
 
   // Live run-status snapshot, populated via RunPanel's imperative
   // handle. Ambient UI (TitleBar AI handle pulse, StatusBar chat
@@ -429,6 +426,7 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
   // with a Dashboard-side refetch).
   const [runStatusInfo, setRunStatusInfo] = useState<RunStatusInfo>({
     state: "idle",
+    runningCount: 0,
     runningSkill: null,
     runningProject: null,
     lastUsage: null,
@@ -447,32 +445,6 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
     const handle = runPanelRef.current;
     if (!handle) return;
     return handle.subscribeToStatus(setRunStatusInfo);
-  }, []);
-
-  useEffect(() => {
-    let unlisten: (() => void) | null = null;
-    let cancelled = false;
-    void onRunEvents({
-      onPermissionRequest: (ev) => setPendingPermission(ev),
-      // Defensive: a Stop / crash mid-prompt could leave a stale
-      // permission modal up. Clear it on every exit. The saved-session
-      // count is updated by RunPanel's save-completion path — no
-      // extra `listSessions` round-trip here, which used to race the
-      // UPSERT and occasionally surface a stale N.
-      onExit: () => {
-        setPendingPermission(null);
-      },
-    }).then((un) => {
-      if (cancelled) {
-        un();
-      } else {
-        unlisten = un;
-      }
-    });
-    return () => {
-      cancelled = true;
-      if (unlisten) unlisten();
-    };
   }, []);
 
   // Auto-include the running chat's project in the title-bar tab strip
@@ -937,7 +909,7 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
     );
   }
 
-  const runningChats = runStatusInfo.state === "running" ? 1 : 0;
+  const runningChats = runStatusInfo.runningCount;
 
   return (
     <div className="dashboard">
@@ -1205,7 +1177,7 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
         </main>
       </div>
 
-      <RunPanel
+      <RunPanelHost
         ref={runPanelRef}
         vaultRoot={result.vaultRoot}
         projects={result.projects}
@@ -1219,15 +1191,10 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
         branch={null}
         dirtyCount={dirtyCount}
         totalChats={savedSessionCount}
-        runningChats={runStatusInfo.state === "running" ? 1 : 0}
+        runningChats={runStatusInfo.runningCount}
         runningSkill={runStatusInfo.runningSkill}
         fileMode={activeFile ? "md gfm" : null}
         cursor={null}
-      />
-
-      <ApproveToolsModal
-        request={pendingPermission}
-        onResolved={() => setPendingPermission(null)}
       />
 
       {pendingAction && activeFile && isDirty && (

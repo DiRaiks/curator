@@ -11,7 +11,6 @@ import {
 import {
   archiveSession,
   deleteSession,
-  getRunStatus,
   getSession,
   listSessions,
   onRunEvents,
@@ -21,11 +20,13 @@ import {
   startFreeformRun,
   stopRun,
   type RunExitEvent,
+  type RunPermissionRequestEvent,
   type RunStartedEvent,
 } from "../api";
 import { usePopoverPosition } from "../hooks/usePopoverPosition";
 import type { Project, SessionFull, SessionSummary } from "../types";
 import { isSessionLineKind } from "../types";
+import { PermissionRequestCard } from "./PermissionRequestCard";
 import { Tooltip } from "./Tooltip";
 
 /**
@@ -103,6 +104,77 @@ interface RunPanelProps {
   /** All projects from the current scan. The scope dropdown filters down
    *  to those with a `localPath` (the rest can't be a cwd target). */
   projects: Project[];
+  /** Optional id supplied by the host when multiple panels coexist
+   *  (multi-chat). Used purely as a React key + status-report tag — the
+   *  panel itself doesn't care, but the host needs to demultiplex
+   *  `onStatusChange` callbacks back to the right tab. When omitted (old
+   *  single-panel mode, e.g. early-bootstrap render) we just use the
+   *  string `"default"` so refs and callbacks stay stable. */
+  chatId?: string;
+  /** Optional bootstrap state injected by the host. Two flavours:
+   *  - `adopt`: the host's mount-sync found this run alive in the
+   *    backend; the panel inherits the `started` payload and runs in
+   *    "running" mode without re-invoking a spawn.
+   *  - `reopen`: a saved session was opened from History; the panel
+   *    hydrates output + session id into an `exited` state ready for
+   *    Reply. */
+  initialState?:
+    | { kind: "adopt"; started: RunStartedEvent }
+    | { kind: "reopen"; session: SessionFull };
+  /** When false, the panel renders into the DOM but is hidden via
+   *  `display: none`. Used by the multi-chat host to keep inactive tabs
+   *  mounted (so their state, listeners, and output buffer survive) while
+   *  only the active one is visible. Default true. */
+  visible?: boolean;
+  /** Initial collapsed state of the drawer. Defaults to `true` so the
+   *  app loads with the drawer in compact mode. The multi-chat host
+   *  overrides to `false` for tabs the user explicitly creates via
+   *  "+" (otherwise opening a new tab would visually "close" the
+   *  drawer to the active tab's default-collapsed state, looking
+   *  exactly like a regression). */
+  initialCollapsed?: boolean;
+  /** Publishes a coarse status snapshot to the host whenever this
+   *  panel's state changes. Lets the host build the tab-bar indicators
+   *  (running dot, pending-permission badge), the aggregate
+   *  "N chats running" counter for StatusBar, and the inferred title
+   *  for the tab label. Called with no args if absent. */
+  onStatusChange?: (info: ChatTabStatusInfo) => void;
+}
+
+/**
+ * Per-tab status snapshot pushed to the multi-chat host. Lightweight
+ * by design — the host needs just enough to render its tab-bar chip
+ * and aggregate cross-panel counters into a vault-wide
+ * [`RunStatusInfo`]. Richer per-panel data stays inside the panel
+ * where it can't leak across tabs.
+ */
+export interface ChatTabStatusInfo {
+  chatId: string;
+  state: "idle" | "running" | "stopping" | "exited";
+  /** Skill / prompt id when running an artifact run (`"session-reflect"`),
+   *  `"chat"` for freeform, or `null` when idle / no project context. */
+  runningSkill: string | null;
+  /** Project slug, or `null` for pure vault-scope runs. */
+  runningProject: string | null;
+  /** User-friendly tab title — first 200 chars of the pending freeform
+   *  message, or `projectSlug/promptId` for artifact runs, or
+   *  `"New chat"` while idle and untyped. */
+  title: string;
+  /** True when a `can_use_tool` request is currently pending. Drives
+   *  the tab badge so the user can spot which tab is waiting on them. */
+  hasPendingPermission: boolean;
+  /** Cumulative usage across this conversation (post-resume turns
+   *  included). Aggregated by the host into the vault-wide totals
+   *  shown in StatusBar / AI handle. */
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  /** Total saved sessions for the vault — vault-wide, not per-tab,
+   *  but reported via the per-tab channel because each panel runs
+   *  `listSessions()` to fill its own dropdown cache. The host takes
+   *  the maximum across reporting tabs (they all see the same DB; a
+   *  newly-mounted tab may briefly lag with `null`). */
+  savedCount: number | null;
 }
 
 /** Snapshot of the live run state suitable for ambient UI surfaces
@@ -112,21 +184,26 @@ interface RunPanelProps {
 export interface RunStatusInfo {
   /** Compressed lifecycle. `running` covers both the live-streaming
    *  state and the brief `stopping` window (cosmetic distinction not
-   *  worth exposing to ambient UI). */
+   *  worth exposing to ambient UI). Under multi-chat this is `running`
+   *  iff *any* tab is running. */
   state: "idle" | "running" | "exited";
-  /** Skill / prompt id when running an artifact run (e.g.
-   *  `"session-reflect"`). `null` for freeform chats. */
+  /** Number of tabs currently in `running` or `stopping`. The
+   *  StatusBar surfaces this as "N chats running". */
+  runningCount: number;
+  /** Skill / prompt id of a running tab (e.g. `"session-reflect"`). When
+   *  multiple tabs are running this is one representative — the
+   *  StatusBar pairs it with `runningCount` so the user still knows
+   *  there's more than one. `null` for freeform chats / when idle. */
   runningSkill: string | null;
-  /** Project slug of the active chat (e.g. `"subgraph"`). `null` for
-   *  vault-scope freeform runs. */
+  /** Project slug of a running tab (e.g. `"subgraph"`). `null` for
+   *  vault-scope freeform runs or when idle. */
   runningProject: string | null;
-  /** Last reported usage totals across the live session, or `null`
-   *  before any usage event has arrived. */
+  /** Cumulative usage summed across every reporting tab. `null`
+   *  before any usage event has arrived in any tab. */
   lastUsage: { in: number; out: number; cost: number } | null;
   /** Total saved sessions for this vault. `null` before the first
-   *  `listSessions` call resolves. RunPanel is the single source of
-   *  truth — it refetches after every save_session UPSERT so the
-   *  count stays consistent with what's actually on disk. */
+   *  `listSessions` call resolves. Each tab reports the same
+   *  vault-wide count; the host takes the max. */
   savedCount: number | null;
 }
 
@@ -159,10 +236,21 @@ export interface RunPanelHandle {
 }
 
 export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
-  function RunPanel({ vaultRoot, projects }, ref) {
+  function RunPanel(
+    {
+      vaultRoot,
+      projects,
+      chatId = "default",
+      initialState,
+      visible = true,
+      initialCollapsed = true,
+      onStatusChange,
+    },
+    ref,
+  ) {
   const [status, setStatus] = useState<RunStatus>({ kind: "idle" });
   const [lines, setLines] = useState<OutputLine[]>([]);
-  const [collapsed, setCollapsed] = useState(true);
+  const [collapsed, setCollapsed] = useState(initialCollapsed);
   const outputRef = useRef<HTMLPreElement | null>(null);
 
   // Claude session id captured from the first `system init` event in the
@@ -170,6 +258,17 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
   // chat input after the run exits. It survives `run:started` of a resumed
   // run (claude reuses the same session id under `--resume`).
   const [sessionId, setSessionId] = useState<string | null>(null);
+  // Backend-minted run id for the *currently spawned* subprocess. Distinct
+  // from `sessionId` (Claude's logical conversation id, survives across
+  // resume turns): `runId` is one-shot per spawn — every resume mints a
+  // new one. We track it so the event handlers below can demultiplex
+  // payloads that belong to *this* panel's run versus stale tails of a
+  // prior run still draining or — once Срез 2 lands — siblings running
+  // concurrently in other tabs. Captured from the spawn-command return
+  // and re-confirmed on the matching `run:started` event.
+  const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+  const currentRunIdRef = useRef<string | null>(null);
+  currentRunIdRef.current = currentRunId;
   const [chatDraft, setChatDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -197,6 +296,17 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
   /** Ref to the chat textarea so `stagePrompt` can focus it after writing
    *  the draft. The user expects to land in the input ready to edit. */
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  /** Current permission request awaiting a user decision, scoped to
+   *  *this panel's* run via the same `isMine(runId)` filter the stream
+   *  events use. Replaces the prior global pendingPermission state that
+   *  lived on Dashboard — moving it down here is what unblocks
+   *  multi-chat: when chats can each independently pause for a tool
+   *  permission, each chat owns its own slot rather than fighting over
+   *  one global modal. The card is rendered inline above the textarea
+   *  so the user always sees which conversation is paused. */
+  const [pendingPermission, setPendingPermission] =
+    useState<RunPermissionRequestEvent | null>(null);
 
   // Mirrors of the values the save effect needs to read at exit. The effect
   // only depends on `status` (so the user typing in the chat input doesn't
@@ -254,41 +364,35 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     let cancelled = false;
 
     const attach = async () => {
-      // Synchronise local state with backend on mount. The lifecycle
-      // events tell us about transitions, but on a remount during an
-      // active run we'd otherwise show "idle" until the next event
-      // arrives — possibly never if the run is in a long quiet phase.
-      try {
-        const snapshot = await getRunStatus();
-        if (cancelled) return;
-        if (snapshot.active) {
-          // Mount-time sync: the backend hands back the same payload
-          // the original `run:started` carried, so a remount during an
-          // active run (HMR in dev, IDE restart) recovers the full
-          // context — including vaultRoot — needed for Reply / Resume.
-          // Falls back to placeholders only when backend somehow lacks
-          // the snapshot, which shouldn't happen but isn't fatal.
-          setStatus({
-            kind: "running",
-            started: snapshot.started ?? {
-              projectSlug: "(in progress)",
-              promptId: "?",
-              vaultRoot: "",
-              workdir: "",
-              additionalDirs: [],
-              runner: "claude-code",
-              resume: false,
-              freeform: false,
-            },
-          });
-          setCollapsed(false);
-        }
-      } catch {
-        // Best-effort sync. Non-fatal: events alone will recover.
-      }
+      // Mount-time sync moved out: with multiple chat panels mounted in
+      // parallel, only the host knows which panel should adopt which
+      // backend run. The host calls `getRuns()` once and injects matched
+      // payloads via the `initialState` prop (handled in a sibling
+      // effect below). Without that hoist, every mounted panel would
+      // race for the first live run and clobber each other.
 
+      // Every event from `onRunEvents` carries a backend-minted `runId`.
+      // Strict filter: `onStarted` accepts only when the run id matches
+      // the one *this* panel invoked (we set `currentRunIdRef.current`
+      // synchronously from the spawn-command's resolved value, and from
+      // the host's `initialState.adopt`). Stream events use the same
+      // gate. Without strict gating on `onStarted` a sibling tab's
+      // started event would overwrite this tab's run id and corrupt
+      // every following filter check.
+      const isMine = (runId: string) => currentRunIdRef.current === runId;
       const un = await onRunEvents({
         onStarted: (ev) => {
+          // Strict run-id match: only adopt this `run:started` if we
+          // already have its id (set by the spawn-command optimistic
+          // path or by the host's `initialState.adopt` injection).
+          // Without this filter a sibling tab's `run:started` would
+          // overwrite our state — Tauri broadcasts to every listener.
+          if (!isMine(ev.runId)) return;
+          // No-op write keeps the ref in sync if state had drifted
+          // (e.g. mount-time race where the optimistic set fired
+          // before the event listener attached). setState is
+          // idempotent on identical values.
+          setCurrentRunId(ev.runId);
           if (ev.resume) {
             // Resume: keep the prior conversation buffer, append a
             // separator so the boundary is visible. Session id stays.
@@ -331,6 +435,7 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
           setCollapsed(false);
         },
         onStdout: (ev) => {
+          if (!isMine(ev.runId)) return;
           // Single JSON.parse per stream line — three downstream
           // consumers (session id capture, usage accumulation, the
           // pretty-printer) all read the same object. Parsing once
@@ -354,13 +459,28 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
             appendLine({ kind: rendered.kind, text: rendered.text });
           }
         },
-        onStderr: (ev) => appendLine({ kind: "stderr", text: ev.line }),
-        onTruncated: (ev) =>
+        onStderr: (ev) => {
+          if (!isMine(ev.runId)) return;
+          appendLine({ kind: "stderr", text: ev.line });
+        },
+        onTruncated: (ev) => {
+          if (!isMine(ev.runId)) return;
           appendLine({
             kind: "system",
             text: `… output capped — ${formatBytes(ev.droppedBytes)} dropped`,
-          }),
+          });
+        },
+        onPermissionRequest: (ev) => {
+          if (!isMine(ev.runId)) return;
+          // Latest request wins. Claude only pauses on one tool call at
+          // a time per session, so this never silently drops a queued
+          // request. If the user closes the chat without deciding, the
+          // backend's `pending_permissions` removal is idempotent (the
+          // stdin write fails harmlessly when the subprocess is gone).
+          setPendingPermission(ev);
+        },
         onExit: (ev) => {
+          if (!isMine(ev.runId)) return;
           appendLine({
             kind: "system",
             text: ev.success
@@ -375,6 +495,15 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
                 ? prev.started
                 : null,
           }));
+          // A Stop / crash mid-prompt could leave a stale permission
+          // card up; clear it on every exit so the next run starts
+          // clean. Idempotent if nothing was pending.
+          setPendingPermission(null);
+          // The run is over; further events would belong to a new spawn
+          // that will set its own currentRunId via `onStarted`. Clear
+          // the ref so a never-stopped stale tail can't sneak in.
+          currentRunIdRef.current = null;
+          setCurrentRunId(null);
         },
       });
       if (cancelled) {
@@ -414,6 +543,25 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
       el.scrollTop = el.scrollHeight;
     }
   }, [lines]);
+
+  // Re-snap to the bottom when the tab becomes visible again. While a
+  // chat is hidden (`display: none` on the aside in multi-chat mode)
+  // the output element's `scrollHeight` reports 0, so every
+  // `lines`-update above writes `scrollTop = 0`. On the return,
+  // `<pre>` regains its real height but `scrollTop` is stuck at 0 —
+  // the user sees the buffer's oldest lines instead of the live tail
+  // and concludes "logs stopped" even though they kept arriving. This
+  // effect snaps to the latest line on the visibility flip, but only
+  // when we were already following the tail (manual scroll-up is
+  // preserved).
+  useEffect(() => {
+    if (!visible) return;
+    const el = outputRef.current;
+    if (!el) return;
+    if (followTail.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [visible]);
 
   const onScroll = useCallback(() => {
     const el = outputRef.current;
@@ -472,7 +620,52 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     setPendingTitle(null);
     setStartedAtMs(null);
     setStagedSource(null);
+    setPendingPermission(null);
+    currentRunIdRef.current = null;
+    setCurrentRunId(null);
   }, []);
+
+  /**
+   * Apply a `run:started` payload to this panel synchronously — used
+   * by `onSend` after a spawn-command invoke resolves. Does the same
+   * work the listener's `onStarted` handler does, just driven from a
+   * known-mine payload rather than a filtered broadcast event. The
+   * listener's `onStarted` becomes idempotent on the same payload
+   * (sees `isMine === true`, re-applies the same state — React
+   * dedupes the no-op).
+   */
+  const adoptStarted = useCallback(
+    (ev: RunStartedEvent) => {
+      currentRunIdRef.current = ev.runId;
+      setCurrentRunId(ev.runId);
+      if (ev.resume) {
+        setLines((prev) => [
+          ...prev,
+          {
+            kind: "system",
+            text: `▶ resume ${ev.runner} · ${ev.projectSlug}/${ev.promptId}`,
+          },
+        ]);
+      } else {
+        setLines((prev) => [
+          ...prev,
+          {
+            kind: "system",
+            text: `▶ start ${ev.runner} · ${ev.projectSlug}/${ev.promptId} · cwd: ${ev.workdir}`,
+          },
+        ]);
+        setSessionId(null);
+        setUsage(EMPTY_USAGE);
+        setStartedAtMs(Date.now());
+      }
+      setChatDraft("");
+      setChatError(null);
+      setStagedSource(null);
+      setStatus({ kind: "running", started: ev });
+      setCollapsed(false);
+    },
+    [],
+  );
 
   const onSend = useCallback(async () => {
     if (sending) return;
@@ -508,24 +701,31 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
             "Lost track of which vault this run started against — click New chat.",
           );
         }
-        if (started.freeform) {
-          await resumeFreeformRun({
-            vaultRoot: started.vaultRoot,
-            workdir: started.workdir,
-            additionalDirs: started.additionalDirs,
-            projectSlug: started.projectSlug,
-            sessionId,
-            reply: text,
-          });
-        } else {
-          await resumeRun({
-            vaultRoot: started.vaultRoot,
-            projectSlug: started.projectSlug,
-            promptId: started.promptId,
-            sessionId,
-            reply: text,
-          });
-        }
+        // The spawn-command returns the full `run:started` payload. We
+        // adopt it synchronously as the source of truth for "the run
+        // is live" — the asynchronously-broadcast `run:started` event
+        // is a confirmation that may arrive before OR after this
+        // resolution, and the panel must not depend on it (a race
+        // where the event won would otherwise leave status stuck on
+        // `exited`/`idle` despite a streaming backend run — exactly
+        // the bug Срез 4 first shipped with).
+        const startedNew = started.freeform
+          ? await resumeFreeformRun({
+              vaultRoot: started.vaultRoot,
+              workdir: started.workdir,
+              additionalDirs: started.additionalDirs,
+              projectSlug: started.projectSlug,
+              sessionId,
+              reply: text,
+            })
+          : await resumeRun({
+              vaultRoot: started.vaultRoot,
+              projectSlug: started.projectSlug,
+              promptId: started.promptId,
+              sessionId,
+              reply: text,
+            });
+        adoptStarted(startedNew);
         return;
       }
 
@@ -538,12 +738,13 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
         effectiveScope === VAULT_SCOPE
           ? null
           : scopeOptions.find((p) => p.slug === effectiveScope) ?? null;
-      await startFreeformRun({
+      const startedNew = await startFreeformRun({
         vaultRoot,
         prompt: text,
         scopeProjectSlug: scopeProject?.slug,
         scopeRepoPath: scopeProject?.localPath ?? undefined,
       });
+      adoptStarted(startedNew);
     } catch (err) {
       setChatError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -564,9 +765,19 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
   const onStop = useCallback(async () => {
     if (status.kind !== "running") return;
     const startedSnapshot = status.started;
+    // Stop targets a specific runId on the backend. Use the snapshot's
+    // id rather than `currentRunId` state so we kill *this* run even if
+    // the panel state has been re-pointed mid-flight (no path does that
+    // today, but defensive against future tab-switch races).
+    const targetRunId = startedSnapshot.runId;
+    if (!targetRunId) {
+      // Mount-time-recovered run that lacked a runId in the snapshot
+      // (older backend, future-compat fallback). Nothing to target.
+      return;
+    }
     setStatus({ kind: "stopping", started: startedSnapshot });
     try {
-      await stopRun();
+      await stopRun({ runId: targetRunId });
     } catch (err) {
       const text = err instanceof Error ? err.message : String(err);
       appendLine({ kind: "system", text: `! stop failed: ${text}` });
@@ -717,6 +928,10 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     // Reply path then handles `resume_*_run` using the captured session
     // id and stashed context.
     const synthStarted: RunStartedEvent = {
+      // No backend run is associated with a freshly-reopened session —
+      // the panel is in `exited` state and only the next Reply will
+      // spawn (and mint) one. Empty string sentinels "no live runId".
+      runId: "",
       projectSlug: session.summary.projectSlug,
       promptId: session.summary.promptId,
       vaultRoot: session.summary.vaultRoot,
@@ -738,6 +953,11 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     setStatus({
       kind: "exited",
       exit: {
+        // Reopen synthesizes an exit event for the saved session. We
+        // don't have a live runId here (the original spawn is long
+        // gone), so use the synth started's empty-string sentinel so
+        // the discriminator is at least *present* and type-checks.
+        runId: synthStarted.runId,
         code: session.summary.exitSuccess === false ? 1 : 0,
         success: session.summary.exitSuccess ?? true,
       },
@@ -768,9 +988,30 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     setStartedAtMs(session.summary.startedAtMs);
     setChatDraft("");
     setStagedSource(null);
+    setPendingPermission(null);
     setChatError(null);
     setCollapsed(false);
     setSessionMenuOpen(false);
+  }, []);
+
+  // Apply host-injected `initialState` exactly once on mount. The two
+  // flavours both replace the entire panel state, so re-running on prop
+  // change would be incorrect (would clobber any user-driven edits). We
+  // explicitly leave `initialState` out of the deps array — the host is
+  // expected to supply it only at construction time per chatId; a later
+  // change to the same panel's initialState is not a supported flow.
+  useEffect(() => {
+    if (!initialState) return;
+    if (initialState.kind === "adopt") {
+      const s = initialState.started;
+      currentRunIdRef.current = s.runId || null;
+      setCurrentRunId(s.runId || null);
+      setStatus({ kind: "running", started: s });
+      setCollapsed(false);
+    } else {
+      reopenSession(initialState.session);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Live status subscribers — ambient UI (TitleBar AI handle, StatusBar
@@ -787,6 +1028,7 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
   // changes still propagate via the publish effect below.
   const statusInfoSnapshotRef = useRef<RunStatusInfo>({
     state: "idle",
+    runningCount: 0,
     runningSkill: null,
     runningProject: null,
     lastUsage: null,
@@ -809,6 +1051,59 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
       }
     }
   }, [status, usage, lastSessions]);
+
+  // Per-tab status broadcast to the multi-chat host. Distinct from
+  // `subscribeToStatus` above (which feeds the vault-wide AI handle /
+  // StatusBar) — this one is keyed by chatId so the host can build its
+  // tab-bar UI: one chip per panel with running indicator, badge for a
+  // pending permission, tab title derived from the conversation start.
+  // Deps cover every input the snapshot depends on; cost is cheap (one
+  // function call per change) and skipping a transition would leave
+  // the tab UI stale.
+  useEffect(() => {
+    if (!onStatusChange) return;
+    const stateKind: ChatTabStatusInfo["state"] = status.kind;
+    const started =
+      status.kind === "running" ||
+      status.kind === "stopping" ||
+      status.kind === "exited"
+        ? status.started
+        : null;
+    const runningSkill =
+      started && started.promptId !== "chat" ? started.promptId : null;
+    const runningProject =
+      started && started.projectSlug !== "(vault)"
+        ? started.projectSlug
+        : null;
+    // Title precedence: explicit pending freeform title → artifact
+    // `project/prompt` pair → "New chat" placeholder. Truncated to keep
+    // tab chips compact; the host can re-truncate if needed.
+    const title =
+      pendingTitle ??
+      (started ? `${started.projectSlug}/${started.promptId}` : "New chat");
+    onStatusChange({
+      chatId,
+      state: stateKind,
+      runningSkill,
+      runningProject,
+      title,
+      hasPendingPermission: pendingPermission !== null,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      costUsd: usage.costUsd,
+      savedCount: lastSessions?.length ?? null,
+    });
+  }, [
+    chatId,
+    onStatusChange,
+    status,
+    pendingPermission,
+    pendingTitle,
+    usage.inputTokens,
+    usage.outputTokens,
+    usage.costUsd,
+    lastSessions,
+  ]);
 
   const subscribeToStatus = useCallback(
     (cb: (info: RunStatusInfo) => void) => {
@@ -1019,6 +1314,10 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     <aside
       className={"run-panel" + (collapsed ? " run-panel--collapsed" : "")}
       aria-label="Agent run output"
+      // Stay mounted-but-hidden when the host is showing a sibling tab.
+      // Unmounting would detach `onRunEvents` and freeze any backend
+      // run streaming into this conversation.
+      style={visible ? undefined : { display: "none" }}
     >
       <header className="run-panel__header">
         {collapsed ? (
@@ -1138,6 +1437,12 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
             </span>
           ))}
         </pre>
+      )}
+      {!collapsed && (
+        <PermissionRequestCard
+          request={pendingPermission}
+          onResolved={() => setPendingPermission(null)}
+        />
       )}
       {showChatInput && (
         <form
@@ -1533,6 +1838,7 @@ function buildRunStatusInfo(
     const started = status.started;
     return {
       state: "running",
+      runningCount: 1,
       runningProject:
         started.projectSlug === "(vault)" ? null : started.projectSlug,
       runningSkill: started.freeform ? null : started.promptId,
@@ -1543,6 +1849,7 @@ function buildRunStatusInfo(
   if (status.kind === "exited") {
     return {
       state: "exited",
+      runningCount: 0,
       runningProject: null,
       runningSkill: null,
       lastUsage,
@@ -1551,6 +1858,7 @@ function buildRunStatusInfo(
   }
   return {
     state: "idle",
+    runningCount: 0,
     runningProject: null,
     runningSkill: null,
     lastUsage,

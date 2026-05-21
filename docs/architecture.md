@@ -8,7 +8,8 @@
 │  - Welcome → picks a vault folder via @tauri-apps/plugin-dialog      │
 │  - Dashboard: Projects / AI Artifacts / Drafts / Zones / Diagnostics │
 │  - EditorPanel (CodeMirror + react-markdown), FrontmatterForm        │
-│  - RunPanel (bottom drawer; streams claude stream-json events)       │
+│  - RunPanelHost + RunPanel × N (tabbed multi-chat drawer; each       │
+│    tab streams its own backend run; inline permission card per tab)  │
 │  - ContextPreview / ExternalRunnerPromptCard (run plan + Run button) │
 └──────────────────────┬───────────────────────────────────────────────┘
                        │ Tauri commands (invoke + listen)
@@ -20,14 +21,20 @@
 │    read_markdown_file, write_markdown_file, create_markdown_file     │
 │    promote_draft, discard_draft                                      │
 │    start_vault_watch / stop_vault_watch                              │
-│    start_run / resume_run / stop_run / get_run_status                │
+│    start_run / resume_run / start_freeform_run /                     │
+│      resume_freeform_run — all return RunStartedPayload (incl. runId)│
+│    stop_run(run_id) / approve_tool_use(run_id, request_id, …) /      │
+│      deny_tool_use(run_id, request_id, …) — targeted by run id      │
+│    get_runs() → Vec<RunStartedPayload> — snapshot of live runs       │
 │  State:                                                              │
 │    WatchState — active filesystem watcher token                      │
-│    RunState — at-most-one run; generation counter for safe restart   │
+│    RunState — HashMap<RunId, ActiveRun>; up to                       │
+│      MAX_CONCURRENT_RUNS=3 simultaneous claude subprocesses          │
 │  Threads:                                                            │
 │    Watcher emit pump → run:vault:changed                             │
-│    Runner emit pump → run:started / stdout / stderr / truncated /    │
-│                       exit (drains mpsc receiver from vault-core)    │
+│    Runner emit pumps (one per run) → run:started / stdout / stderr / │
+│      truncated / permission-request / exit — every payload carries a │
+│      `runId` so the frontend can demultiplex by chat tab             │
 └──────────────────────┬───────────────────────────────────────────────┘
                        │
                        ▼
@@ -230,17 +237,22 @@ Three severity levels (`info` / `warning` / `error`). Current emitters:
   `node_modules/`, `target/`, `dist/`, `build/`, `.next/` at any
   depth; deny root `.claude/`; deny `.vault/cache/` and
   `.vault/tmp/`; deny `.bak` / `.pem` / `.key` suffixes.
-- **One run at a time** — `RunState` rejects a second `start_run`
-  while one is active. Generation counter on each run prevents an
-  old emit thread from clearing the new run's killer on a fast
-  stop+restart.
+- **Bounded concurrency** — `RunState` caps simultaneous claude
+  subprocesses at `MAX_CONCURRENT_RUNS = 3`; the fourth `start_run`
+  is rejected with a clear inline error. Each run is identified by a
+  stable `RunId` (`r-{gen}-{epoch_ms}`) carried on every event payload
+  and required by `stop_run` / `approve_tool_use` / `deny_tool_use`
+  so a frontend tab can only target its own subprocess. Generation
+  counter on each run still guards a fast stop+restart from having
+  an old emit thread evict a newer run's killer. See
+  [multi-chat.md](./multi-chat.md).
 
 ## Out of scope today
 
 - Cloud sync, telemetry, multi-user features
 - Embedded vector retrieval / semantic search across the vault
 - Per-artifact `--allowed-tools` whitelisting (tracked follow-up)
-- Branch history / multi-tab chats / conversation persistence across
-  app restarts
+- Conversation persistence across app restarts (history rows survive
+  in the local DB but in-progress chat state does not)
 - Recommendations engine UI (rule-based slice is in flight; LLM-powered
   layer is future work)

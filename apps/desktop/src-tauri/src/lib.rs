@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -236,10 +237,38 @@ fn stop_vault_watch(state: State<'_, WatchState>) -> Result<(), String> {
 /// thread's tail.
 type RunGen = u64;
 
+/// Externally-visible run id. Minted per spawn, threaded through every
+/// emitted event payload and accepted by `stop_run` / `approve_tool_use` /
+/// `deny_tool_use` so the frontend can demultiplex events back to the
+/// chat tab that owns a given run once multiple runs can be active at
+/// once. Format is `r-{gen}-{unix_ms}` — `gen` keeps a tie-break order
+/// within a single process lifetime, `unix_ms` survives across restarts.
+type RunId = String;
+
+fn mint_run_id(gen: RunGen) -> RunId {
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!("r-{gen}-{ms}")
+}
+
+/// Cap on concurrent CLI subprocesses. Picked to balance "user wants to
+/// fan out work across a few chats" against "spawning N heavy claude
+/// processes will gnaw through CPU + memory + rate limits". Exceeding
+/// it surfaces a clear inline error rather than silently queueing —
+/// the user is expected to close or wait on one of the existing runs.
+const MAX_CONCURRENT_RUNS: usize = 3;
+
 #[derive(Default)]
 struct RunStateInner {
     next_gen: RunGen,
-    active: Option<ActiveRun>,
+    /// All currently-spawned runs, keyed by their externally-visible
+    /// [`RunId`]. Replaces the prior single-slot `Option<ActiveRun>`
+    /// so the frontend can hold multiple chat tabs each owning their
+    /// own subprocess. Membership is the source of truth for "is this
+    /// run alive?" — the emit thread removes its own entry on `Exit`.
+    runs: HashMap<RunId, ActiveRun>,
 }
 
 struct ActiveRun {
@@ -260,11 +289,11 @@ struct ActiveRun {
     pending_permissions: HashSet<String>,
 }
 
-/// Holds the active CLI run's kill switch (if any) plus a monotonic
-/// generation counter to disambiguate concurrent stop/restart sequences.
-/// The receiver lives on the emit thread; this slot exists only as a
-/// "stop button" + presence flag. The shell allows at most one run at a
-/// time; concurrent runs are rejected up front.
+/// Holds the live CLI runs' kill switches plus a monotonic generation
+/// counter to disambiguate concurrent stop/restart sequences (legacy
+/// from the single-slot era; still useful as a tie-breaker if two
+/// spawns happen to mint the same wall-clock millis). Up to
+/// [`MAX_CONCURRENT_RUNS`] runs can be active simultaneously.
 #[derive(Default)]
 struct RunState(Mutex<RunStateInner>);
 
@@ -278,6 +307,10 @@ fn lock_recovering<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct RunStartedPayload {
+    /// Stable per-spawn id. Carried on every subsequent event for this
+    /// run; the frontend uses it to demultiplex events back to the
+    /// owning chat tab. See [`RunId`].
+    run_id: String,
     project_slug: String,
     prompt_id: String,
     /// Absolute canonicalized vault root. The frontend stashes this so a
@@ -304,24 +337,28 @@ struct RunStartedPayload {
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct RunStdoutPayload {
+    run_id: String,
     line: String,
 }
 
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct RunStderrPayload {
+    run_id: String,
     line: String,
 }
 
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct RunTruncatedPayload {
+    run_id: String,
     dropped_bytes: usize,
 }
 
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct RunExitPayload {
+    run_id: String,
     code: Option<i32>,
     success: bool,
 }
@@ -334,6 +371,7 @@ struct RunExitPayload {
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct RunPermissionRequestPayload {
+    run_id: String,
     request_id: String,
     tool_name: String,
     tool_input: serde_json::Value,
@@ -373,7 +411,7 @@ async fn start_run(
     runtime_input: Option<String>,
     app: AppHandle,
     state: State<'_, RunState>,
-) -> Result<(), String> {
+) -> Result<RunStartedPayload, String> {
     let prep_slug = project_slug.clone();
     let prep_prompt = prompt_id.clone();
     let (vault_path, workdir, additional_dirs, prompt) =
@@ -422,7 +460,7 @@ async fn resume_run(
     reply: String,
     app: AppHandle,
     state: State<'_, RunState>,
-) -> Result<(), String> {
+) -> Result<RunStartedPayload, String> {
     if !vault_core::runner::is_valid_session_id(session_id.trim()) {
         return Err("invalid session id".into());
     }
@@ -475,7 +513,7 @@ async fn start_freeform_run(
     scope_repo_path: Option<String>,
     app: AppHandle,
     state: State<'_, RunState>,
-) -> Result<(), String> {
+) -> Result<RunStartedPayload, String> {
     if prompt.trim().is_empty() {
         return Err("prompt is required".into());
     }
@@ -531,7 +569,7 @@ async fn resume_freeform_run(
     reply: String,
     app: AppHandle,
     state: State<'_, RunState>,
-) -> Result<(), String> {
+) -> Result<RunStartedPayload, String> {
     if !vault_core::runner::is_valid_session_id(session_id.trim()) {
         return Err("invalid session id".into());
     }
@@ -656,8 +694,14 @@ struct SpawnArgs<'s> {
 
 /// Shared core of `start_run` / `resume_run`: build the `RunRequest`,
 /// claim the run slot atomically, spawn the subprocess, kick off the
-/// emit-pump thread.
-fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
+/// emit-pump thread. Returns the full `RunStartedPayload` (including
+/// `run_id`) so the frontend can drive its "is this run mine?"
+/// filter from the invoke-return path directly, instead of racing the
+/// asynchronously-delivered `run:started` event. Without this the
+/// frontend would lose `run:started` events that won the race against
+/// the invoke promise resolution, leaving the panel stuck in `idle`
+/// even though the backend run is streaming.
+fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<RunStartedPayload, String> {
     let SpawnArgs {
         vault_path,
         workdir,
@@ -692,28 +736,17 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
         resume_session_id,
     };
 
-    // Build the started payload once — it gets emitted to the frontend
-    // AND stashed in RunState so a later `get_run_status` can return
-    // the same context after a mount-time resync.
-    let started_payload = RunStartedPayload {
-        project_slug,
-        prompt_id,
-        vault_root: vault_path.to_string_lossy().to_string(),
-        workdir: workdir.to_string_lossy().to_string(),
-        additional_dirs: additional_dirs_str,
-        runner: "claude-code",
-        resume: is_resume,
-        freeform,
-    };
-
-    // Hold the RunState lock across the spawn so the "is_some" check and
-    // the killer insert are atomic. The spawn itself is synchronous; no
+    // Hold the RunState lock across the spawn so the cap check and the
+    // killer insert are atomic. The spawn itself is synchronous; no
     // async / await in this block. This closes the TOCTOU window where
-    // two concurrent `start_run` calls could both pass the guard.
-    let (events, gen) = {
+    // two concurrent `start_run` calls could both pass the cap guard.
+    let (events, gen, run_id, started_payload) = {
         let mut inner = lock_recovering(&state.0);
-        if inner.active.is_some() {
-            return Err("another run is already active — stop it before starting a new one".into());
+        if inner.runs.len() >= MAX_CONCURRENT_RUNS {
+            return Err(format!(
+                "Maximum {MAX_CONCURRENT_RUNS} concurrent chats reached — \
+                 stop or finish one before starting another."
+            ));
         }
 
         use vault_core::runner::Runner as _;
@@ -723,16 +756,37 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
 
         let gen = inner.next_gen.wrapping_add(1);
         inner.next_gen = gen;
-        inner.active = Some(ActiveRun {
-            gen,
-            killer,
-            started: started_payload.clone(),
-            pending_permissions: HashSet::new(),
-        });
-        (events, gen)
+        let run_id = mint_run_id(gen);
+
+        // Build the started payload once — it gets emitted to the
+        // frontend AND stashed in RunState so a later `get_runs` /
+        // `get_run_status` can return the same context (including the
+        // run_id) after a mount-time resync.
+        let started_payload = RunStartedPayload {
+            run_id: run_id.clone(),
+            project_slug,
+            prompt_id,
+            vault_root: vault_path.to_string_lossy().to_string(),
+            workdir: workdir.to_string_lossy().to_string(),
+            additional_dirs: additional_dirs_str,
+            runner: "claude-code",
+            resume: is_resume,
+            freeform,
+        };
+
+        inner.runs.insert(
+            run_id.clone(),
+            ActiveRun {
+                gen,
+                killer,
+                started: started_payload.clone(),
+                pending_permissions: HashSet::new(),
+            },
+        );
+        (events, gen, run_id, started_payload)
     };
 
-    let _ = app.emit("run:started", started_payload);
+    let _ = app.emit("run:started", started_payload.clone());
 
     // Emit pump. Drains the receiver and forwards each event as a typed
     // Tauri event. On `Exit` the slot is cleared, but only if this thread
@@ -740,19 +794,37 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
     // stop+restart sequence where this thread's tail would otherwise
     // delete the new run's killer.
     let app_for_thread = app.clone();
+    let run_id_for_thread = run_id.clone();
     thread::spawn(move || {
         use vault_core::runner::RunEvent;
         while let Ok(ev) = events.recv() {
             match ev {
                 RunEvent::Stdout(line) => {
-                    let _ = app_for_thread.emit("run:stdout", RunStdoutPayload { line });
+                    let _ = app_for_thread.emit(
+                        "run:stdout",
+                        RunStdoutPayload {
+                            run_id: run_id_for_thread.clone(),
+                            line,
+                        },
+                    );
                 }
                 RunEvent::Stderr(line) => {
-                    let _ = app_for_thread.emit("run:stderr", RunStderrPayload { line });
+                    let _ = app_for_thread.emit(
+                        "run:stderr",
+                        RunStderrPayload {
+                            run_id: run_id_for_thread.clone(),
+                            line,
+                        },
+                    );
                 }
                 RunEvent::Truncated { dropped_bytes } => {
-                    let _ =
-                        app_for_thread.emit("run:truncated", RunTruncatedPayload { dropped_bytes });
+                    let _ = app_for_thread.emit(
+                        "run:truncated",
+                        RunTruncatedPayload {
+                            run_id: run_id_for_thread.clone(),
+                            dropped_bytes,
+                        },
+                    );
                 }
                 RunEvent::PermissionRequest(req) => {
                     // Record the pending request so approve/deny can
@@ -760,10 +832,15 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
                     // serialize the whole struct into state (the runner
                     // also keeps no buffer); just the id presence is
                     // enough to reject stale modal clicks after a
-                    // restart.
+                    // restart. Looked up directly by run_id now that
+                    // multiple runs coexist — the gen check is no
+                    // longer needed (run_id is unique per spawn) but
+                    // we keep it as defense in depth: a future restart
+                    // sequence that recycles ids should still be
+                    // rejected.
                     if let Some(state) = app_for_thread.try_state::<RunState>() {
                         let mut inner = lock_recovering(&state.0);
-                        if let Some(active) = inner.active.as_mut() {
+                        if let Some(active) = inner.runs.get_mut(&run_id_for_thread) {
                             if active.gen == gen {
                                 active.pending_permissions.insert(req.request_id.clone());
                             }
@@ -772,6 +849,7 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
                     let _ = app_for_thread.emit(
                         "run:permission-request",
                         RunPermissionRequestPayload {
+                            run_id: run_id_for_thread.clone(),
                             request_id: req.request_id,
                             tool_name: req.tool_name,
                             tool_input: req.tool_input,
@@ -783,14 +861,24 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
                     );
                 }
                 RunEvent::Exit { code, success } => {
-                    let _ = app_for_thread.emit("run:exit", RunExitPayload { code, success });
+                    let _ = app_for_thread.emit(
+                        "run:exit",
+                        RunExitPayload {
+                            run_id: run_id_for_thread.clone(),
+                            code,
+                            success,
+                        },
+                    );
                     if let Some(state) = app_for_thread.try_state::<RunState>() {
                         let mut inner = lock_recovering(&state.0);
-                        // Only clear the slot if it's still OUR run. A
-                        // newer run with a higher generation must not have
-                        // its killer dropped by us.
-                        if inner.active.as_ref().map(|a| a.gen) == Some(gen) {
-                            inner.active = None;
+                        // Remove our entry. The gen check guards a
+                        // theoretical recycle where a stopped run's
+                        // id might be re-inserted by a later spawn
+                        // (mint_run_id includes wall-clock millis so
+                        // this can't happen within the same process,
+                        // but the assertion costs ~nothing).
+                        if inner.runs.get(&run_id_for_thread).map(|a| a.gen) == Some(gen) {
+                            inner.runs.remove(&run_id_for_thread);
                         }
                     }
                     break;
@@ -799,15 +887,18 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<(), String> {
         }
     });
 
-    Ok(())
+    Ok(started_payload)
 }
 
-/// Stop the active run, if any. Idempotent.
+/// Stop the run identified by `run_id`. Idempotent: if no run with
+/// that id exists (already exited, never existed) this is a no-op and
+/// returns `Ok`. A frontend tab targets its own run without affecting
+/// sibling runs in other tabs.
 #[tauri::command]
-fn stop_run(state: State<'_, RunState>) -> Result<(), String> {
+fn stop_run(run_id: String, state: State<'_, RunState>) -> Result<(), String> {
     let active = {
         let mut inner = lock_recovering(&state.0);
-        inner.active.take()
+        inner.runs.remove(&run_id)
     };
     if let Some(active) = active {
         active.killer.kill();
@@ -829,15 +920,16 @@ fn stop_run(state: State<'_, RunState>) -> Result<(), String> {
 #[tauri::command]
 fn approve_tool_use(
     state: State<'_, RunState>,
+    run_id: String,
     request_id: String,
     updated_input: Option<serde_json::Value>,
     updated_permissions: Option<serde_json::Value>,
 ) -> Result<(), String> {
     let mut inner = lock_recovering(&state.0);
     let active = inner
-        .active
-        .as_mut()
-        .ok_or_else(|| "no active run".to_string())?;
+        .runs
+        .get_mut(&run_id)
+        .ok_or_else(|| format!("no active run with id {run_id}"))?;
     if !active.pending_permissions.remove(&request_id) {
         return Err(format!(
             "unknown or already-resolved request_id: {request_id}"
@@ -860,14 +952,15 @@ fn approve_tool_use(
 #[tauri::command]
 fn deny_tool_use(
     state: State<'_, RunState>,
+    run_id: String,
     request_id: String,
     message: Option<String>,
 ) -> Result<(), String> {
     let mut inner = lock_recovering(&state.0);
     let active = inner
-        .active
-        .as_mut()
-        .ok_or_else(|| "no active run".to_string())?;
+        .runs
+        .get_mut(&run_id)
+        .ok_or_else(|| format!("no active run with id {run_id}"))?;
     if !active.pending_permissions.remove(&request_id) {
         return Err(format!(
             "unknown or already-resolved request_id: {request_id}"
@@ -883,29 +976,19 @@ fn deny_tool_use(
     Ok(())
 }
 
-/// Query whether a run is currently active, and if so return the full
-/// `run:started` context (project_slug, prompt_id, vault_root, workdir,
-/// runner). Used by the frontend on mount to recover state across
-/// remounts (HMR in dev) and IDE restarts during a long run —
-/// without the started context, Reply / Resume would fail with
-/// "vault root not accessible: <empty>".
+/// Snapshot every currently-running spawn. Used by the frontend on
+/// mount to recover panel state across remounts (HMR in dev) and IDE
+/// restarts during a long run — without the started context, Reply /
+/// Resume would fail with "vault root not accessible: <empty>".
+///
+/// Each entry mirrors the `run:started` event so the caller can drop
+/// it straight into its per-tab state. Order is unspecified — callers
+/// that need stability (e.g. "which run is oldest") should sort by
+/// the gen prefix in `run_id`.
 #[tauri::command]
-fn get_run_status(state: State<'_, RunState>) -> Result<RunStatusPayload, String> {
+fn get_runs(state: State<'_, RunState>) -> Result<Vec<RunStartedPayload>, String> {
     let inner = lock_recovering(&state.0);
-    Ok(RunStatusPayload {
-        active: inner.active.is_some(),
-        started: inner.active.as_ref().map(|a| a.started.clone()),
-    })
-}
-
-#[derive(serde::Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct RunStatusPayload {
-    active: bool,
-    /// Present when `active` is `true`. Same payload shape as the
-    /// `run:started` event so the frontend can drop it in directly.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    started: Option<RunStartedPayload>,
+    Ok(inner.runs.values().map(|a| a.started.clone()).collect())
 }
 
 /// Open the consolidated [`AppDb`] in `data_dir/app.db`, run the
@@ -1369,7 +1452,7 @@ pub fn run() {
             stop_run,
             approve_tool_use,
             deny_tool_use,
-            get_run_status,
+            get_runs,
             compute_recommendations,
             dismiss_recommendation,
             restore_recommendation,

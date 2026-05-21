@@ -26,3 +26,24 @@ Rules:
 
 This is a security-first project. Prefer boring, widely adopted, well-governed
 tools over faster or more convenient alternatives.
+
+## Subsystem docs — read before changing
+
+Code-level comments cover the **what** + immediate **why**; the docs
+below explain the **architecture**, the historical bugs that shaped
+current design, and the cross-file data flow. Read the relevant one
+before non-trivial work in that area.
+
+- [`docs/architecture.md`](docs/architecture.md) — top-level layer map
+  (React → Tauri shell → `vault-core`), command surface, threading,
+  vault conventions, security boundaries.
+- [`docs/multi-chat.md`](docs/multi-chat.md) — bottom chat drawer:
+  `RunState` as a `HashMap<RunId, ActiveRun>` (cap = 3), how `runId`
+  is minted and threaded through every event, the strict
+  `isMine(runId)` filter that keeps sibling chat tabs isolated, the
+  invoke-return race fix, inline `PermissionRequestCard` (replaces the
+  old global `ApproveToolsModal`), and the status aggregation that
+  feeds the AI handle / StatusBar.
+
+When you change something documented there, update the doc in the
+same PR. Stale architecture docs are worse than no docs.

@@ -2451,6 +2451,154 @@ button {
   min-height: 36px;
 }
 
+/* ---------- Multi-chat tab bar (RunPanelHost) ---------- */
+
+/* Sits above the active panel; only renders when there are 2+ chats.
+ * Drives state via clicks on individual tab buttons; the panels
+ * themselves remain mounted (display: none for inactive) so their
+ * event listeners and output buffers survive switches. */
+.run-panel-host__tabs {
+  flex-shrink: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 4px 8px 0;
+  background: var(--panel-2);
+  border-top: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.run-panel-host__tab {
+  display: flex;
+  align-items: stretch;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  max-width: 220px;
+  min-width: 0;
+}
+
+.run-panel-host__tab--active {
+  background: var(--panel);
+  border-color: var(--accent);
+  /* Visually fuse the active tab with the panel below by extending
+   * its bottom edge over the panel's top border. */
+  position: relative;
+  z-index: 1;
+  box-shadow: 0 1px 0 0 var(--panel);
+}
+
+.run-panel-host__tab--pending {
+  /* Soft warn highlight so a tab waiting on the user is hard to miss
+   * even when inactive. */
+  border-color: var(--warn);
+}
+
+.run-panel-host__tab-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  min-width: 0;
+  flex: 1;
+}
+
+.run-panel-host__tab-button:hover {
+  background: var(--panel-2);
+}
+
+.run-panel-host__tab-label {
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.run-panel-host__tab-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.run-panel-host__tab-dot--running {
+  background: var(--ok);
+  /* Soft pulse so the user spots an actively-streaming tab without
+   * having to glance at output. */
+  animation: run-panel-host-pulse 1.4s ease-in-out infinite;
+}
+
+.run-panel-host__tab-dot--stopping {
+  background: var(--warn);
+}
+
+.run-panel-host__tab-dot--exited {
+  background: var(--muted);
+}
+
+@keyframes run-panel-host-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.run-panel-host__tab-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--warn);
+  color: var(--panel);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.run-panel-host__tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.run-panel-host__tab-close:hover {
+  color: var(--text);
+}
+
+.run-panel-host__tab-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.run-panel-host__tab-add:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
 .run-panel--collapsed {
   max-height: 36px;
 }
@@ -3009,104 +3157,53 @@ button {
   line-height: 1.4;
 }
 
-/* ---------- Approve-tools modal ---------- */
+/* ---------- Permission request card (inline) ---------- */
 
-/* Standalone modal (doesn't reuse `.modal-overlay` because it owns the
- * scrim + card layout) — claude is paused awaiting a decision so we
- * want full focus capture and a slightly louder warn tone in the
- * header. Three actions in the footer, no Cancel — closing the modal
- * without picking would desync the SDK control protocol. */
-.approve-tools-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.approve-tools-modal__scrim {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-}
-
-.approve-tools-modal__card {
-  position: relative;
-  width: min(520px, calc(100vw - 32px));
-  background: var(--panel);
-  border: 1px solid var(--border);
+/* Rendered inside the chat panel above the textarea (replaces the
+ * earlier global modal). Always attached to its own chat so the user
+ * sees exactly which conversation is paused — Срез 3 of the multi-chat
+ * refactor. Visual is a single accent-tinted card with header row +
+ * title + arg + actions. Three actions, no Cancel — claude is paused
+ * waiting on one of the three explicit answers; abandoning the card
+ * is allowed but happens at the chat level (closing the tab). */
+.permission-card {
+  margin: 6px 12px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--warn);
   border-radius: var(--radius);
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+  background: color-mix(in srgb, var(--warn-bg) 60%, var(--panel) 40%);
   display: flex;
   flex-direction: column;
+  gap: 6px;
 }
 
-.approve-tools-modal__header {
+.permission-card__header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border-soft);
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
-.approve-tools-modal__pill {
+.permission-card__pill {
   display: inline-flex;
   align-items: center;
-  height: 20px;
-  padding: 0 8px;
-  border-radius: var(--radius);
-  background: var(--warn-bg);
-  color: var(--warn);
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 2px;
+  background: var(--warn);
+  color: var(--panel);
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
 }
 
-.approve-tools-modal__skill {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--fg-2);
-}
-
-.approve-tools-modal__body {
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.approve-tools-modal__title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.approve-tools-modal__description {
-  margin: 0;
-  font-size: 12.5px;
-  line-height: 1.45;
-  color: var(--muted);
-}
-
-.approve-tools-modal__tool-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: var(--radius);
-  background: var(--panel-2);
-}
-
-.approve-tools-modal__risk {
-  flex-shrink: 0;
+.permission-card__risk {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 44px;
+  min-width: 36px;
   height: 18px;
   padding: 0 6px;
   border-radius: 2px;
@@ -3117,59 +3214,70 @@ button {
   letter-spacing: 0.05em;
 }
 
-.approve-tools-modal__risk--low {
+.permission-card__risk--low {
   background: var(--ok-bg);
   color: var(--ok);
 }
 
-.approve-tools-modal__risk--med {
+.permission-card__risk--med {
   background: var(--warn-bg);
   color: var(--warn);
 }
 
-.approve-tools-modal__risk--high {
+.permission-card__risk--high {
   background: var(--err-bg);
   color: var(--err);
 }
 
-.approve-tools-modal__arg {
+.permission-card__skill {
   font-family: var(--font-mono);
   font-size: 11.5px;
+  color: var(--fg-2);
+  margin-left: auto;
+}
+
+.permission-card__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.permission-card__description {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.permission-card__arg {
+  display: block;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
   color: var(--text);
   word-break: break-all;
   white-space: pre-wrap;
-  min-width: 0;
-  flex: 1;
+  max-height: 96px;
+  overflow-y: auto;
 }
 
-.approve-tools-modal__error {
-  margin: 0 16px 8px;
-  padding: 8px 10px;
+.permission-card__error {
+  margin: 0;
+  padding: 6px 8px;
   background: var(--err-bg);
   color: var(--err);
-  border-radius: var(--radius);
+  border-radius: 4px;
   font-size: 12px;
 }
 
-.approve-tools-modal__footer {
+.permission-card__actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 16px;
-  border-top: 1px solid var(--border-soft);
-}
-
-/* Deny is destructive (claude gets an is_error tool_result) but lower
- * key than the primary Allow action — ghost style with err text only. */
-.approve-tools-modal__deny.btn--danger {
-  background: transparent;
-  color: var(--err);
-  border-color: transparent;
-  margin-right: auto;
-}
-
-.approve-tools-modal__deny.btn--danger:hover:not(:disabled) {
-  background: var(--err-bg);
+  gap: 6px;
+  margin-top: 2px;
 }
 
 /* ---------- External runner prompt ---------- */

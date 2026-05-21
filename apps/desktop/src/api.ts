@@ -265,6 +265,12 @@ export async function onVaultChange(
 // ---------- Runner ----------
 
 export interface RunStartedEvent {
+  /** Stable per-spawn id. Carried on every subsequent event for this
+   *  run (stdout/stderr/truncated/permission-request/exit) and required
+   *  as a targeting key on stop/approve/deny. The frontend uses it to
+   *  demultiplex events back to the chat tab that owns the run once
+   *  multiple chats can run concurrently. */
+  runId: string;
   projectSlug: string;
   promptId: string;
   vaultRoot: string;
@@ -285,14 +291,17 @@ export interface RunStartedEvent {
 }
 
 export interface RunLineEvent {
+  runId: string;
   line: string;
 }
 
 export interface RunTruncatedEvent {
+  runId: string;
   droppedBytes: number;
 }
 
 export interface RunExitEvent {
+  runId: string;
   code: number | null;
   success: boolean;
 }
@@ -314,6 +323,7 @@ export interface RunExitEvent {
  * absent.
  */
 export interface RunPermissionRequestEvent {
+  runId: string;
   requestId: string;
   toolName: string;
   toolInput: unknown;
@@ -323,25 +333,32 @@ export interface RunPermissionRequestEvent {
   description?: string;
 }
 
-export interface RunStatus {
-  active: boolean;
-  /** When `active` is true, the same payload the original `run:started`
-   *  event carried. Use this on mount to recover context (vault root,
-   *  project + prompt ids) across remounts and IDE restarts. */
-  started?: RunStartedEvent;
-}
 
+/**
+ * Start a run. Resolves with the full `run:started` payload (including
+ * the freshly-minted `runId`) — the caller treats this as the source
+ * of truth for "the run is live" and seeds its event-routing filter
+ * synchronously. Returning the payload from invoke avoids a race
+ * where the asynchronously-delivered `run:started` event arrives
+ * BEFORE the invoke promise resolves, leaving the caller unable to
+ * recognize its own run.
+ */
 export async function startRun(args: {
   vaultRoot: string;
   projectSlug: string;
   promptId: string;
   runtimeInput?: string;
-}): Promise<void> {
-  await invoke<void>("start_run", args);
+}): Promise<RunStartedEvent> {
+  return invoke<RunStartedEvent>("start_run", args);
 }
 
-export async function stopRun(): Promise<void> {
-  await invoke<void>("stop_run");
+/**
+ * Stop the run identified by `runId`. Idempotent on the backend: if
+ * the run has already exited (or was never the active one) this is a
+ * no-op rather than an error.
+ */
+export async function stopRun(args: { runId: string }): Promise<void> {
+  await invoke<void>("stop_run", args);
 }
 
 /**
@@ -355,6 +372,7 @@ export async function stopRun(): Promise<void> {
  * Omit for one-shot "Allow once".
  */
 export async function approveToolUse(args: {
+  runId: string;
   requestId: string;
   updatedInput?: unknown;
   updatedPermissions?: unknown;
@@ -368,6 +386,7 @@ export async function approveToolUse(args: {
  * just failing silently.
  */
 export async function denyToolUse(args: {
+  runId: string;
   requestId: string;
   message?: string;
 }): Promise<void> {
@@ -389,8 +408,8 @@ export async function resumeRun(args: {
   promptId: string;
   sessionId: string;
   reply: string;
-}): Promise<void> {
-  await invoke<void>("resume_run", args);
+}): Promise<RunStartedEvent> {
+  return invoke<RunStartedEvent>("resume_run", args);
 }
 
 /**
@@ -409,8 +428,8 @@ export async function startFreeformRun(args: {
   prompt: string;
   scopeProjectSlug?: string;
   scopeRepoPath?: string;
-}): Promise<void> {
-  await invoke<void>("start_freeform_run", args);
+}): Promise<RunStartedEvent> {
+  return invoke<RunStartedEvent>("start_freeform_run", args);
 }
 
 /**
@@ -427,18 +446,21 @@ export async function resumeFreeformRun(args: {
   projectSlug: string;
   sessionId: string;
   reply: string;
-}): Promise<void> {
-  await invoke<void>("resume_freeform_run", args);
+}): Promise<RunStartedEvent> {
+  return invoke<RunStartedEvent>("resume_freeform_run", args);
 }
 
 /**
- * Snapshot of run state. Components query this on mount to synchronise
- * their local "is a run active right now?" flag with the backend — the
- * lifecycle events alone are not enough since a component may mount
- * while a run is already in progress.
+ * Snapshot every currently-running spawn. Components call this on
+ * mount to synchronise their local "what's running right now?" view
+ * with the backend — the lifecycle events alone are not enough since
+ * a component may mount while runs are already in progress (HMR in
+ * dev, IDE restart during a long chat). Each entry mirrors the
+ * `run:started` event so the caller can drop it straight into the
+ * matching per-tab state. Order is unspecified.
  */
-export async function getRunStatus(): Promise<RunStatus> {
-  return invoke<RunStatus>("get_run_status");
+export async function getRuns(): Promise<RunStartedEvent[]> {
+  return invoke<RunStartedEvent[]>("get_runs");
 }
 
 /**
