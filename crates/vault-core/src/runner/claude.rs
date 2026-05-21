@@ -1,65 +1,44 @@
 //! Claude Code CLI runner.
 //!
-//! Spawns `claude -p "<prompt>" --output-format stream-json --verbose` with
-//! cwd set to the project's source repo. The vault root (and any other
-//! extra dirs) are passed as `--add-dir` flags so the agent can read vault
-//! notes alongside the code.
+//! Spawns `claude -p` in bidirectional stream-json mode. cwd is the
+//! project's source repo; the vault root (and any other extra dirs)
+//! are passed as `--add-dir` flags so the agent can read vault notes
+//! alongside the code.
 //!
 //! ## Flags currently passed
 //!
-//! - `-p <prompt>` — one-shot non-interactive mode.
-//! - `--output-format stream-json` — one JSON event per line, emitted live
-//!   as the agent works (tool calls, assistant text, final result).
-//!   `--output-format text` would only flush the final response on exit,
-//!   killing the streaming UX.
-//! - `--verbose` — required by `claude` when stream-json is set.
+//! - `-p` — non-interactive mode. Required even with stream-json
+//!   input — without it claude opens a TUI and ignores stdin.
+//! - `--input-format stream-json --output-format stream-json --verbose`
+//!   — bidirectional event protocol. Input carries the SDK initialize
+//!   handshake + user message + permission control_responses; output
+//!   carries assistant events + can_use_tool control_requests.
 //! - `--permission-mode acceptEdits` — auto-approves file-edit tools
 //!   (Write/Edit/MultiEdit/NotebookEdit) without prompting; the user
 //!   already authorised the run by clicking Run, and the vault is
 //!   git-tracked so review happens via `git diff`. Other tools (Bash,
-//!   network, etc.) still follow the user's global Claude Code config.
-//! - `--add-dir <dir>` — one per `additional_dirs` entry.
+//!   network, MCP) still route through the SDK control protocol →
+//!   frontend permission card.
+//! - `--disallowed-tools AskUserQuestion` — disable the interactive
+//!   multi-choice tool which would otherwise return an `is_error`
+//!   tool_result we can't answer in non-interactive mode. The model
+//!   adapts by asking inline in chat text instead.
+//! - `--resume <session_id>` — when resuming a prior conversation.
+//! - `--add-dir <dir>` — one per [`RunRequest::additional_dirs`] entry.
+//! - `--model <name>` — when [`RunRequest::model`] is set; otherwise
+//!   defaults to the user's global Claude Code config.
 //!
-//! ## Deliberately NOT passed in slice 1
+//! ## Threading + truncation
 //!
-//! - `--allowed-tools` / `--disallowed-tools`: the spawned `claude` uses
-//!   the user's global `~/.claude/settings.json`. Tool whitelisting from
-//!   `claude-agent.tools[]` frontmatter is a slice 2 task — when we add
-//!   it, also add the "approve dangerous tools" dialog.
-//! - `--model`: defaults to whatever the user's config picks.
-//!
-//! ## Threading model
-//!
-//! Each `start_with_command` spawns three OS threads:
-//!
-//! - **stdout reader** — owns the stdout `PipeReader`, never touches `Child`.
-//!   Forwards lines as `Stdout` events. On pipe-read IO error, emits a
-//!   synthetic `Stderr("reader error: …")` event so the consumer never
-//!   sees silent truncation. Exits on EOF or sender disconnect.
-//! - **stderr reader** — same, for stderr.
-//! - **coordinator** — joins both reader handles (guaranteeing all
-//!   in-flight output reaches the consumer before `Exit`), then polls
-//!   `try_wait` until the child reaps, and finally emits `Exit`.
-//!
-//! The output cap is enforced via a single `Mutex<TruncationState>` shared
-//! between the two readers — atomics alone leave a race window where two
-//! `fetch_add` calls both succeed past the cap. The lock is held only
-//! while accounting for one line, so contention is negligible at any
-//! realistic output rate.
+//! The generic spawn-and-pump machinery lives in `subprocess.rs`; this
+//! file only contributes Claude-specific argument building, the
+//! initial stdin handshake, and the [`ClaudeLineClassifier`] that
+//! turns stream-json events into `RunEvent`s.
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex, MutexGuard};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
-
-use super::{
-    PermissionRequest, RunEvent, RunHandle, RunRequest, Runner, RunnerError, RunnerKind,
-    MAX_OUTPUT_BYTES,
-};
+use super::subprocess::{spawn_subprocess, LineClassifier, LineHandled};
+use super::{PermissionRequest, RunEvent, RunHandle, RunRequest, Runner, RunnerError, RunnerKind};
 
 const CLAUDE_BIN: &str = "claude";
-const WAITER_POLL_MS: u64 = 50;
 
 /// Resolve which binary to spawn for the Claude runner. Honors `CLAUDE_BIN`
 /// as an escape hatch for non-standard installs (corporate wrappers,
@@ -106,20 +85,20 @@ impl Runner for ClaudeRunner {
         let args = build_args(&req);
         let init_messages = build_stdin_messages(&req);
         let bin = resolve_claude_bin();
-        spawn_with_command(&bin, args, req, init_messages)
+        spawn_subprocess(&bin, args, req, init_messages, ClaudeLineClassifier)
     }
 }
 
 fn build_args(req: &RunRequest) -> Vec<String> {
-    let mut args: Vec<String> = Vec::with_capacity(10 + req.additional_dirs.len() * 2);
-    // -p (print/non-interactive) is still required even when input comes
-    // via stream-json — without it claude would open a TUI and ignore the
-    // streamed messages.
+    let mut args: Vec<String> = Vec::with_capacity(12 + req.additional_dirs.len() * 2);
+    // -p (print/non-interactive) is still required even when input
+    // comes via stream-json — without it claude would open a TUI and
+    // ignore the streamed messages.
     args.push("-p".to_string());
 
-    // Bidirectional stream-json. Input carries the initialize handshake +
-    // user message + control_response replies; output carries assistant
-    // events + control_request can_use_tool prompts.
+    // Bidirectional stream-json. Input carries the initialize handshake
+    // + user message + control_response replies; output carries
+    // assistant events + control_request can_use_tool prompts.
     args.push("--input-format".to_string());
     args.push("stream-json".to_string());
     args.push("--output-format".to_string());
@@ -127,24 +106,30 @@ fn build_args(req: &RunRequest) -> Vec<String> {
     args.push("--verbose".to_string());
 
     // Authorise file-edit tools so claude doesn't hang on a permission
-    // prompt mid-run. The user clicked Run with intent and the vault is
-    // git-tracked; review via `git diff`. Other tools (Bash, MCP,
-    // network) still go through the SDK canUseTool path activated by our
-    // `initialize` control_request — those surface as
+    // prompt mid-run. The user clicked Run with intent and the vault
+    // is git-tracked; review via `git diff`. Other tools (Bash, MCP,
+    // network) still go through the SDK canUseTool path activated by
+    // our `initialize` control_request — those surface as
     // `RunEvent::PermissionRequest`.
     args.push("--permission-mode".to_string());
     args.push("acceptEdits".to_string());
 
     // Disable AskUserQuestion. It's a built-in tool that opens an
-    // interactive multi-choice prompt; in `-p --input-format stream-json`
-    // mode without a host-side dialog handler, claude calls the tool
-    // and gets an immediate `is_error` tool_result back ("Answer
-    // questions?"), which surfaces as a confusing error line in our
-    // chat output. With the tool removed from the toolset, claude
-    // adapts by asking the user inline in plain chat text — which
-    // routes naturally through our bottom-drawer reply flow.
+    // interactive multi-choice prompt; in `-p --input-format
+    // stream-json` mode without a host-side dialog handler, claude
+    // calls the tool and gets an immediate `is_error` tool_result
+    // back ("Answer questions?"), which surfaces as a confusing error
+    // line in our chat output. With the tool removed from the toolset,
+    // claude adapts by asking the user inline in plain chat text —
+    // which routes naturally through our bottom-drawer reply flow.
     args.push("--disallowed-tools".to_string());
     args.push("AskUserQuestion".to_string());
+
+    // Optional model override. None = use the user's configured default.
+    if let Some(model) = req.model.as_ref().filter(|s| !s.trim().is_empty()) {
+        args.push("--model".to_string());
+        args.push(model.clone());
+    }
 
     // Resume an existing conversation when the caller asked. Claude
     // keeps prior turns under the session id; the next user message
@@ -196,132 +181,23 @@ fn build_stdin_messages(req: &RunRequest) -> Vec<String> {
     vec![init.to_string(), user.to_string()]
 }
 
-/// Generic spawn entry point — `bin` is normally `"claude"` but tests pass
-/// `"echo"` / a fixture binary to exercise the pipeline without needing the
-/// real Claude CLI. `initial_stdin_lines` is written to the child's stdin
-/// in order immediately after spawn; pass an empty vec for fixtures that
-/// don't speak the stream-json input protocol.
-pub(crate) fn spawn_with_command(
-    bin: &str,
-    args: Vec<String>,
-    req: RunRequest,
-    initial_stdin_lines: Vec<String>,
-) -> Result<RunHandle, RunnerError> {
-    let mut cmd = Command::new(bin);
-    cmd.args(&args)
-        .current_dir(&req.workdir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = cmd.spawn().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            RunnerError::BinaryNotFound(bin.to_string())
-        } else {
-            RunnerError::Spawn(e.to_string())
-        }
-    })?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| RunnerError::Spawn("stdout pipe missing".into()))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| RunnerError::Spawn("stderr pipe missing".into()))?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| RunnerError::Spawn("stdin pipe missing".into()))?;
-
-    let child_arc: Arc<Mutex<Child>> = Arc::new(Mutex::new(child));
-    let (tx, rx) = mpsc::channel::<RunEvent>();
-    let trunc = Arc::new(Mutex::new(TruncationState::default()));
-
-    // Spawn the stdin writer first so the initial messages are queued
-    // before claude starts reading. The writer holds the only owner of
-    // ChildStdin; senders that bypass it (or a dropped sender) would
-    // close the pipe and stall claude on its first stdin.read.
-    let (stdin_tx, stdin_writer_handle) = spawn_stdin_writer(stdin);
-    for line in initial_stdin_lines {
-        // Errors here mean the writer thread already died; the run will
-        // fail loudly via reader/coordinator events shortly after.
-        let _ = stdin_tx.send(line);
-    }
-    // The writer handle is intentionally orphaned — it exits naturally
-    // when the channel closes or when ChildStdin write fails (child
-    // exited). The coordinator doesn't need to join it because the child
-    // wait already accounts for input pipe closure.
-    drop(stdin_writer_handle);
-
-    let stdout_handle = spawn_reader(
-        stdout,
-        tx.clone(),
-        Arc::clone(&trunc),
-        ReaderKind::Stdout,
-        // Hand the stdout reader its own clone of the stdin tx so it
-        // can queue an end_session control_request after seeing the
-        // turn's `result` event. The writer thread serializes the
-        // shutdown line behind any in-flight permission responses.
-        Some(stdin_tx.clone()),
-    );
-    let stderr_handle = spawn_reader(
-        stderr,
-        tx.clone(),
-        Arc::clone(&trunc),
-        ReaderKind::Stderr,
-        None,
-    );
-
-    spawn_coordinator(Arc::clone(&child_arc), stdout_handle, stderr_handle, tx);
-
-    let kill_arc = Arc::clone(&child_arc);
-    let kill: Box<dyn FnOnce() + Send> = Box::new(move || {
-        let mut guard = lock_recovering(&kill_arc);
-        // Errors are usually ESRCH (already exited) — fine.
-        let _ = guard.kill();
-    });
-
-    Ok(RunHandle::new(rx, kill, Some(stdin_tx)))
-}
-
 /// Serialize a SDK `PermissionResult` into the control_response JSON
 /// line claude expects on stdin. The `request_id` MUST match the one
 /// from the incoming `control_request can_use_tool` envelope or claude
 /// won't correlate the answer with the pending tool call.
 ///
 /// Tauri commands use this to keep the wire format in one place — the
-/// shell only sees a typed `(request_id, PermissionDecision)`, never the
-/// raw JSON.
-/// JSON line telling claude to break its stream-json input loop and
-/// shut down cleanly. Without this, the runner spawned with
-/// `--input-format stream-json` would hang after a single turn —
-/// claude waits indefinitely for another user message on stdin and the
-/// subprocess never exits, leaving the IDE stuck in "running" state.
-///
-/// The reader thread queues this line right after parsing the first
-/// `type: "result"` event (turn complete). Claude acks via a
-/// `control_response` (silently swallowed by `classify_stdout_line`),
-/// shuts down, and the coordinator's `wait()` finally unblocks.
-fn build_end_session_line() -> String {
-    serde_json::json!({
-        "type": "control_request",
-        "request_id": END_SESSION_REQUEST_ID,
-        "request": { "subtype": "end_session", "reason": "result-emitted" }
-    })
-    .to_string()
-}
-
+/// shell only sees a typed `(request_id, PermissionDecision)`, never
+/// the raw JSON.
 pub fn build_permission_response_line(
     request_id: &str,
     decision: &super::PermissionDecision,
 ) -> String {
-    // `PermissionDecision` is `#[derive(Serialize)]` over plain owned data;
-    // serialization is infallible. `unwrap_or(Null)` would mask the very
-    // unlikely failure as a malformed `control_response` that desyncs the
-    // claude protocol and hangs the turn — `expect` lets that surface
-    // loudly during testing instead.
+    // `PermissionDecision` is `#[derive(Serialize)]` over plain owned
+    // data; serialization is infallible. `unwrap_or(Null)` would mask
+    // the very unlikely failure as a malformed `control_response` that
+    // desyncs the claude protocol and hangs the turn — `expect` lets
+    // that surface loudly during testing instead.
     let response =
         serde_json::to_value(decision).expect("PermissionDecision is always serializable");
     let envelope = serde_json::json!({
@@ -335,160 +211,38 @@ pub fn build_permission_response_line(
     envelope.to_string()
 }
 
-/// Owns the child's stdin handle and writes one line per message
-/// received on the channel. Each message gets a trailing `\n` (so callers
-/// pass single-line JSON without the newline). Exits when the channel
-/// closes (Sender dropped) or a write fails — both signal that the
-/// subprocess has gone away or the host is done writing.
-fn spawn_stdin_writer(mut stdin: ChildStdin) -> (mpsc::Sender<String>, JoinHandle<()>) {
-    let (tx, rx) = mpsc::channel::<String>();
-    let handle = thread::spawn(move || {
-        while let Ok(line) = rx.recv() {
-            if stdin.write_all(line.as_bytes()).is_err() {
-                break;
-            }
-            if stdin.write_all(b"\n").is_err() {
-                break;
-            }
-            if stdin.flush().is_err() {
-                break;
-            }
-        }
-        // stdin drops here, closing the pipe — claude sees EOF and stops
-        // waiting for more user turns. The coordinator's wait() will
-        // unblock naturally.
-    });
-    (tx, handle)
-}
-
-// ---------- Truncation state ----------
-
-#[derive(Default, Debug)]
-struct TruncationState {
-    bytes_emitted: usize,
-    bytes_dropped: usize,
-    truncated_emitted: bool,
-}
-
-enum AccountResult {
-    Emit,
-    FirstDrop { dropped_bytes: usize },
-    SubsequentDrop,
-}
-
-impl TruncationState {
-    fn account(&mut self, len: usize) -> AccountResult {
-        if self.bytes_emitted.saturating_add(len) <= MAX_OUTPUT_BYTES {
-            self.bytes_emitted += len;
-            AccountResult::Emit
-        } else {
-            self.bytes_dropped = self.bytes_dropped.saturating_add(len);
-            if !self.truncated_emitted {
-                self.truncated_emitted = true;
-                AccountResult::FirstDrop {
-                    dropped_bytes: self.bytes_dropped,
-                }
-            } else {
-                AccountResult::SubsequentDrop
-            }
-        }
-    }
-}
-
-// ---------- Reader threads ----------
-
-#[derive(Copy, Clone)]
-enum ReaderKind {
-    Stdout,
-    Stderr,
-}
-
-/// What to do with a single line after classification: optionally emit
-/// an event, and optionally signal that this line ended the turn
-/// (claude's `result` event in stream-json mode) so the reader can ask
-/// claude to break its input loop.
-struct LineHandled {
-    event: Option<RunEvent>,
-    end_of_turn: bool,
-}
-
-// `stdin_tx`: sender into the per-run stdin writer. Only the stdout
-// reader gets it — when that reader sees claude's `result` event it
-// queues an `end_session` control_request so the subprocess exits
-// cleanly. `None` for the stderr reader and for fixtures that don't
-// speak the SDK protocol.
-fn spawn_reader<R: Read + Send + 'static>(
-    src: R,
-    tx: mpsc::Sender<RunEvent>,
-    trunc: Arc<Mutex<TruncationState>>,
-    kind: ReaderKind,
-    stdin_tx: Option<mpsc::Sender<String>>,
-) -> JoinHandle<()> {
-    thread::spawn(move || {
-        // Send `end_session` at most once per run. Defensive — claude in
-        // `-p` mode emits exactly one `result` per turn and we feed it
-        // one user message, so multiple result events shouldn't occur,
-        // but a stray duplicate from a buggy version shouldn't double-
-        // queue the shutdown signal.
-        let mut end_session_sent = false;
-        let reader = BufReader::new(src);
-        for line in reader.lines() {
-            let line = match line {
-                Ok(l) => l,
-                Err(e) => {
-                    // Surface the IO error instead of silently truncating.
-                    // The synthetic Stderr event is intentionally NOT
-                    // routed through truncation accounting — error
-                    // signaling must always make it through to the
-                    // consumer.
-                    let _ = tx.send(RunEvent::Stderr(format!("reader error: {e}")));
-                    break;
-                }
-            };
-            // +1 for the trailing newline that BufRead::lines strips.
-            let len = line.len() + 1;
-            let outcome = {
-                let mut state = lock_recovering(&trunc);
-                state.account(len)
-            };
-            match outcome {
-                AccountResult::Emit => {
-                    let handled = match kind {
-                        ReaderKind::Stdout => classify_stdout_line(line),
-                        ReaderKind::Stderr => LineHandled {
-                            event: Some(RunEvent::Stderr(line)),
-                            end_of_turn: false,
-                        },
-                    };
-                    if let Some(event) = handled.event {
-                        if tx.send(event).is_err() {
-                            // Receiver dropped — the consumer no longer cares.
-                            break;
-                        }
-                    }
-                    if handled.end_of_turn && !end_session_sent {
-                        if let Some(stdin_tx) = &stdin_tx {
-                            // Fire-and-forget: if the writer thread is
-                            // already gone (subprocess crashed), the
-                            // coordinator will surface that via Exit.
-                            let _ = stdin_tx.send(build_end_session_line());
-                        }
-                        end_session_sent = true;
-                    }
-                }
-                AccountResult::FirstDrop { dropped_bytes } => {
-                    let _ = tx.send(RunEvent::Truncated { dropped_bytes });
-                    // Keep reading to drain the pipe so the child doesn't
-                    // block on write.
-                }
-                AccountResult::SubsequentDrop => {
-                    // Keep reading silently — one Truncated event is
-                    // enough; the total dropped count lives in
-                    // TruncationState if a future event ever needs it.
-                }
-            }
-        }
+/// JSON line telling claude to break its stream-json input loop and
+/// shut down cleanly. Without this, the runner spawned with
+/// `--input-format stream-json` would hang after a single turn —
+/// claude waits indefinitely for another user message on stdin and the
+/// subprocess never exits, leaving the IDE stuck in "running" state.
+///
+/// The reader queues this line right after parsing the first
+/// `type: "result"` event (turn complete). Claude acks via a
+/// `control_response` (silently swallowed by `classify_stdout_line`),
+/// shuts down, and the coordinator's `wait()` finally unblocks.
+fn build_end_session_line() -> String {
+    serde_json::json!({
+        "type": "control_request",
+        "request_id": END_SESSION_REQUEST_ID,
+        "request": { "subtype": "end_session", "reason": "result-emitted" }
     })
+    .to_string()
+}
+
+/// Stateless classifier. Held as the runner's plug-in for the generic
+/// subprocess pipeline; one shared instance per run is fine because
+/// the logic only depends on the line being classified.
+struct ClaudeLineClassifier;
+
+impl LineClassifier for ClaudeLineClassifier {
+    fn classify_stdout(&self, line: String) -> LineHandled {
+        classify_stdout_line(line)
+    }
+
+    fn on_end_of_turn_line(&self) -> Vec<String> {
+        vec![build_end_session_line()]
+    }
 }
 
 /// Inspect one stdout line and decide what RunEvent (if any) it maps to.
@@ -513,9 +267,9 @@ fn spawn_reader<R: Read + Send + 'static>(
 /// we never silently drop legitimate output. The frontend handles
 /// unknown shapes gracefully.
 fn classify_stdout_line(line: String) -> LineHandled {
-    // Cheap byte-level prefix check — most stream-json lines start with
-    // '{' but log lines from claude may not. Avoids paying for a parse
-    // attempt on every non-JSON line.
+    // Cheap byte-level prefix check — most stream-json lines start
+    // with '{' but log lines from claude may not. Avoids paying for a
+    // parse attempt on every non-JSON line.
     let trimmed = line.trim_start();
     if !trimmed.starts_with('{') {
         return LineHandled {
@@ -615,310 +369,19 @@ fn parse_permission_request(envelope: &serde_json::Value) -> Option<PermissionRe
     })
 }
 
-// ---------- Coordinator thread ----------
-
-/// Joins both reader threads (guaranteeing all output is flushed),
-/// then polls `try_wait` until the child reaps and emits `Exit`. This
-/// ordering is what makes "you see every Stdout/Stderr line before the
-/// terminal Exit" a hard guarantee rather than a hope.
-fn spawn_coordinator(
-    child_arc: Arc<Mutex<Child>>,
-    stdout_handle: JoinHandle<()>,
-    stderr_handle: JoinHandle<()>,
-    tx: mpsc::Sender<RunEvent>,
-) {
-    thread::spawn(move || {
-        // Wait for readers to drain. They exit on pipe EOF, which happens
-        // when the child closes its stdout/stderr handles — typically at
-        // process exit. A thread panic inside a reader is unusual but
-        // recoverable here: we don't care about the panic payload, only
-        // that the thread is done.
-        let _ = stdout_handle.join();
-        let _ = stderr_handle.join();
-
-        // Now collect the exit status. Poll `try_wait` so we never hold
-        // the mutex while blocking — otherwise the kill closure (which
-        // also locks `child_arc`) would deadlock.
-        loop {
-            let status = {
-                let mut guard = lock_recovering(&child_arc);
-                guard.try_wait()
-            };
-            match status {
-                Ok(Some(s)) => {
-                    let _ = tx.send(RunEvent::Exit {
-                        code: s.code(),
-                        success: s.success(),
-                    });
-                    return;
-                }
-                Ok(None) => thread::sleep(Duration::from_millis(WAITER_POLL_MS)),
-                Err(_) => {
-                    // try_wait itself failed (rare OS-level issue). Emit a
-                    // synthetic non-success Exit so the consumer's state
-                    // machine still progresses.
-                    let _ = tx.send(RunEvent::Exit {
-                        code: None,
-                        success: false,
-                    });
-                    return;
-                }
-            }
-        }
-    });
-}
-
-// ---------- Mutex helper ----------
-
-/// Lock a mutex, recovering from poisoning. Poisoning happens when another
-/// thread panicked while holding the lock; the inner data is almost always
-/// still well-formed, and silently propagating the poison error here would
-/// leave the run stuck (waiter returns without Exit → UI hangs forever).
-fn lock_recovering<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|poison| poison.into_inner())
-}
-
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
 
-    /// Empty `RunRequest` skeleton — workdir set to `/tmp` which exists on
-    /// every unix system. Tests fill in the body manually.
-    fn req() -> RunRequest {
+    fn req_skeleton() -> RunRequest {
         RunRequest {
             workdir: std::env::temp_dir(),
             additional_dirs: Vec::new(),
             prompt: String::new(),
             runtime_input: None,
             resume_session_id: None,
+            model: None,
         }
-    }
-
-    fn collect_until_exit(
-        mut handle: RunHandle,
-        timeout: Duration,
-    ) -> (Vec<RunEvent>, Option<RunEvent>) {
-        let deadline = Instant::now() + timeout;
-        let mut events = Vec::new();
-        let mut exit = None;
-        while Instant::now() < deadline {
-            match handle.recv_timeout(Duration::from_millis(200)) {
-                Ok(ev) => {
-                    let is_exit = matches!(ev, RunEvent::Exit { .. });
-                    if is_exit {
-                        exit = Some(ev);
-                        break;
-                    }
-                    events.push(ev);
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-        }
-        if exit.is_none() {
-            handle.stop();
-        }
-        (events, exit)
-    }
-
-    #[test]
-    fn echo_streams_stdout_and_exits_zero() {
-        let handle = spawn_with_command(
-            "echo",
-            vec!["hello-from-runner".to_string()],
-            req(),
-            Vec::new(),
-        )
-        .expect("spawn echo");
-        let (events, exit) = collect_until_exit(handle, Duration::from_secs(5));
-        let stdout: Vec<&str> = events
-            .iter()
-            .filter_map(|e| match e {
-                RunEvent::Stdout(s) => Some(s.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            stdout.iter().any(|l| l.contains("hello-from-runner")),
-            "stdout was: {:?}",
-            stdout
-        );
-        match exit {
-            Some(RunEvent::Exit {
-                code: Some(0),
-                success: true,
-            }) => {}
-            other => panic!("expected Exit{{success:true}}, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn output_arrives_before_exit() {
-        // Regression guard for the "Exit emitted before reader flush"
-        // class of bugs. After the coordinator-joins-readers refactor,
-        // every Stdout line must arrive strictly before Exit.
-        let handle = spawn_with_command(
-            "sh",
-            vec![
-                "-c".into(),
-                "for i in 1 2 3 4 5 6 7 8; do echo line-$i; done".into(),
-            ],
-            req(),
-            Vec::new(),
-        )
-        .expect("spawn sh");
-
-        let mut saw_lines: Vec<String> = Vec::new();
-        let mut saw_exit_after_lines = false;
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            match handle.recv_timeout(Duration::from_millis(200)) {
-                Ok(RunEvent::Stdout(l)) => saw_lines.push(l),
-                Ok(RunEvent::Exit { .. }) => {
-                    // Must have seen all 8 lines by the time Exit arrives.
-                    saw_exit_after_lines = saw_lines.len() == 8;
-                    break;
-                }
-                Ok(_) => continue,
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-        }
-        assert!(
-            saw_exit_after_lines,
-            "Exit arrived with only {} of 8 lines seen: {:?}",
-            saw_lines.len(),
-            saw_lines
-        );
-    }
-
-    #[test]
-    fn non_zero_exit_code_propagates() {
-        let handle =
-            spawn_with_command("sh", vec!["-c".into(), "exit 3".into()], req(), Vec::new())
-                .expect("spawn sh");
-        let (_, exit) = collect_until_exit(handle, Duration::from_secs(5));
-        match exit {
-            Some(RunEvent::Exit {
-                code: Some(3),
-                success: false,
-            }) => {}
-            other => panic!("expected Exit{{code:3,success:false}}, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn stop_terminates_long_running_subprocess() {
-        let mut handle =
-            spawn_with_command("sleep", vec!["60".into()], req(), Vec::new()).expect("spawn sleep");
-        // Give the child a moment to actually be running.
-        thread::sleep(Duration::from_millis(100));
-        handle.stop();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut got_exit = false;
-        while Instant::now() < deadline {
-            match handle.recv_timeout(Duration::from_millis(200)) {
-                Ok(RunEvent::Exit { .. }) => {
-                    got_exit = true;
-                    break;
-                }
-                Ok(_) => continue,
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-        }
-        assert!(got_exit, "stop() did not produce an Exit event in 5s");
-    }
-
-    #[test]
-    fn missing_binary_is_a_typed_error() {
-        let result = spawn_with_command(
-            "this-binary-definitely-does-not-exist-xyz",
-            vec![],
-            req(),
-            Vec::new(),
-        );
-        match result {
-            Err(RunnerError::BinaryNotFound(_)) => {}
-            Err(other) => panic!("expected BinaryNotFound, got {:?}", other),
-            Ok(_) => panic!("expected spawn to fail"),
-        }
-    }
-
-    #[test]
-    fn truncated_event_fires_when_output_exceeds_cap() {
-        // `yes` outputs "y\n" forever. The reader will hit MAX_OUTPUT_BYTES
-        // (4 MiB) within a fraction of a second and emit Truncated once.
-        let mut handle = spawn_with_command("yes", vec![], req(), Vec::new()).expect("spawn yes");
-
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let mut got_truncated = false;
-        let mut dropped_so_far = 0usize;
-        while Instant::now() < deadline {
-            match handle.recv_timeout(Duration::from_millis(200)) {
-                Ok(RunEvent::Truncated { dropped_bytes }) => {
-                    got_truncated = true;
-                    dropped_so_far = dropped_bytes;
-                    break;
-                }
-                Ok(_) => continue,
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-        }
-        handle.stop();
-        assert!(got_truncated, "Truncated event was not emitted in 10s");
-        assert!(
-            dropped_so_far > 0,
-            "Truncated reported 0 dropped bytes; cap logic likely wrong"
-        );
-    }
-
-    #[test]
-    fn truncated_event_fires_at_most_once_under_contention() {
-        // Two concurrent readers should not produce two Truncated events
-        // for the same overflow event. `sh -c` emits some on stdout, some
-        // on stderr concurrently — both readers race to update the cap.
-        let mut handle = spawn_with_command(
-            "sh",
-            vec!["-c".into(), "yes >&1 & yes >&2 & wait".into()],
-            req(),
-            Vec::new(),
-        )
-        .expect("spawn sh");
-
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let mut truncated_count = 0usize;
-        while Instant::now() < deadline {
-            match handle.recv_timeout(Duration::from_millis(100)) {
-                Ok(RunEvent::Truncated { .. }) => {
-                    truncated_count += 1;
-                    // Wait a moment longer to see if a second one arrives.
-                }
-                Ok(_) => continue,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if truncated_count >= 1 {
-                        // Saw at least one — give the second reader a
-                        // chance to (incorrectly) emit a duplicate.
-                        thread::sleep(Duration::from_millis(500));
-                        // Drain any pending events.
-                        while let Ok(ev) = handle.recv_timeout(Duration::from_millis(50)) {
-                            if matches!(ev, RunEvent::Truncated { .. }) {
-                                truncated_count += 1;
-                            }
-                        }
-                        break;
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
-        }
-        handle.stop();
-        assert_eq!(
-            truncated_count, 1,
-            "expected exactly one Truncated event, got {truncated_count}"
-        );
     }
 
     #[test]
@@ -927,11 +390,9 @@ mod tests {
         // build_args is flag-only; the prompt content + runtime input
         // live in the second stdin line (after the initialize handshake).
         let req = RunRequest {
-            workdir: std::env::temp_dir(),
-            additional_dirs: Vec::new(),
             prompt: "base prompt".into(),
             runtime_input: Some("PR-42".into()),
-            resume_session_id: None,
+            ..req_skeleton()
         };
         let lines = build_stdin_messages(&req);
         assert_eq!(lines.len(), 2, "expected initialize + user message");
@@ -952,11 +413,8 @@ mod tests {
         // the canUseTool callback path and our permission modal never
         // fires. Regression guard.
         let req = RunRequest {
-            workdir: std::env::temp_dir(),
-            additional_dirs: Vec::new(),
             prompt: "p".into(),
-            runtime_input: None,
-            resume_session_id: None,
+            ..req_skeleton()
         };
         let lines = build_stdin_messages(&req);
         let init: serde_json::Value = serde_json::from_str(&lines[0]).expect("first line is JSON");
@@ -970,11 +428,8 @@ mod tests {
         // that gives us bidirectional events. Guard against accidental
         // regressions to text mode or one-way streaming.
         let req = RunRequest {
-            workdir: std::env::temp_dir(),
-            additional_dirs: Vec::new(),
             prompt: "p".into(),
-            runtime_input: None,
-            resume_session_id: None,
+            ..req_skeleton()
         };
         let args = build_args(&req);
         assert!(args.iter().any(|a| a == "--input-format"));
@@ -992,11 +447,8 @@ mod tests {
         // error that surfaced when claude tried the interactive
         // AskUserQuestion tool without a host-side dialog handler.
         let req = RunRequest {
-            workdir: std::env::temp_dir(),
-            additional_dirs: Vec::new(),
             prompt: "p".into(),
-            runtime_input: None,
-            resume_session_id: None,
+            ..req_skeleton()
         };
         let args = build_args(&req);
         let pos = args
@@ -1012,17 +464,14 @@ mod tests {
     #[test]
     fn permission_mode_accepts_edits() {
         let req = RunRequest {
-            workdir: std::env::temp_dir(),
-            additional_dirs: Vec::new(),
             prompt: "p".into(),
-            runtime_input: None,
-            resume_session_id: None,
+            ..req_skeleton()
         };
         let args = build_args(&req);
-        // Without this flag, claude prompts on Write/Edit. With the SDK
-        // control protocol the prompt routes through canUseTool — but we
-        // keep auto-accept on file edits so the modal only fires for
-        // Bash / network / MCP. Regression guard.
+        // Without this flag, claude prompts on Write/Edit. With the
+        // SDK control protocol the prompt routes through canUseTool —
+        // but we keep auto-accept on file edits so the modal only
+        // fires for Bash / network / MCP. Regression guard.
         let pos = args
             .iter()
             .position(|a| a == "--permission-mode")
@@ -1033,14 +482,12 @@ mod tests {
     #[test]
     fn additional_dirs_become_add_dir_flags() {
         let req = RunRequest {
-            workdir: std::env::temp_dir(),
             additional_dirs: vec![
                 std::path::PathBuf::from("/tmp/vault"),
                 std::path::PathBuf::from("/tmp/notes"),
             ],
             prompt: "p".into(),
-            runtime_input: None,
-            resume_session_id: None,
+            ..req_skeleton()
         };
         let args = build_args(&req);
         let pairs: Vec<(&str, &str)> = args
@@ -1061,11 +508,9 @@ mod tests {
     #[test]
     fn resume_session_id_emits_resume_flag() {
         let req = RunRequest {
-            workdir: std::env::temp_dir(),
-            additional_dirs: Vec::new(),
             prompt: "follow-up reply".into(),
-            runtime_input: None,
             resume_session_id: Some("abc-123-xyz".into()),
+            ..req_skeleton()
         };
         let args = build_args(&req);
         let pairs: Vec<(&str, &str)> = args
@@ -1090,16 +535,41 @@ mod tests {
     #[test]
     fn empty_resume_session_id_does_not_emit_flag() {
         let req = RunRequest {
-            workdir: std::env::temp_dir(),
-            additional_dirs: Vec::new(),
             prompt: "p".into(),
-            runtime_input: None,
             resume_session_id: Some("   ".into()),
+            ..req_skeleton()
         };
         let args = build_args(&req);
         assert!(
             !args.iter().any(|a| a == "--resume"),
             "whitespace-only session id should be ignored"
+        );
+    }
+
+    #[test]
+    fn model_flag_emitted_when_set() {
+        let req = RunRequest {
+            prompt: "p".into(),
+            model: Some("opus".into()),
+            ..req_skeleton()
+        };
+        let args = build_args(&req);
+        let pos = args.iter().position(|a| a == "--model");
+        let model = pos.and_then(|p| args.get(p + 1)).map(String::as_str);
+        assert_eq!(model, Some("opus"));
+    }
+
+    #[test]
+    fn empty_model_does_not_emit_flag() {
+        let req = RunRequest {
+            prompt: "p".into(),
+            model: Some("   ".into()),
+            ..req_skeleton()
+        };
+        let args = build_args(&req);
+        assert!(
+            !args.iter().any(|a| a == "--model"),
+            "whitespace-only model should be ignored"
         );
     }
 
@@ -1224,4 +694,5 @@ mod tests {
             "user denied via modal"
         );
     }
+
 }

@@ -252,6 +252,11 @@ export interface SessionSummary {
   outputTokens: number;
   costUsd: number;
   model: string | null;
+  /** Agent backend id (`"claude-code"` / `"codex"`) that served this
+   *  session. Persisted so the chat panel can restore the matching
+   *  runner picker on reopen. Older rows default to `"claude-code"`
+   *  via the DB migration. */
+  runner: string;
   archived: boolean;
   lineCount: number;
 }
@@ -284,6 +289,11 @@ export interface SaveSessionInput {
   exitCode: number | null;
   exitSuccess: boolean | null;
   usage: SessionUsageSnapshot;
+  /** Agent backend id that served this session. Frontend forwards
+   *  the panel's selectedRunner here so reopen restores the same
+   *  agent. Omitting it falls through to the DB's `claude-code`
+   *  default (back-compat for any caller built before multi-runner). */
+  runner: string;
 }
 
 export type WarningKind =

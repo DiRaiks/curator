@@ -322,7 +322,16 @@ struct RunStartedPayload {
     /// freeform resume can re-spawn with the same access scope without
     /// re-deriving it from an artifact prompt (freeform runs don't have one).
     additional_dirs: Vec<String>,
-    runner: &'static str,
+    /// Runner backend id (`"claude-code"` / `"codex"`). Echoed back to
+    /// the frontend so the panel renders the correct stream format
+    /// and the per-tab agent picker stays locked to whichever runner
+    /// the chat was started with.
+    runner: String,
+    /// Model passed via `--model` (Claude) / `-m` (Codex). `None` =
+    /// the runner CLI's configured default. Persisted in session
+    /// history so a `reopen` flow can show the same model on resume.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
     /// True when this run is a resume of a prior session (`--resume`).
     /// The frontend keeps prior output buffer + session state visible
     /// across resumes; a fresh start resets them.
@@ -403,12 +412,15 @@ struct RunPermissionRequestPayload {
 /// (canonicalize + frontmatter parse in `preview_context` + workdir
 /// validation) so the main thread stays responsive — see the
 /// `scan_project_vulnerabilities` doc comment for the rationale.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn start_run(
     vault_root: String,
     project_slug: String,
     prompt_id: String,
     runtime_input: Option<String>,
+    runner: Option<String>,
+    model: Option<String>,
     app: AppHandle,
     state: State<'_, RunState>,
 ) -> Result<RunStartedPayload, String> {
@@ -441,6 +453,8 @@ async fn start_run(
         project_slug,
         prompt_id,
         freeform: false,
+        runner: resolve_runner_kind(runner.as_deref()),
+        model: clean_optional(model),
         app,
         state: &state,
     })
@@ -451,6 +465,7 @@ async fn start_run(
 /// not a fresh task description; claude already has the prior context
 /// cached under the session id. Cwd and `--add-dir` are re-derived from
 /// the same `(project, prompt)` pair so tool access keeps working.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn resume_run(
     vault_root: String,
@@ -458,6 +473,8 @@ async fn resume_run(
     prompt_id: String,
     session_id: String,
     reply: String,
+    runner: Option<String>,
+    model: Option<String>,
     app: AppHandle,
     state: State<'_, RunState>,
 ) -> Result<RunStartedPayload, String> {
@@ -491,6 +508,8 @@ async fn resume_run(
         project_slug,
         prompt_id,
         freeform: false,
+        runner: resolve_runner_kind(runner.as_deref()),
+        model: clean_optional(model),
         app,
         state: &state,
     })
@@ -505,12 +524,18 @@ async fn resume_run(
 /// `run:started` event so the panel can show "running · my-proj/chat" vs
 /// "running · vault/chat". The backend does not validate it against the
 /// scan — it never touches the filesystem with it.
+// Tauri commands take fields as positional args by design; grouping
+// runner+model into a struct would force a wrapper layer for every
+// invoke from the frontend, so the long arg list is accepted here.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn start_freeform_run(
     vault_root: String,
     prompt: String,
     scope_project_slug: Option<String>,
     scope_repo_path: Option<String>,
+    runner: Option<String>,
+    model: Option<String>,
     app: AppHandle,
     state: State<'_, RunState>,
 ) -> Result<RunStartedPayload, String> {
@@ -542,6 +567,8 @@ async fn start_freeform_run(
         project_slug,
         prompt_id: "chat".to_string(),
         freeform: true,
+        runner: resolve_runner_kind(runner.as_deref()),
+        model: clean_optional(model),
         app,
         state: &state,
     })
@@ -567,6 +594,8 @@ async fn resume_freeform_run(
     project_slug: String,
     session_id: String,
     reply: String,
+    runner: Option<String>,
+    model: Option<String>,
     app: AppHandle,
     state: State<'_, RunState>,
 ) -> Result<RunStartedPayload, String> {
@@ -612,6 +641,8 @@ async fn resume_freeform_run(
         project_slug: display_slug,
         prompt_id: "chat".to_string(),
         freeform: true,
+        runner: resolve_runner_kind(runner.as_deref()),
+        model: clean_optional(model),
         app,
         state: &state,
     })
@@ -688,8 +719,31 @@ struct SpawnArgs<'s> {
     /// Marks the run as freeform (chat) so the frontend routes its Reply
     /// path to `resume_freeform_run`. Plain artifact runs pass `false`.
     freeform: bool,
+    /// Which CLI backend to spawn for this run. Picked per-tab on the
+    /// frontend; once a chat tab has started, its runner is fixed and
+    /// every subsequent resume on that tab passes the same kind.
+    runner: vault_core::runner::RunnerKind,
+    /// Optional model override forwarded to the runner CLI. `None` =
+    /// the CLI picks its configured default.
+    model: Option<String>,
     app: AppHandle,
     state: &'s State<'s, RunState>,
+}
+
+/// Resolve a runner-id string from the frontend into the typed kind.
+/// Unknown / missing strings fall back to ClaudeCode (the default for
+/// new chats). Defensive — a tampered persisted history row should
+/// not crash the spawn.
+fn resolve_runner_kind(id: Option<&str>) -> vault_core::runner::RunnerKind {
+    id.and_then(|s| vault_core::runner::RunnerKind::from_id(s.trim()))
+        .unwrap_or(vault_core::runner::RunnerKind::ClaudeCode)
+}
+
+/// Trim + drop empty / whitespace-only strings. Used so the frontend
+/// can pass `""` to mean "no model override" without the runner CLI
+/// receiving an empty argument that confuses argv parsing.
+fn clean_optional(s: Option<String>) -> Option<String> {
+    s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
 /// Shared core of `start_run` / `resume_run`: build the `RunRequest`,
@@ -712,6 +766,8 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<RunStartedPayload, String> {
         project_slug,
         prompt_id,
         freeform,
+        runner: runner_kind,
+        model,
         app,
         state,
     } = args;
@@ -734,6 +790,7 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<RunStartedPayload, String> {
         prompt,
         runtime_input,
         resume_session_id,
+        model: model.clone(),
     };
 
     // Hold the RunState lock across the spawn so the cap check and the
@@ -749,9 +806,22 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<RunStartedPayload, String> {
             ));
         }
 
+        // Pick the runner backend at the dispatch site so the
+        // per-runner state machine (Claude vs Codex) stays a switch
+        // here rather than a trait-object indirection. Both runners
+        // implement the same `Runner` trait and produce the same
+        // `RunHandle` shape, so the rest of the pipeline is agnostic.
         use vault_core::runner::Runner as _;
-        let runner = vault_core::runner::ClaudeRunner::new();
-        let handle = runner.start(req).map_err(|e| e.to_string())?;
+        let handle = match runner_kind {
+            vault_core::runner::RunnerKind::ClaudeCode => {
+                vault_core::runner::ClaudeRunner::new()
+                    .start(req)
+                    .map_err(|e| e.to_string())?
+            }
+            vault_core::runner::RunnerKind::Codex => vault_core::runner::CodexRunner::new()
+                .start(req)
+                .map_err(|e| e.to_string())?,
+        };
         let (events, killer) = handle.into_parts().map_err(|e| e.to_string())?;
 
         let gen = inner.next_gen.wrapping_add(1);
@@ -769,7 +839,8 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<RunStartedPayload, String> {
             vault_root: vault_path.to_string_lossy().to_string(),
             workdir: workdir.to_string_lossy().to_string(),
             additional_dirs: additional_dirs_str,
-            runner: "claude-code",
+            runner: runner_kind.id().to_string(),
+            model,
             resume: is_resume,
             freeform,
         };

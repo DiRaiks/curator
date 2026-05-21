@@ -82,6 +82,12 @@ impl AppDb {
         conn.execute_batch(sessions::SCHEMA_SQL)?;
         conn.execute_batch(dismissed::SCHEMA_SQL)?;
         conn.execute_batch(recents::SCHEMA_SQL)?;
+        // Idempotent column-add migrations for older DBs. New columns
+        // appended below SCHEMA_SQL's CREATE TABLE statements arrive
+        // for legacy users via these calls. Each migrate fn is
+        // expected to swallow "duplicate column name" so calling on a
+        // fresh DB is a no-op.
+        sessions::migrate_add_runner_column(conn)?;
         Ok(())
     }
 

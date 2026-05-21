@@ -5055,3 +5055,183 @@ button {
   color: var(--muted);
 }
 
+/* ---------- Agent picker (RunPanel chat header) ---------- */
+
+.agent-picker {
+  position: relative;
+  display: inline-flex;
+}
+
+.agent-picker__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1.6;
+}
+
+.agent-picker__chip:hover {
+  border-color: var(--accent, #888);
+}
+
+.agent-picker__chip-icon {
+  font-size: 12px;
+  opacity: 0.9;
+}
+
+.agent-picker__chip-label {
+  font-weight: 600;
+}
+
+.agent-picker__chip-sep {
+  color: var(--muted);
+}
+
+.agent-picker__chip-model {
+  color: var(--muted);
+}
+
+.agent-picker__chip-caret {
+  color: var(--muted);
+  font-size: 9px;
+  margin-left: 2px;
+}
+
+.agent-picker__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+  background: transparent;
+}
+
+/* Inline position computed by usePopoverPosition; this rule owns
+ * size + visual chrome only, mirroring the History menu. */
+.agent-picker__menu {
+  position: fixed;
+  z-index: 10;
+  width: min(360px, calc(100vw - 24px));
+  max-height: min(420px, calc(100vh - 120px));
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  padding: 6px;
+}
+
+.agent-picker__section-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 4px 6px 2px;
+  font-weight: 600;
+}
+
+.agent-picker__agents,
+.agent-picker__models {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 4px;
+}
+
+.agent-picker__agent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-picker__agent:hover:not(:disabled) {
+  background: var(--hover, rgba(127, 127, 127, 0.08));
+}
+
+.agent-picker__agent:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.agent-picker__agent--active {
+  border-color: var(--accent, #5b8def);
+  background: var(--hover, rgba(127, 127, 127, 0.06));
+}
+
+.agent-picker__agent-icon {
+  font-size: 16px;
+  width: 18px;
+  text-align: center;
+}
+
+.agent-picker__agent-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-picker__agent-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.agent-picker__agent-desc {
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.3;
+}
+
+.agent-picker__model {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-picker__model:hover:not(:disabled) {
+  background: var(--hover, rgba(127, 127, 127, 0.08));
+}
+
+.agent-picker__model:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.agent-picker__model--active {
+  border-color: var(--accent, #5b8def);
+}
+
+.agent-picker__model-label {
+  font-weight: 600;
+  min-width: 80px;
+}
+
+.agent-picker__model-hint {
+  color: var(--muted);
+  font-size: 10px;
+  flex: 1;
+}

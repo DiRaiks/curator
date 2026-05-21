@@ -19,13 +19,20 @@ import {
   saveSession,
   startFreeformRun,
   stopRun,
+  type AgentRunnerId,
   type RunExitEvent,
   type RunPermissionRequestEvent,
   type RunStartedEvent,
 } from "../api";
+import {
+  DEFAULT_RUNNER,
+  normalizeModelValue,
+  normalizeRunnerId,
+} from "../agents";
 import { usePopoverPosition } from "../hooks/usePopoverPosition";
 import type { Project, SessionFull, SessionSummary } from "../types";
 import { isSessionLineKind } from "../types";
+import { AgentPicker } from "./AgentPicker";
 import { PermissionRequestCard } from "./PermissionRequestCard";
 import { Tooltip } from "./Tooltip";
 
@@ -287,11 +294,31 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
   const currentRunIdRef = useRef<string | null>(null);
   currentRunIdRef.current = currentRunId;
+
+  /** Ref holding the most recent `started` payload so the long-lived
+   *  `onStdout` listener can pick the runner-specific parser without
+   *  re-subscribing on every status change. Synced by `adoptStarted`
+   *  + the listener's own `onStarted` handler. */
+  const currentStartedRef = useRef<RunStartedEvent | null>(null);
   const [chatDraft, setChatDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
   const [usage, setUsage] = useState<SessionUsage>(EMPTY_USAGE);
   const [selectedScope, setSelectedScope] = useState<string>(VAULT_SCOPE);
+
+  /** Per-tab agent backend. Defaults to the catalog default for fresh
+   *  tabs; on adoption (mount-sync / reopen) we re-sync from the
+   *  incoming `started.runner`. Locked once the chat has started
+   *  (status ≠ idle) — switching runner mid-conversation would lose
+   *  the session because Claude and Codex maintain separate stores. */
+  const [selectedRunner, setSelectedRunner] =
+    useState<AgentRunnerId>(DEFAULT_RUNNER);
+
+  /** Per-tab model override (forwarded as `--model`). `null` = let
+   *  the CLI's own config decide. Pickable even between turns on the
+   *  same conversation — both runners accept changing the model on
+   *  resume. */
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
 
   /** When true, prepend a hardening preamble to the next outgoing prompt
    *  telling the agent NOT to read files under personal-work or
@@ -420,6 +447,10 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
           // before the event listener attached). setState is
           // idempotent on identical values.
           setCurrentRunId(ev.runId);
+          // Mirror the started payload into the runner-dispatch ref
+          // so onStdout knows which parser to pick. Same idempotency
+          // story as setCurrentRunId.
+          currentStartedRef.current = ev;
           if (ev.resume) {
             // Resume: keep the prior conversation buffer, append a
             // separator so the boundary is visible. Session id stays.
@@ -463,26 +494,29 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
         },
         onStdout: (ev) => {
           if (!isMine(ev.runId)) return;
+          // Dispatch by runner so each backend's JSONL shape is
+          // decoded by the right parser. The runner id arrives on
+          // every event indirectly via the status snapshot we captured
+          // in `adoptStarted`/`onStarted`. `runner` may be empty on
+          // older mount-sync events; default to Claude there since
+          // it was the only backend before this slice.
+          const stdoutRunner = normalizeRunnerId(
+            currentRunIdRef.current !== null && currentStartedRef.current
+              ? currentStartedRef.current.runner
+              : null,
+          );
           // Single JSON.parse per stream line — three downstream
           // consumers (session id capture, usage accumulation, the
           // pretty-printer) all read the same object. Parsing once
           // and dispatching keeps long bursts cheap.
-          const parsed = parseClaudeLine(ev.line);
-          // Capture the session id once per stream so the chat input can
-          // resume the conversation after exit. Subsequent system events
-          // in the same run carry the same id; setSessionId is idempotent
-          // on identical values.
-          const sid = extractClaudeSessionId(parsed.obj);
+          const parsed = parseStreamLine(ev.line);
+          const sid = extractSessionId(stdoutRunner, parsed.obj);
           if (sid) setSessionId(sid);
-          // Accumulate usage / cost from this line. Token deltas come
-          // from `assistant.message.usage`; final per-turn cost comes
-          // from the `result` event. Both contribute to the running
-          // total displayed in the header.
-          const delta = extractClaudeUsageDelta(parsed.obj);
+          const delta = extractUsageDelta(stdoutRunner, parsed.obj);
           if (delta) {
             setUsage((prev) => mergeUsage(prev, delta));
           }
-          for (const rendered of renderClaudeStreamLine(parsed)) {
+          for (const rendered of renderStreamLine(stdoutRunner, parsed)) {
             appendLine({ kind: rendered.kind, text: rendered.text });
           }
         },
@@ -530,6 +564,7 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
           // that will set its own currentRunId via `onStarted`. Clear
           // the ref so a never-stopped stale tail can't sneak in.
           currentRunIdRef.current = null;
+          currentStartedRef.current = null;
           setCurrentRunId(null);
         },
       });
@@ -648,6 +683,12 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     setStartedAtMs(null);
     setStagedSource(null);
     setPendingPermission(null);
+    // Fresh chat — restore picker defaults so the next conversation
+    // starts on the catalog's "no opinion" model. Keeping the prior
+    // selection here would surprise users who explicitly hit "New
+    // chat" expecting a clean slate.
+    setSelectedRunner(DEFAULT_RUNNER);
+    setSelectedModel(null);
     currentRunIdRef.current = null;
     setCurrentRunId(null);
   }, []);
@@ -664,7 +705,14 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
   const adoptStarted = useCallback(
     (ev: RunStartedEvent) => {
       currentRunIdRef.current = ev.runId;
+      currentStartedRef.current = ev;
       setCurrentRunId(ev.runId);
+      // Sync the per-tab runner + model from the backend's echoed
+      // payload. Picker selections survive the round-trip; on
+      // mount-sync after restart they're re-derived from whichever
+      // runner the live subprocess belongs to.
+      setSelectedRunner(normalizeRunnerId(ev.runner));
+      setSelectedModel(normalizeModelValue(ev.model));
       if (ev.resume) {
         setLines((prev) => [
           ...prev,
@@ -736,6 +784,13 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
         // where the event won would otherwise leave status stuck on
         // `exited`/`idle` despite a streaming backend run — exactly
         // the bug Срез 4 first shipped with).
+        // Resume continues the same conversation, so the runner is
+        // fixed to whatever the original session was started against
+        // (forwarded back from `started.runner`). The model, in
+        // contrast, can be swapped per turn — the user may bump
+        // Sonnet → Opus on a tricky follow-up.
+        const resumeRunnerId = normalizeRunnerId(started.runner);
+        const resumeModel = selectedModel ?? undefined;
         const startedNew = started.freeform
           ? await resumeFreeformRun({
               vaultRoot: started.vaultRoot,
@@ -744,6 +799,8 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
               projectSlug: started.projectSlug,
               sessionId,
               reply: text,
+              runner: resumeRunnerId,
+              model: resumeModel,
             })
           : await resumeRun({
               vaultRoot: started.vaultRoot,
@@ -751,6 +808,8 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
               promptId: started.promptId,
               sessionId,
               reply: text,
+              runner: resumeRunnerId,
+              model: resumeModel,
             });
         adoptStarted(startedNew);
         return;
@@ -781,6 +840,8 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
         prompt: outgoing,
         scopeProjectSlug: scopeProject?.slug,
         scopeRepoPath: scopeProject?.localPath ?? undefined,
+        runner: selectedRunner,
+        model: selectedModel ?? undefined,
       });
       adoptStarted(startedNew);
     } catch (err) {
@@ -799,6 +860,8 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     scopeOptions,
     vaultRoot,
     excludePersonalZones,
+    selectedRunner,
+    selectedModel,
   ]);
 
   const onStop = useCallback(async () => {
@@ -926,6 +989,12 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
           costUsd: finalUsage.costUsd,
           model: finalUsage.model,
         },
+        // Persist which agent backend served this session so the
+        // History row can restore the same runner picker on reopen.
+        // `started.runner` is the backend's echo — authoritative over
+        // the panel's local selection because the panel may have
+        // adopted a mount-sync run started by a now-removed runner id.
+        runner: normalizeRunnerId(started.runner),
       })
         .then(async () => {
           try {
@@ -966,6 +1035,8 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     // Restore the run state as if the saved run had just exited. The
     // Reply path then handles `resume_*_run` using the captured session
     // id and stashed context.
+    const restoredRunner = normalizeRunnerId(session.summary.runner);
+    const restoredModel = normalizeModelValue(session.summary.model);
     const synthStarted: RunStartedEvent = {
       // No backend run is associated with a freshly-reopened session —
       // the panel is in `exited` state and only the next Reply will
@@ -976,10 +1047,17 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
       vaultRoot: session.summary.vaultRoot,
       workdir: session.workdir,
       additionalDirs: session.additionalDirs,
-      runner: "claude-code",
+      runner: restoredRunner,
+      model: restoredModel,
       resume: false,
       freeform: session.summary.freeform,
     };
+    // Sync the picker to the saved session's backend so the next
+    // Reply targets the same CLI. Without this, reopening a Codex
+    // session and clicking Reply would silently spawn Claude (the
+    // panel's default selectedRunner from mount).
+    setSelectedRunner(restoredRunner);
+    setSelectedModel(restoredModel);
     // Pre-register the saved state so the persistence effect, which
     // fires when we flip status to "exited" below, sees a matching
     // memo and skips the redundant UPSERT. Reopening a saved session
@@ -1188,6 +1266,11 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
         setUsage(EMPTY_USAGE);
         setPendingTitle(null);
         setStartedAtMs(null);
+        // Same rationale as `onNewChat` — staging an artifact opens a
+        // fresh conversation; carry-over of the prior chat's picker
+        // selection would surprise the user.
+        setSelectedRunner(DEFAULT_RUNNER);
+        setSelectedModel(null);
       }
       // Pick the scope that matches the source project when its repo is
       // declared; fall back to vault scope so the backend still spawns
@@ -1492,6 +1575,24 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
           }}
         >
           <div className="run-panel__chat-scope">
+            <AgentPicker
+              runner={selectedRunner}
+              model={selectedModel}
+              // Runner is fixed for the lifetime of a conversation:
+              // a chat that started against Claude can't suddenly
+              // become a Codex chat (different session stores, no
+              // cross-CLI compatibility). The picker re-enables on
+              // `idle` only — `onNewChat` + `stagePrompt`'s exit
+              // reset both flip status to idle.
+              runnerLocked={status.kind !== "idle"}
+              // The chat form is only rendered when status is
+              // `idle` / `exited` (see `showChatInput`); running /
+              // stopping take the form away entirely, so model is
+              // always swappable while this picker is visible.
+              modelLocked={false}
+              onRunnerChange={setSelectedRunner}
+              onModelChange={setSelectedModel}
+            />
             <label
               htmlFor="run-panel-scope"
               className="run-panel__chat-scope-label"
@@ -2297,4 +2398,262 @@ function readNumber(o: Record<string, unknown>, k: string): number | undefined {
 function readBool(o: Record<string, unknown>, k: string): boolean | undefined {
   const v = o[k];
   return typeof v === "boolean" ? v : undefined;
+}
+
+// ---------- Runner-dispatched stream parsing ----------
+
+/**
+ * Cross-runner facade over the per-runner parsers below. The
+ * `onStdout` handler picks the right parser based on the active
+ * `RunStartedEvent.runner`. Codex emits its own JSONL shape, so the
+ * dispatch is mandatory — feeding a Codex `turn.completed` event into
+ * the Claude parser would silently drop the usage delta.
+ */
+function parseStreamLine(raw: string): ParsedClaudeLine {
+  // The wire format on both runners is "{} per line", so parse-or-
+  // passthrough is shared. Per-runner shape inspection happens in
+  // `renderStreamLine` / `extract*` below.
+  return parseClaudeLine(raw);
+}
+
+function extractSessionId(
+  runner: AgentRunnerId,
+  parsed: Record<string, unknown> | null,
+): string | null {
+  if (parsed === null) return null;
+  return runner === "codex"
+    ? extractCodexSessionId(parsed)
+    : extractClaudeSessionId(parsed);
+}
+
+function extractUsageDelta(
+  runner: AgentRunnerId,
+  parsed: Record<string, unknown> | null,
+): UsageDelta | null {
+  if (parsed === null) return null;
+  return runner === "codex"
+    ? extractCodexUsageDelta(parsed)
+    : extractClaudeUsageDelta(parsed);
+}
+
+function renderStreamLine(
+  runner: AgentRunnerId,
+  parsed: ParsedClaudeLine,
+): RenderedLine[] {
+  return runner === "codex"
+    ? renderCodexStreamLine(parsed)
+    : renderClaudeStreamLine(parsed);
+}
+
+// ---------- Codex JSONL parsing ----------
+//
+// Event shapes (codex 0.132):
+//   {"type":"thread.started","thread_id":"<uuid>"}
+//   {"type":"turn.started"}
+//   {"type":"item.started","item":{"id","type":"command_execution","command","status":"in_progress"}}
+//   {"type":"item.completed","item":{"id","type":"command_execution","command","exit_code","status":"completed","aggregated_output"}}
+//   {"type":"item.completed","item":{"id","type":"agent_message","text":"..."}}
+//   {"type":"turn.completed","usage":{"input_tokens","cached_input_tokens","output_tokens","reasoning_output_tokens"}}
+//
+// Codex tracks separate input + cache buckets, and exposes reasoning
+// tokens which we fold into `outputTokens` for display so the chip
+// matches the user's intuition ("tokens generated").
+
+function extractCodexSessionId(
+  parsed: Record<string, unknown>,
+): string | null {
+  if (readString(parsed, "type") !== "thread.started") return null;
+  return readString(parsed, "thread_id") ?? null;
+}
+
+function extractCodexUsageDelta(
+  parsed: Record<string, unknown>,
+): UsageDelta | null {
+  if (readString(parsed, "type") !== "turn.completed") return null;
+  const usage = parsed["usage"];
+  if (!isRecord(usage)) return null;
+  const inputTokens = readNumber(usage, "input_tokens") ?? 0;
+  const cachedInput = readNumber(usage, "cached_input_tokens") ?? 0;
+  const outputTokens = readNumber(usage, "output_tokens") ?? 0;
+  const reasoning = readNumber(usage, "reasoning_output_tokens") ?? 0;
+  // Codex reports cumulative-per-turn counts. Pre-multi-runner the
+  // Claude path summed deltas across turns; replicate that semantic
+  // by adding the new turn's counts on top of the accumulated total.
+  // Reasoning tokens go into output so they're counted (visible cost
+  // proxy on subscription plans where costUsd is missing).
+  return {
+    inputTokens,
+    outputTokens: outputTokens + reasoning,
+    cacheCreationTokens: 0,
+    // Codex doesn't distinguish "cache create" from "cache read" —
+    // treat cached input as read-side.
+    cacheReadTokens: cachedInput,
+    // Codex `--json` doesn't emit a per-turn cost in 0.132. Leaving
+    // costUsd at 0 — the panel falls back to "Cost: not reported"
+    // (matches the subscription-plan branch of Claude).
+    costUsd: 0,
+    model: null,
+  };
+}
+
+/**
+ * Codex's JSONL is simpler than Claude's stream-json — there's no
+ * `assistant.message.content` block walk, just flat per-event items.
+ * Map them to the same RenderedLine shape so the panel's `<pre>` can
+ * render them uniformly.
+ */
+function renderCodexStreamLine(parsed: ParsedClaudeLine): RenderedLine[] {
+  const { obj, raw } = parsed;
+  if (obj === null) {
+    if (raw.trim() === "") return [];
+    return [{ kind: "stdout", text: raw }];
+  }
+  const type = readString(obj, "type");
+  switch (type) {
+    case "thread.started": {
+      const id = readString(obj, "thread_id") ?? "?";
+      return [{ kind: "system", text: `◆ session ${id.slice(0, 8)}…` }];
+    }
+    case "turn.started":
+      // Tiny marker so the user sees the model is now thinking.
+      // Codex doesn't emit a per-message "thinking" event the way
+      // Claude does — this is the closest equivalent.
+      return [{ kind: "system", text: "🧠 thinking…" }];
+    case "item.started": {
+      const item = obj["item"];
+      if (!isRecord(item)) return [];
+      return renderCodexItem(item, /* started */ true);
+    }
+    case "item.completed": {
+      const item = obj["item"];
+      if (!isRecord(item)) return [];
+      return renderCodexItem(item, /* started */ false);
+    }
+    case "turn.completed": {
+      const usage = obj["usage"];
+      if (!isRecord(usage)) return [{ kind: "system", text: "◆ turn complete" }];
+      const total =
+        (readNumber(usage, "input_tokens") ?? 0) +
+        (readNumber(usage, "output_tokens") ?? 0) +
+        (readNumber(usage, "reasoning_output_tokens") ?? 0);
+      return [{ kind: "system", text: `◆ turn complete · ${formatTokens(total)} tok` }];
+    }
+    case "turn.failed": {
+      // Failed turn — codex stuffs the API error in `error.message`
+      // as a JSON string (e.g. model not supported on this auth tier).
+      // Extract the inner message so the user sees a one-liner
+      // instead of a wall of nested JSON.
+      const err = obj["error"];
+      const msg = isRecord(err) ? readString(err, "message") : undefined;
+      return [
+        {
+          kind: "stderr",
+          text: `✘ turn failed: ${extractCodexErrorMessage(msg)}`,
+        },
+      ];
+    }
+    case "error": {
+      // Top-level error events arrive in addition to (or instead of)
+      // `turn.failed`. Same shape — nested JSON in `message`.
+      const msg = readString(obj, "message");
+      return [
+        {
+          kind: "stderr",
+          text: `✘ error: ${extractCodexErrorMessage(msg)}`,
+        },
+      ];
+    }
+    default:
+      // Codex may grow new event types between versions; surface the
+      // raw line so we don't silently drop it.
+      return [{ kind: "stdout", text: raw }];
+  }
+}
+
+/**
+ * Codex wraps the upstream API error in a JSON string inside its
+ * own `message` field — pulling out the human-readable bit takes
+ * one optional re-parse:
+ *
+ *   message = '{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"…"}}'
+ *
+ * If the string doesn't parse or doesn't have the expected nested
+ * shape, fall back to the raw string so we never hide the original
+ * payload.
+ */
+function extractCodexErrorMessage(raw: string | undefined): string {
+  if (!raw) return "(no message)";
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (isRecord(parsed)) {
+      const inner = parsed["error"];
+      if (isRecord(inner)) {
+        const msg = readString(inner, "message");
+        if (msg) return msg;
+      }
+      const flatMsg = readString(parsed, "message");
+      if (flatMsg) return flatMsg;
+    }
+  } catch {
+    // Fall through to the raw string.
+  }
+  return raw;
+}
+
+/**
+ * Render a single codex `item.{started,completed}` payload. Different
+ * item types render differently:
+ *
+ * - `agent_message` — model text. Surfaces as `stdout` so the chat
+ *   reads naturally; only emitted on `item.completed` (the started
+ *   event has no text yet).
+ * - `command_execution` — shell command. Started gets a `→` marker so
+ *   the user sees codex is about to run something; completed gets a
+ *   `←` marker with the exit code so failures stand out.
+ * - Anything else — minimal one-liner with the item type, so a future
+ *   codex release adding new item kinds doesn't drop output.
+ */
+function renderCodexItem(
+  item: Record<string, unknown>,
+  started: boolean,
+): RenderedLine[] {
+  const itype = readString(item, "type") ?? "?";
+  switch (itype) {
+    case "agent_message": {
+      // Only the `item.completed` carries text — `item.started` for
+      // agent_message has nothing useful.
+      if (started) return [];
+      const text = readString(item, "text");
+      if (!text) return [];
+      return [{ kind: "stdout", text }];
+    }
+    case "command_execution": {
+      const command = readString(item, "command") ?? "?";
+      if (started) {
+        return [{ kind: "system", text: `→ Bash ${truncate(command, 200)}` }];
+      }
+      const code = readNumber(item, "exit_code");
+      const out = readString(item, "aggregated_output") ?? "";
+      const head = truncate(out.replace(/\s+/g, " ").trim(), 200);
+      const status =
+        code === 0
+          ? `exit 0${head ? ` · ${head}` : ""}`
+          : `exit ${code ?? "?"}${head ? ` · ${head}` : ""}`;
+      return [
+        {
+          kind: code === 0 ? "system" : "stderr",
+          text: `← ${status}`,
+        },
+      ];
+    }
+    default: {
+      // Unknown item kind — pass through with a hint marker.
+      return [
+        {
+          kind: "system",
+          text: started ? `→ ${itype}` : `← ${itype} done`,
+        },
+      ];
+    }
+  }
 }

@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cache_read_tokens        INTEGER NOT NULL DEFAULT 0,
     cost_usd                 REAL    NOT NULL DEFAULT 0,
     model                    TEXT,
+    runner                   TEXT    NOT NULL DEFAULT 'claude-code',
     archived                 INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_vault_session
@@ -52,6 +53,30 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_vault_session
 CREATE INDEX IF NOT EXISTS idx_sessions_vault_started
     ON sessions(vault_root, started_at_ms DESC);
 "#;
+
+/// One-shot migration: add the `runner` column to pre-existing
+/// session tables. Fresh DBs already have the column from
+/// [`SCHEMA_SQL`]; this `ALTER TABLE` runs against installs that
+/// existed before multi-runner support landed. Rows written before
+/// the migration default to `'claude-code'` since that was the only
+/// runner available at the time. We swallow the "duplicate column
+/// name" error so this is idempotent on already-migrated DBs.
+pub(super) fn migrate_add_runner_column(
+    conn: &rusqlite::Connection,
+) -> Result<(), rusqlite::Error> {
+    match conn.execute(
+        "ALTER TABLE sessions ADD COLUMN runner TEXT NOT NULL DEFAULT 'claude-code'",
+        [],
+    ) {
+        Ok(_) => Ok(()),
+        Err(rusqlite::Error::SqliteFailure(_, Some(ref msg)))
+            if msg.contains("duplicate column name") =>
+        {
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
 
 /// A single line from the run output stream — same shape the frontend
 /// renders. Persisted as a string ("stdout" | "stderr" | "system") so
@@ -104,6 +129,17 @@ pub struct SaveSessionInput {
     pub exit_code: Option<i32>,
     pub exit_success: Option<bool>,
     pub usage: UsageSnapshot,
+    /// Agent backend that served this session (`"claude-code"` /
+    /// `"codex"`). Persisted so reopen flows can hydrate the panel's
+    /// runner picker to the same backend the user started with.
+    /// Defaults via serde so older clients (or row writes from
+    /// pre-multi-runner code) round-trip as Claude.
+    #[serde(default = "default_runner_id")]
+    pub runner: String,
+}
+
+fn default_runner_id() -> String {
+    "claude-code".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +159,10 @@ pub struct SessionSummary {
     pub output_tokens: i64,
     pub cost_usd: f64,
     pub model: Option<String>,
+    /// Agent backend that served this session. Frontend uses it to
+    /// re-set the runner picker on reopen so the next reply targets
+    /// the same CLI the original conversation used.
+    pub runner: String,
     pub archived: bool,
     pub line_count: i64,
 }
@@ -154,14 +194,14 @@ impl AppDb {
                 output_lines_json, started_at_ms, ended_at_ms,
                 exit_code, exit_success,
                 input_tokens, output_tokens, cache_creation_tokens,
-                cache_read_tokens, cost_usd, model
+                cache_read_tokens, cost_usd, model, runner
             ) VALUES (
                 ?1, ?2, ?3, ?4,
                 ?5, ?6, ?7, ?8,
                 ?9, ?10, ?11,
                 ?12, ?13,
                 ?14, ?15, ?16,
-                ?17, ?18, ?19
+                ?17, ?18, ?19, ?20
             )
             ON CONFLICT(vault_root, claude_session_id) DO UPDATE SET
                 project_slug         = excluded.project_slug,
@@ -179,7 +219,8 @@ impl AppDb {
                 cache_creation_tokens = excluded.cache_creation_tokens,
                 cache_read_tokens    = excluded.cache_read_tokens,
                 cost_usd             = excluded.cost_usd,
-                model                = excluded.model
+                model                = excluded.model,
+                runner               = excluded.runner
             "#,
             params![
                 input.vault_root,
@@ -201,6 +242,7 @@ impl AppDb {
                 input.usage.cache_read_tokens,
                 input.usage.cost_usd,
                 input.usage.model,
+                input.runner,
             ],
         )?;
 
@@ -243,7 +285,7 @@ impl AppDb {
                 SELECT id, claude_session_id, vault_root, project_slug, prompt_id,
                        freeform, title, started_at_ms, ended_at_ms, exit_success,
                        input_tokens, output_tokens, cost_usd, model, archived,
-                       output_lines_json
+                       output_lines_json, runner
                 FROM sessions
                 WHERE vault_root = ?1
                 ORDER BY started_at_ms DESC
@@ -255,7 +297,7 @@ impl AppDb {
                 SELECT id, claude_session_id, vault_root, project_slug, prompt_id,
                        freeform, title, started_at_ms, ended_at_ms, exit_success,
                        input_tokens, output_tokens, cost_usd, model, archived,
-                       output_lines_json
+                       output_lines_json, runner
                 FROM sessions
                 WHERE vault_root = ?1 AND archived = 0
                 ORDER BY started_at_ms DESC
@@ -279,7 +321,7 @@ impl AppDb {
                 SELECT id, claude_session_id, vault_root, project_slug, prompt_id,
                        freeform, title, started_at_ms, ended_at_ms, exit_success,
                        input_tokens, output_tokens, cost_usd, model, archived,
-                       output_lines_json, workdir, additional_dirs_json
+                       output_lines_json, runner, workdir, additional_dirs_json
                 FROM sessions WHERE id = ?1
                 "#,
                 params![id],
@@ -300,11 +342,15 @@ impl AppDb {
                         cost_usd: row.get(12)?,
                         model: row.get(13)?,
                         archived: row.get::<_, i64>(14)? != 0,
+                        // `runner` column was appended to the SELECT
+                        // after `output_lines_json` so legacy column
+                        // indexes don't shift. Idx 16 here.
+                        runner: row.get(16)?,
                         line_count: 0,
                     };
                     let lines_json: String = row.get(15)?;
-                    let workdir: String = row.get(16)?;
-                    let additional_dirs_json: String = row.get(17)?;
+                    let workdir: String = row.get(17)?;
+                    let additional_dirs_json: String = row.get(18)?;
                     Ok((summary, lines_json, workdir, additional_dirs_json))
                 },
             )
@@ -379,6 +425,7 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<SessionSummary, rusqlite::E
         cost_usd: row.get(12)?,
         model: row.get(13)?,
         archived: row.get::<_, i64>(14)? != 0,
+        runner: row.get(16)?,
         line_count,
     })
 }
@@ -406,6 +453,7 @@ mod tests {
             exit_code: Some(0),
             exit_success: Some(true),
             usage: UsageSnapshot::default(),
+            runner: "claude-code".to_string(),
         }
     }
 

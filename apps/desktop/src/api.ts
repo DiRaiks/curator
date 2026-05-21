@@ -264,6 +264,13 @@ export async function onVaultChange(
 
 // ---------- Runner ----------
 
+/** Stable id string for each supported agent backend. Mirrored
+ *  one-for-one with `RunnerKind` in the Rust crate. The frontend uses
+ *  this both to pick which CLI a new chat spawns and to dispatch the
+ *  matching stream-line renderer (Claude vs Codex emit different JSONL
+ *  shapes). New variants need a renderer + a model list. */
+export type AgentRunnerId = "claude-code" | "codex";
+
 export interface RunStartedEvent {
   /** Stable per-spawn id. Carried on every subsequent event for this
    *  run (stdout/stderr/truncated/permission-request/exit) and required
@@ -279,7 +286,14 @@ export interface RunStartedEvent {
    *  resume can re-spawn against the same scope without needing to
    *  recompute it from a (non-existent) artifact prompt. */
   additionalDirs: string[];
+  /** Which CLI backend served this run. Typed as `string` (not
+   *  `AgentRunnerId`) so a future runner sent by a newer backend
+   *  doesn't blow up parsing; the renderer falls back to Claude for
+   *  unknown ids. */
   runner: string;
+  /** Model passed to the runner CLI (`--model` for Claude, `-m` for
+   *  Codex). `null` = the CLI's configured default. */
+  model: string | null;
   /** True when this is a `--resume` of a prior session; false for a
    *  fresh `start_run`. The frontend uses this to decide whether to
    *  clear the output buffer or append to it. */
@@ -348,6 +362,13 @@ export async function startRun(args: {
   projectSlug: string;
   promptId: string;
   runtimeInput?: string;
+  /** Agent backend to spawn. Defaults to `"claude-code"` on the
+   *  backend when omitted. Locked once a chat tab has started — see
+   *  the RunPanel's selectedRunner state. */
+  runner?: AgentRunnerId;
+  /** Model name forwarded to the runner CLI. Omit (or pass `""`) to
+   *  let the CLI pick its configured default. */
+  model?: string;
 }): Promise<RunStartedEvent> {
   return invoke<RunStartedEvent>("start_run", args);
 }
@@ -408,6 +429,14 @@ export async function resumeRun(args: {
   promptId: string;
   sessionId: string;
   reply: string;
+  /** Must match the runner the original session was started against —
+   *  Claude and Codex maintain separate session stores, so switching
+   *  runner mid-conversation would resume the wrong (or no) thread. */
+  runner?: AgentRunnerId;
+  /** Optional model override for this turn. Both Claude and Codex
+   *  accept changing the model on resume, so the user can swap
+   *  Sonnet → Opus mid-conversation. */
+  model?: string;
 }): Promise<RunStartedEvent> {
   return invoke<RunStartedEvent>("resume_run", args);
 }
@@ -428,6 +457,8 @@ export async function startFreeformRun(args: {
   prompt: string;
   scopeProjectSlug?: string;
   scopeRepoPath?: string;
+  runner?: AgentRunnerId;
+  model?: string;
 }): Promise<RunStartedEvent> {
   return invoke<RunStartedEvent>("start_freeform_run", args);
 }
@@ -446,6 +477,8 @@ export async function resumeFreeformRun(args: {
   projectSlug: string;
   sessionId: string;
   reply: string;
+  runner?: AgentRunnerId;
+  model?: string;
 }): Promise<RunStartedEvent> {
   return invoke<RunStartedEvent>("resume_freeform_run", args);
 }

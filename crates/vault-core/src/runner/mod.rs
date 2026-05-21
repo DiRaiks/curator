@@ -44,25 +44,47 @@ use std::sync::mpsc;
 use thiserror::Error;
 
 mod claude;
+mod codex;
+mod subprocess;
 
 pub use claude::{build_permission_response_line, ClaudeRunner};
+pub use codex::CodexRunner;
 
 /// Soft cap on total bytes emitted across stdout + stderr per run, before
 /// further output is dropped (with one `Truncated` event).
 pub const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
-/// Identifier for a runner backend. The MVP only ships `ClaudeCode`; this
-/// enum exists so the Tauri shell can route by id and so future runners
-/// (Codex, Zed Agent, Cursor Agent) plug into the same surface.
+/// Identifier for a runner backend. The Tauri shell routes by id so the
+/// frontend can pick which CLI a chat tab spawns. Adding a new variant
+/// here is a three-step change: enum + [`RunnerKind::id`] + [`RunnerKind::from_id`]
+/// + a new runner impl + dispatch in the Tauri command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunnerKind {
     ClaudeCode,
+    Codex,
 }
 
 impl RunnerKind {
+    /// Stable string identifier carried over the IPC boundary. Must
+    /// stay backwards-compatible — a persisted history row written by
+    /// an older build round-trips through the frontend as this string.
     pub fn id(self) -> &'static str {
         match self {
             RunnerKind::ClaudeCode => "claude-code",
+            RunnerKind::Codex => "codex",
+        }
+    }
+
+    /// Parse a runner id back into the typed enum. Returns `None` for
+    /// unknown ids (forwards compat: a future runner id arriving from a
+    /// stale persisted row shouldn't crash; the caller picks a safe
+    /// default — typically `ClaudeCode` since it's the default for new
+    /// chats).
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "claude-code" => Some(RunnerKind::ClaudeCode),
+            "codex" => Some(RunnerKind::Codex),
+            _ => None,
         }
     }
 }
@@ -91,11 +113,18 @@ pub struct RunRequest {
     /// dumb about prompt shape.
     pub runtime_input: Option<String>,
     /// When set, the runner resumes an existing conversation by id —
-    /// `claude --resume <id>` — and `prompt` is treated as the next user
-    /// message in that conversation rather than a fresh task description.
-    /// Cwd and `additional_dirs` must match the original session for tool
+    /// `claude --resume <id>` or `codex exec resume <id>` — and
+    /// `prompt` is treated as the next user message in that
+    /// conversation rather than a fresh task description. Cwd and
+    /// `additional_dirs` must match the original session for tool
     /// access to keep working.
     pub resume_session_id: Option<String>,
+    /// Model override forwarded to the runner CLI (`claude --model …`,
+    /// `codex --model …`). `None` = let the CLI pick its configured
+    /// default. Both runners accept the same shape — a short name like
+    /// `"sonnet"` / `"gpt-5-codex"` — and surface a clear error if the
+    /// name isn't recognised.
+    pub model: Option<String>,
 }
 
 /// Streaming event from an active run. Consumers should treat unknown
