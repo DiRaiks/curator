@@ -65,9 +65,6 @@ const WARNING_LABEL: Record<WarningKind, string> = {
 interface ContextPreviewPanelProps {
   preview: ContextPreview;
   homeDir: string | null;
-  /** Absolute path of the active vault. Forwarded to `start_run` so the
-   *  Run button can spawn the local CLI without re-resolving paths. */
-  vaultRoot: string;
   isRefreshing?: boolean;
   /** Create a Markdown file at the given vault-relative path and open it in
    *  the editor. Optional — if omitted, the Create-output-stub affordance is
@@ -77,15 +74,23 @@ interface ContextPreviewPanelProps {
    *  available. The SourceRepoCard overlays real connectivity status on top
    *  of the basic frontmatter metadata. */
   sourceRepoInspection?: SourceRepoInspection | null;
+  /** Stage the artifact's materialized prompt into the bottom chat panel
+   *  (instead of spawning the runner directly). Forwarded into
+   *  `ExternalRunnerPromptCard`'s primary action. */
+  onStagePrompt: (args: {
+    text: string;
+    projectSlug: string;
+    promptId: string;
+  }) => string | null;
 }
 
 export function ContextPreviewPanel({
   preview,
   homeDir,
-  vaultRoot,
   isRefreshing = false,
   onCreateAndOpenFile,
   sourceRepoInspection,
+  onStagePrompt,
 }: ContextPreviewPanelProps) {
   return (
     <article
@@ -118,9 +123,9 @@ export function ContextPreviewPanel({
         <ExternalRunnerPromptCard
           prompt={preview.externalRunnerPrompt}
           unresolvedPlaceholders={preview.unresolvedPlaceholders}
-          vaultRoot={vaultRoot}
           projectSlug={preview.projectSlug}
           promptId={preview.promptId}
+          onStagePrompt={onStagePrompt}
         />
       </details>
     </article>

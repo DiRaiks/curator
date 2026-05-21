@@ -55,6 +55,15 @@ interface ProjectDetailProps {
    *  the editor. Used by the Run Plan "Create output stub" action. Throws on
    *  failure so the child can surface inline errors. */
   onCreateAndOpenFile: (relativePath: string) => Promise<void>;
+  /** Stage the materialized artifact prompt into the bottom chat panel
+   *  instead of spawning the runner directly. The user reviews / edits /
+   *  pre-approves permissions before clicking Send. Returns `null` on
+   *  success or an error string to surface at the callsite. */
+  onStagePrompt: (args: {
+    text: string;
+    projectSlug: string;
+    promptId: string;
+  }) => string | null;
 }
 
 interface FieldProps {
@@ -86,6 +95,7 @@ export function ProjectDetail({
   onOpenFile,
   onBack,
   onCreateAndOpenFile,
+  onStagePrompt,
 }: ProjectDetailProps) {
   const [inspection, setInspection] = useState<SourceRepoInspection | null>(
     null,
@@ -341,10 +351,10 @@ export function ProjectDetail({
             <ContextPreviewPanel
               preview={preview}
               homeDir={homeDir}
-              vaultRoot={vaultRoot}
               isRefreshing={previewLoading}
               onCreateAndOpenFile={onCreateAndOpenFile}
               sourceRepoInspection={inspection}
+              onStagePrompt={onStagePrompt}
             />
           )}
         </section>

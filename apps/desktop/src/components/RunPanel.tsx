@@ -25,6 +25,7 @@ import {
 } from "../api";
 import { usePopoverPosition } from "../hooks/usePopoverPosition";
 import type { Project, SessionFull, SessionSummary } from "../types";
+import { isSessionLineKind } from "../types";
 import { Tooltip } from "./Tooltip";
 
 /**
@@ -129,11 +130,13 @@ export interface RunStatusInfo {
   savedCount: number | null;
 }
 
-/** Imperative handle exposed to Dashboard. Used today for three things:
- *  reopening a saved session into the editor's chat panel, toggling
- *  the panel collapsed state from the header AI button, and letting
- *  ambient surfaces subscribe to run-status updates so the AI handle
- *  / status bar can pulse in lockstep with the bottom drawer. */
+/** Imperative handle exposed to Dashboard. Used today for four things:
+ *  reopening a saved session into the editor's chat panel, toggling the
+ *  panel collapsed state from the header AI button, letting ambient
+ *  surfaces subscribe to run-status updates so the AI handle / status
+ *  bar can pulse in lockstep with the bottom drawer, and staging an
+ *  artifact-generated prompt into the chat input so the user can review
+ *  / edit / grant permissions before sending. */
 export interface RunPanelHandle {
   reopenSession: (session: SessionFull) => void;
   /** Flip the panel between collapsed (compact header) and expanded
@@ -143,6 +146,16 @@ export interface RunPanelHandle {
    *  immediately with the current snapshot, then on every transition
    *  thereafter. Returns an unsubscribe function. */
   subscribeToStatus: (cb: (info: RunStatusInfo) => void) => () => void;
+  /** Stage a materialized artifact prompt into the chat input. Expands
+   *  the panel, sets the chat scope to the given project (if it has a
+   *  local path — otherwise vault scope), populates the draft, and
+   *  focuses the textarea. Returns an error string when staging is
+   *  refused (e.g. a run is in-flight) so the caller can surface it. */
+  stagePrompt: (args: {
+    text: string;
+    projectSlug: string;
+    promptId: string;
+  }) => string | null;
 }
 
 export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
@@ -170,6 +183,38 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
   // independent of run order.
   const [pendingTitle, setPendingTitle] = useState<string | null>(null);
   const [startedAtMs, setStartedAtMs] = useState<number | null>(null);
+
+  /** When a project artifact is staged (clicked Run on a skill/agent), the
+   *  prompt lands in `chatDraft` and we display a chip above the input so
+   *  the user knows the draft was generated, not typed. Cleared as soon as
+   *  the user sends it or starts editing meaningfully (we only clear on
+   *  send — typing-clear would feel jumpy). Also cleared on New chat. */
+  const [stagedSource, setStagedSource] = useState<{
+    projectSlug: string;
+    promptId: string;
+  } | null>(null);
+
+  /** Ref to the chat textarea so `stagePrompt` can focus it after writing
+   *  the draft. The user expects to land in the input ready to edit. */
+  const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Mirrors of the values the save effect needs to read at exit. The effect
+  // only depends on `status` (so the user typing in the chat input doesn't
+  // re-fire the save), but the bare closure would capture whatever `lines`
+  // / `usage` happened to be on the render that flipped status to exited —
+  // and Tauri's event listeners deliver `setUsage` from the last
+  // `onStdout` and `setStatus("exited")` from `onExit` as separate
+  // callbacks, so they can land in different microtask batches. Reading
+  // through refs (updated below on every render) inside a deferred
+  // `queueMicrotask` makes the save effect always see the latest values.
+  const linesRef = useRef<OutputLine[]>([]);
+  const usageRef = useRef<SessionUsage>(EMPTY_USAGE);
+  const pendingTitleRef = useRef<string | null>(null);
+  const startedAtMsRef = useRef<number | null>(null);
+  linesRef.current = lines;
+  usageRef.current = usage;
+  pendingTitleRef.current = pendingTitle;
+  startedAtMsRef.current = startedAtMs;
 
   // Recent active sessions, populated when the user opens the dropdown.
   // Lazy-loaded so the panel mount cost stays unchanged for users who
@@ -278,6 +323,10 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
           }
           setChatDraft("");
           setChatError(null);
+          // Staging chip belongs to the pre-send moment — once the run
+          // actually starts, drop the marker so the panel reads as a
+          // regular conversation again.
+          setStagedSource(null);
           setStatus({ kind: "running", started: ev });
           setCollapsed(false);
         },
@@ -422,6 +471,7 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     setChatError(null);
     setPendingTitle(null);
     setStartedAtMs(null);
+    setStagedSource(null);
   }, []);
 
   const onSend = useCallback(async () => {
@@ -565,80 +615,100 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     // with empty vault_root would create a junk row keyed under "".
     if (status.started.vaultRoot === "") return;
 
-    // Idempotency guard against re-entry. If status flips out of
-    // "exited" (resume turn, New chat) and back without any new lines,
-    // the on-disk row hasn't moved — skip the round-trip.
-    const last = lastSavedSessionRef.current;
-    if (
-      last !== null &&
-      last.sessionId === sessionId &&
-      last.linesCount === lines.length
-    ) {
-      return;
-    }
-
     const started = status.started;
     const exit = status.exit;
-    const title = pendingTitle ?? `${started.projectSlug}/${started.promptId}`;
-    const started_at = startedAtMs ?? Date.now();
-    const snapshotCount = lines.length;
 
-    lastSavedSessionRef.current = {
-      sessionId,
-      linesCount: snapshotCount,
-    };
+    // Defer one microtask so the last `setUsage` / `setLines` from
+    // `onStdout` (delivered as a sibling Tauri callback to `onExit`)
+    // lands in the refs before we read them. Without this, an
+    // exited-status flip that arrives in a different microtask batch
+    // than the final usage update would persist a row with stale
+    // (pre-final-turn) cost/tokens.
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
 
-    void saveSession({
-      vaultRoot: started.vaultRoot,
-      claudeSessionId: sessionId,
-      projectSlug: started.projectSlug,
-      promptId: started.promptId,
-      workdir: started.workdir,
-      additionalDirs: started.additionalDirs,
-      freeform: started.freeform,
-      title,
-      outputLines: lines.map((l) => ({ kind: l.kind, text: l.text })),
-      startedAtMs: started_at,
-      endedAtMs: Date.now(),
-      exitCode: exit.code,
-      exitSuccess: exit.success,
-      usage: {
-        inputTokens: usage.inputTokens,
-        outputTokens: usage.outputTokens,
-        cacheCreationTokens: usage.cacheCreationTokens,
-        cacheReadTokens: usage.cacheReadTokens,
-        costUsd: usage.costUsd,
-        model: usage.model,
-      },
-    })
-      .then(async () => {
-        try {
-          const list = await listSessions(started.vaultRoot, false);
-          setLastSessions(list);
-        } catch {
-          // Refetch is best-effort — the count just stays at its
-          // previous value until the next idle eager-fetch.
-        }
+      const finalLines = linesRef.current;
+      const finalUsage = usageRef.current;
+      const finalPendingTitle = pendingTitleRef.current;
+      const finalStartedAtMs = startedAtMsRef.current;
+
+      // Idempotency guard against re-entry. If status flips out of
+      // "exited" (resume turn, New chat) and back without any new
+      // lines, the on-disk row hasn't moved — skip the round-trip.
+      const last = lastSavedSessionRef.current;
+      if (
+        last !== null &&
+        last.sessionId === sessionId &&
+        last.linesCount === finalLines.length
+      ) {
+        return;
+      }
+
+      const title =
+        finalPendingTitle ?? `${started.projectSlug}/${started.promptId}`;
+      const started_at = finalStartedAtMs ?? Date.now();
+
+      lastSavedSessionRef.current = {
+        sessionId,
+        linesCount: finalLines.length,
+      };
+
+      void saveSession({
+        vaultRoot: started.vaultRoot,
+        claudeSessionId: sessionId,
+        projectSlug: started.projectSlug,
+        promptId: started.promptId,
+        workdir: started.workdir,
+        additionalDirs: started.additionalDirs,
+        freeform: started.freeform,
+        title,
+        outputLines: finalLines.map((l) => ({ kind: l.kind, text: l.text })),
+        startedAtMs: started_at,
+        endedAtMs: Date.now(),
+        exitCode: exit.code,
+        exitSuccess: exit.success,
+        usage: {
+          inputTokens: finalUsage.inputTokens,
+          outputTokens: finalUsage.outputTokens,
+          cacheCreationTokens: finalUsage.cacheCreationTokens,
+          cacheReadTokens: finalUsage.cacheReadTokens,
+          costUsd: finalUsage.costUsd,
+          model: finalUsage.model,
+        },
       })
-      .catch((err) => {
-        // Persistence is best-effort — don't blow up the UI. Roll the
-        // memo back so a retry on the next render isn't blocked by
-        // the optimistic update we wrote above.
-        lastSavedSessionRef.current = last;
-        const text = err instanceof Error ? err.message : String(err);
-        appendLine({
-          kind: "system",
-          text: `! failed to save chat to history: ${text}`,
+        .then(async () => {
+          try {
+            const list = await listSessions(started.vaultRoot, false);
+            setLastSessions(list);
+          } catch {
+            // Refetch is best-effort — the count just stays at its
+            // previous value until the next idle eager-fetch.
+          }
+        })
+        .catch((err) => {
+          // Persistence is best-effort — don't blow up the UI. Roll
+          // the memo back so a retry on the next render isn't blocked
+          // by the optimistic update we wrote above.
+          lastSavedSessionRef.current = last;
+          const text = err instanceof Error ? err.message : String(err);
+          appendLine({
+            kind: "system",
+            text: `! failed to save chat to history: ${text}`,
+          });
         });
-      });
-    // We deliberately depend only on `status` here. `lines`, `usage`,
-    // etc. are read at the moment status flips to "exited" (which is
-    // the same render where their final values land via the same
-    // event-handler batch). Adding them to deps would trigger spurious
-    // re-saves on every render while exited (e.g. if the user types
-    // in the chat input).
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // We deliberately depend only on `status` and `sessionId` here.
+    // The other inputs (lines/usage/etc.) are read through refs above,
+    // which are updated on every render — adding them to deps would
+    // trigger spurious re-saves while exited (e.g. user typing in the
+    // chat input).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status]);
+  }, [status, sessionId]);
 
   // ---------- Reopen flow ----------
 
@@ -675,7 +745,10 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     });
     setLines(
       session.outputLines.map((l) => ({
-        kind: l.kind as LineKind,
+        // Narrow the persisted string. A row written by a future runner
+        // with a new kind (or a corrupted DB) falls back to `stdout` so
+        // the renderer's CSS class lookup can't accept arbitrary input.
+        kind: isSessionLineKind(l.kind) ? l.kind : "stdout",
         text: l.text,
       })),
     );
@@ -694,6 +767,7 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     setPendingTitle(session.summary.title);
     setStartedAtMs(session.summary.startedAtMs);
     setChatDraft("");
+    setStagedSource(null);
     setChatError(null);
     setCollapsed(false);
     setSessionMenuOpen(false);
@@ -757,10 +831,60 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     setCollapsed((c) => !c);
   }, []);
 
+  const stagePrompt = useCallback<RunPanelHandle["stagePrompt"]>(
+    ({ text, projectSlug, promptId }) => {
+      // Refuse while a run is active — overwriting the draft mid-stream
+      // would surprise the user, and the chat input is disabled during
+      // sending anyway. The caller surfaces the returned message inline.
+      if (status.kind === "running" || status.kind === "stopping") {
+        return "Stop the active run first, then open this prompt in the chat.";
+      }
+      // Staging is conceptually "start a new conversation with this
+      // prompt pre-filled". When the panel is sitting on an exited run,
+      // we must discard the prior session id / lines / usage so the
+      // next Send goes through `startFreeformRun` (fresh session) rather
+      // than `resumeRun` (reply into the prior conversation). Without
+      // this reset the scope dropdown also stays locked to the previous
+      // run's project and the button reads "Reply" — both surprising
+      // when the user just clicked "Open in chat" on a new artifact.
+      if (status.kind === "exited") {
+        setStatus({ kind: "idle" });
+        setLines([]);
+        setSessionId(null);
+        setUsage(EMPTY_USAGE);
+        setPendingTitle(null);
+        setStartedAtMs(null);
+      }
+      // Pick the scope that matches the source project when its repo is
+      // declared; fall back to vault scope so the backend still spawns
+      // (just without --add-dir-into-repo). The dropdown's effective-
+      // scope guard already drops invalid slugs back to vault scope.
+      const hasRepo = scopeOptions.some((p) => p.slug === projectSlug);
+      setSelectedScope(hasRepo ? projectSlug : VAULT_SCOPE);
+      setChatDraft(text);
+      setStagedSource({ projectSlug, promptId });
+      setChatError(null);
+      setCollapsed(false);
+      // requestAnimationFrame so the textarea is mounted (the expanded
+      // chat input is conditionally rendered while collapsed).
+      requestAnimationFrame(() => {
+        const el = chatInputRef.current;
+        if (!el) return;
+        el.focus();
+        // Drop the caret at the end so the user can append (e.g.
+        // "...also please be brief") without first clicking past the
+        // pre-filled text.
+        el.setSelectionRange(text.length, text.length);
+      });
+      return null;
+    },
+    [status, scopeOptions],
+  );
+
   useImperativeHandle(
     ref,
-    () => ({ reopenSession, toggleCollapsed, subscribeToStatus }),
-    [reopenSession, toggleCollapsed, subscribeToStatus],
+    () => ({ reopenSession, toggleCollapsed, subscribeToStatus, stagePrompt }),
+    [reopenSession, toggleCollapsed, subscribeToStatus, stagePrompt],
   );
 
   // ---------- Session quick-switch dropdown ----------
@@ -1050,7 +1174,34 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
               ))}
             </select>
           </div>
+          {stagedSource && (
+            <div
+              className="run-panel__staged"
+              role="status"
+              aria-label="Staged artifact"
+            >
+              <span className="run-panel__staged-label">
+                Staged from{" "}
+                <code>
+                  {stagedSource.projectSlug}/{stagedSource.promptId}
+                </code>{" "}
+                — review and Send to run.
+              </span>
+              <button
+                type="button"
+                className="btn btn--small btn--ghost"
+                onClick={() => {
+                  setStagedSource(null);
+                  setChatDraft("");
+                }}
+                title="Discard the staged prompt"
+              >
+                Clear
+              </button>
+            </div>
+          )}
           <textarea
+            ref={chatInputRef}
             className="run-panel__chat-input"
             value={chatDraft}
             onChange={(e) => setChatDraft(e.target.value)}

@@ -206,10 +206,26 @@ export interface ProjectVulnerabilityScan {
 
 // ---------- Session history ----------
 
+/** Output-line buckets the chat panel renders. Matches the Rust runner's
+ * own `kind` strings; the persistence layer keeps it as `string` so an
+ * older row written before a new kind was introduced can still round-trip.
+ */
+export type SessionLineKind = "stdout" | "stderr" | "system" | "user";
+
 export interface SessionOutputLine {
-  /** "stdout" | "stderr" | "system" — same buckets the chat panel renders. */
+  /** Persisted-as-string from Rust. Reopen code should narrow via
+   * `isSessionLineKind` before passing to the renderer. */
   kind: string;
   text: string;
+}
+
+export function isSessionLineKind(value: string): value is SessionLineKind {
+  return (
+    value === "stdout" ||
+    value === "stderr" ||
+    value === "system" ||
+    value === "user"
+  );
 }
 
 export interface SessionUsageSnapshot {

@@ -22,7 +22,6 @@ import { NewFileDialog } from "./NewFileDialog";
 import { Sidebar, type ViewId } from "./Sidebar";
 import { StatusBar } from "./StatusBar";
 import { TitleBar } from "./TitleBar";
-import { Tooltip } from "./Tooltip";
 
 /** Most open editor buffers we keep around. Spec: LRU eviction at 8. */
 const MAX_OPEN_FILES = 8;
@@ -97,39 +96,6 @@ function StatusPill({ ok, label, title }: PillProps) {
       {label}: {ok ? "present" : "missing"}
     </span>
   );
-}
-
-type PrivacyState = "protected" | "at-risk";
-
-interface PrivacyBadgeProps {
-  state: PrivacyState;
-  reason?: string;
-}
-
-const PRIVACY_TOOLTIP =
-  "Personal and team-management zones are excluded from project workflows by default. No content from these files is prepared for AI context.";
-
-function PrivacyBadge({ state, reason }: PrivacyBadgeProps) {
-  const label =
-    state === "protected" ? "privacy: protected" : "privacy: at risk";
-  const tip = state === "protected" ? PRIVACY_TOOLTIP : (reason ?? PRIVACY_TOOLTIP);
-  return (
-    <Tooltip content={tip} placement="bottom" align="start" ariaLabel={tip}>
-      <span
-        className={"pill privacy-status privacy-status--" + state}
-        role="status"
-      >
-        {label}
-      </span>
-    </Tooltip>
-  );
-}
-
-function computePrivacyState(_result: ScanResult): {
-  state: PrivacyState;
-  reason?: string;
-} {
-  return { state: "protected" };
 }
 
 interface VaultFormatPillProps {
@@ -436,6 +402,17 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
 
   const runPanelRef = useRef<RunPanelHandle | null>(null);
 
+  /** Bridge artifact "Run" clicks into the bottom chat panel: the
+   *  materialized prompt is staged as a chat draft instead of spawning
+   *  claude immediately, so the user can edit, add context, or
+   *  pre-approve permissions before sending. Returns an error string
+   *  (e.g. "active run") to surface inline at the callsite. */
+  const handleStagePrompt = useCallback(
+    (args: { text: string; projectSlug: string; promptId: string }) =>
+      runPanelRef.current?.stagePrompt(args) ?? "Chat panel not ready yet.",
+    [],
+  );
+
   // Active permission request — set when claude pauses awaiting a
   // can_use_tool decision. The modal hides as soon as approve/deny
   // resolves and we clear this back to null. Subsequent requests just
@@ -552,7 +529,6 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
     [result.vaultRoot, result.homeDir],
   );
 
-  const privacy = computePrivacyState(result);
   const isDirty =
     activeFile != null && activeFile.content !== activeFile.savedContent;
   /** Total unsaved buffers across all tabs — surfaced in the status bar
@@ -985,7 +961,6 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
           </span>
         </div>
         <div className="dashboard__meta">
-          <PrivacyBadge state={privacy.state} reason={privacy.reason} />
           <VaultFormatPill
             hasVaultConfig={result.hasVaultConfig}
             vaultFormatVersion={result.vaultFormatVersion}
@@ -1066,11 +1041,7 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
           artifactCount={result.artifacts.length}
           zoneCount={result.zones.length}
           diagnostics={result.diagnostics}
-          // PR A: session count not threaded through Dashboard yet.
-          // The Run-history view loads its own list when opened; the
-          // sidebar row count just hides until PR B lifts the chat
-          // history hook.
-          sessionCount={0}
+          sessionCount={savedSessionCount}
           files={filePaths}
           activeView={effectiveView}
           activeProject={activeProject}
@@ -1113,6 +1084,7 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
                   onOpenFile={attemptOpenFile}
                   onBack={() => setSelectedProject(null)}
                   onCreateAndOpenFile={createAndOpenFile}
+                  onStagePrompt={handleStagePrompt}
                 />
               ) : (
                 <ProjectList
