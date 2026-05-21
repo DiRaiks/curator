@@ -68,8 +68,7 @@ pub enum BootstrapError {
 /// re-scan after — the function returns no value because everything the
 /// UI needs is rediscovered by `scan_vault`.
 pub fn init_vault(path: &Path) -> Result<(), BootstrapError> {
-    let canonical = validate_workdir(path)
-        .map_err(BootstrapError::InvalidPath)?;
+    let canonical = validate_workdir(path).map_err(BootstrapError::InvalidPath)?;
     let config_path = canonical.join(".vault").join("config.yml");
     if config_path.exists() {
         return Err(BootstrapError::AlreadyInitialised(
@@ -120,8 +119,7 @@ pub fn init_project(
     vault_root: &Path,
     args: &InitProjectArgs<'_>,
 ) -> Result<String, BootstrapError> {
-    let vault_root = validate_workdir(vault_root)
-        .map_err(BootstrapError::InvalidPath)?;
+    let vault_root = validate_workdir(vault_root).map_err(BootstrapError::InvalidPath)?;
 
     validate_slug(args.slug)?;
 
@@ -242,9 +240,11 @@ mod tests {
 
         init_vault(dir.path()).expect("init_vault");
 
-        let content =
-            std::fs::read_to_string(dir.path().join("00_meta/AGENTS.md")).unwrap();
-        assert_eq!(content, "PRE-EXISTING", "must not overwrite existing AGENTS.md");
+        let content = std::fs::read_to_string(dir.path().join("00_meta/AGENTS.md")).unwrap();
+        assert_eq!(
+            content, "PRE-EXISTING",
+            "must not overwrite existing AGENTS.md"
+        );
     }
 
     #[test]
@@ -264,8 +264,7 @@ mod tests {
         .expect("init_project");
 
         assert_eq!(rel, "02_projects/my-first-project/_index.md");
-        let content =
-            std::fs::read_to_string(dir.path().join(&rel)).expect("file written");
+        let content = std::fs::read_to_string(dir.path().join(&rel)).expect("file written");
         assert!(content.contains("project: my-first-project"));
         assert!(content.contains("my_role: owner"));
         assert!(content.contains("repo: https://github.com/me/repo"));
@@ -291,9 +290,8 @@ mod tests {
         )
         .expect("init_project");
 
-        let content =
-            std::fs::read_to_string(dir.path().join("02_projects/minimal/_index.md"))
-                .expect("file written");
+        let content = std::fs::read_to_string(dir.path().join("02_projects/minimal/_index.md"))
+            .expect("file written");
         assert!(!content.contains("repo:"));
         // Whitespace-only local_path is treated as absent.
         assert!(!content.contains("local_path:"));
@@ -320,7 +318,14 @@ mod tests {
     fn init_project_rejects_path_separators_in_slug() {
         let dir = tempdir().expect("tempdir");
         init_vault(dir.path()).expect("init_vault");
-        for bad in &["../escape", "with/slash", "with\\slash", ".hidden", "UPPER", "with space"] {
+        for bad in &[
+            "../escape",
+            "with/slash",
+            "with\\slash",
+            ".hidden",
+            "UPPER",
+            "with space",
+        ] {
             let err = init_project(
                 dir.path(),
                 &InitProjectArgs {

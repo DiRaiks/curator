@@ -21,8 +21,7 @@ use crate::cve::DependencyPackage;
 /// Parse the body of a `package-lock.json`. The `source` label is echoed
 /// back as [`DependencyPackage::source_lock_file`] for UI attribution.
 pub fn parse(text: &str, source: &str) -> Result<Vec<DependencyPackage>, String> {
-    let root: Value =
-        serde_json::from_str(text).map_err(|e| format!("invalid JSON: {e}"))?;
+    let root: Value = serde_json::from_str(text).map_err(|e| format!("invalid JSON: {e}"))?;
 
     let mut out: Vec<DependencyPackage> = Vec::new();
 

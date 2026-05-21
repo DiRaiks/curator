@@ -22,11 +22,7 @@ impl AppDb {
     /// Mark a recommendation as dismissed for the given vault.
     /// Idempotent — re-dismissing a row updates the timestamp without
     /// duplicating it (composite primary key).
-    pub fn dismiss_recommendation(
-        &self,
-        vault_root: &str,
-        rec_id: &str,
-    ) -> Result<(), AppDbError> {
+    pub fn dismiss_recommendation(&self, vault_root: &str, rec_id: &str) -> Result<(), AppDbError> {
         let conn = self.lock();
         conn.execute(
             r#"
@@ -41,11 +37,7 @@ impl AppDb {
     }
 
     /// Undo a dismiss. Idempotent — removing an absent row is a no-op.
-    pub fn restore_recommendation(
-        &self,
-        vault_root: &str,
-        rec_id: &str,
-    ) -> Result<(), AppDbError> {
+    pub fn restore_recommendation(&self, vault_root: &str, rec_id: &str) -> Result<(), AppDbError> {
         let conn = self.lock();
         conn.execute(
             "DELETE FROM dismissed_recommendations WHERE vault_root = ?1 AND rec_id = ?2",

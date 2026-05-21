@@ -17,8 +17,7 @@ pub(crate) fn read_head(path: &Path, max: usize) -> Option<String> {
 }
 
 pub(crate) fn pretty_stem(s: &str) -> String {
-    let trimmed = s
-        .trim_start_matches(|c: char| c.is_ascii_digit() || c == '-' || c == '_');
+    let trimmed = s.trim_start_matches(|c: char| c.is_ascii_digit() || c == '-' || c == '_');
     if trimmed.is_empty() {
         s.to_string()
     } else {

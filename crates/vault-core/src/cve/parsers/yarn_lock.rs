@@ -260,7 +260,10 @@ __metadata:
     #[test]
     fn berry_captures_unquoted_versions() {
         let pkgs = parse(BERRY_SAMPLE, "yarn.lock").unwrap();
-        let ens = pkgs.iter().find(|p| p.name == "@adraffy/ens-normalize").unwrap();
+        let ens = pkgs
+            .iter()
+            .find(|p| p.name == "@adraffy/ens-normalize")
+            .unwrap();
         assert_eq!(ens.version, "1.11.1");
         let lodash = pkgs.iter().find(|p| p.name == "lodash").unwrap();
         assert_eq!(lodash.version, "4.17.21");

@@ -185,8 +185,7 @@ fn rule_missing_canonical_files(
             category: Category::Bootstrap,
             title: "No ADRs recorded yet".into(),
             detail: Some(
-                "Capture decisions as they happen — even one ADR is more useful than zero."
-                    .into(),
+                "Capture decisions as they happen — even one ADR is more useful than zero.".into(),
             ),
             project_slug: Some(project.slug.clone()),
             suggested_skill: None,
@@ -203,16 +202,16 @@ fn rule_kb_stale(
     repo: &SourceRepoInspection,
     out: &mut Vec<Recommendation>,
 ) {
-    let Some(last_commit) = repo.last_commit_unix_secs else { return };
+    let Some(last_commit) = repo.last_commit_unix_secs else {
+        return;
+    };
     let now = now_unix_secs();
     // Only fire if the repo has moved recently — old projects shouldn't
     // nag forever just because they're old.
     if now - last_commit > KB_STALE_REPO_WINDOW_DAYS * SECONDS_PER_DAY {
         return;
     }
-    let journal_dir = vault_root
-        .join(&project.path)
-        .join("journal");
+    let journal_dir = vault_root.join(&project.path).join("journal");
     let newest_journal = newest_mtime_in_dir(&journal_dir);
 
     let needs_journal = match newest_journal {
@@ -244,11 +243,7 @@ fn rule_kb_stale(
 
 // ---------- Rule 3: stub _index.md ----------
 
-fn rule_stub_index(
-    vault_root: &Path,
-    project: &Project,
-    out: &mut Vec<Recommendation>,
-) {
+fn rule_stub_index(vault_root: &Path, project: &Project, out: &mut Vec<Recommendation>) {
     let path = vault_root.join(&project.index_file);
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
@@ -304,7 +299,9 @@ fn strip_frontmatter(content: &str) -> &str {
     let after_open = content
         .strip_prefix("---\n")
         .or_else(|| content.strip_prefix("---\r\n"));
-    let Some(after) = after_open else { return content };
+    let Some(after) = after_open else {
+        return content;
+    };
     if let Some(idx) = after.find("\n---\n") {
         return &after[(idx + 5)..];
     }
@@ -337,11 +334,7 @@ fn rule_no_local_path(project: &Project, out: &mut Vec<Recommendation>) {
 
 // ---------- Rule 5: repo dirty (info) ----------
 
-fn rule_repo_dirty(
-    project: &Project,
-    repo: &SourceRepoInspection,
-    out: &mut Vec<Recommendation>,
-) {
+fn rule_repo_dirty(project: &Project, repo: &SourceRepoInspection, out: &mut Vec<Recommendation>) {
     if repo.dirty != Some(true) {
         return;
     }
@@ -362,11 +355,7 @@ fn rule_repo_dirty(
 
 // ---------- Rule 6: drafts piling up ----------
 
-fn rule_drafts_piling_project(
-    scan: &ScanResult,
-    project: &Project,
-    out: &mut Vec<Recommendation>,
-) {
+fn rule_drafts_piling_project(scan: &ScanResult, project: &Project, out: &mut Vec<Recommendation>) {
     let count = scan
         .drafts
         .iter()
@@ -400,7 +389,8 @@ fn rule_drafts_piling_global(scan: &ScanResult, out: &mut Vec<Recommendation>) {
         category: Category::Curation,
         title: format!("{total} drafts pending review across the vault"),
         detail: Some(
-            "Curating drafts in batches keeps the knowledge graph clean. Open the Drafts tab.".into(),
+            "Curating drafts in batches keeps the knowledge graph clean. Open the Drafts tab."
+                .into(),
         ),
         project_slug: None,
         suggested_skill: None,
@@ -416,13 +406,17 @@ fn rule_stale_updated(
     repo: &SourceRepoInspection,
     out: &mut Vec<Recommendation>,
 ) {
-    let Some(last_commit) = repo.last_commit_unix_secs else { return };
+    let Some(last_commit) = repo.last_commit_unix_secs else {
+        return;
+    };
 
     // Find `_index.md` in markdown_files to read its frontmatter
     // `updated` date. We don't keep parsed frontmatter on MarkdownFile, so
     // we re-read the file from disk — minor cost, single file.
     let updated_secs = read_frontmatter_updated_unix(scan, project);
-    let Some(updated_secs) = updated_secs else { return };
+    let Some(updated_secs) = updated_secs else {
+        return;
+    };
 
     if last_commit - updated_secs <= STALE_INDEX_DAYS * SECONDS_PER_DAY {
         return;
@@ -609,13 +603,14 @@ mod tests {
         let mut out = Vec::new();
         rule_missing_canonical_files(&scan, &p, &mut out);
         assert!(out.iter().any(|r| r.id == "x:bootstrap:domain"));
-        assert!(out
-            .iter()
-            .find(|r| r.id == "x:bootstrap:domain")
-            .unwrap()
-            .suggested_skill
-            .as_deref()
-            == Some("domain"));
+        assert!(
+            out.iter()
+                .find(|r| r.id == "x:bootstrap:domain")
+                .unwrap()
+                .suggested_skill
+                .as_deref()
+                == Some("domain")
+        );
     }
 
     #[test]
@@ -623,8 +618,7 @@ mod tests {
         let mut scan = empty_scan();
         let p = project("x", Some("/tmp/repo"));
         scan.projects.push(p.clone());
-        scan.markdown_files
-            .push(md_file("02_projects/x/domain.md"));
+        scan.markdown_files.push(md_file("02_projects/x/domain.md"));
         scan.markdown_files
             .push(md_file("02_projects/x/decisions/0001-init.md"));
         let mut out = Vec::new();

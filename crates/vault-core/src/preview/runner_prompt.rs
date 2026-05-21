@@ -105,14 +105,10 @@ pub(super) fn strip_frontmatter_block(content: &str) -> String {
         return content.to_string();
     };
     if let Some(idx) = after_open.find("\n---\n") {
-        return after_open[(idx + 5)..]
-            .trim_start_matches('\n')
-            .to_string();
+        return after_open[(idx + 5)..].trim_start_matches('\n').to_string();
     }
     if let Some(idx) = after_open.find("\n---\r\n") {
-        return after_open[(idx + 6)..]
-            .trim_start_matches('\n')
-            .to_string();
+        return after_open[(idx + 6)..].trim_start_matches('\n').to_string();
     }
     content.to_string()
 }
@@ -135,17 +131,13 @@ pub(super) fn detect_unresolved_placeholders(s: &str) -> Vec<String> {
                 continue;
             }
         };
-        if i + 1 >= bytes.len()
-            || !(bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_')
-        {
+        if i + 1 >= bytes.len() || !(bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_') {
             i += 1;
             continue;
         }
         let mut j = i + 1;
         while j < bytes.len()
-            && (bytes[j].is_ascii_alphanumeric()
-                || bytes[j] == b'_'
-                || bytes[j] == b'-')
+            && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_' || bytes[j] == b'-')
         {
             j += 1;
         }
@@ -194,11 +186,7 @@ pub(super) fn build_external_runner_prompt(
     out.push_str("## Project\n\n");
     let _ = writeln!(out, "- project: `{}`", project.slug);
     let _ = writeln!(out, "- vault root: `{}`", vroot);
-    let _ = writeln!(
-        out,
-        "- project vault folder: `{}/{}/`",
-        vroot, project.path
-    );
+    let _ = writeln!(out, "- project vault folder: `{}/{}/`", vroot, project.path);
     if let Some(o) = resolved_output_file {
         let _ = writeln!(out, "- output_file: `{}/{}`", vroot, o);
     } else {
@@ -233,13 +221,21 @@ pub(super) fn build_external_runner_prompt(
 
     out.push_str("## Required first reads\n\n");
     out.push_str("Before doing anything else, read:\n\n");
-    let _ = writeln!(out, "1. `{}/00_meta/AGENTS.md` — vault conventions and agent rules", vroot);
+    let _ = writeln!(
+        out,
+        "1. `{}/00_meta/AGENTS.md` — vault conventions and agent rules",
+        vroot
+    );
     let _ = writeln!(
         out,
         "2. `{}/{}` — project overview",
         vroot, project.index_file
     );
-    let _ = writeln!(out, "3. `{}/{}` — selected workflow prompt", vroot, prompt.path);
+    let _ = writeln!(
+        out,
+        "3. `{}/{}` — selected workflow prompt",
+        vroot, prompt.path
+    );
     out.push_str(
         "\nIf any of these are not accessible, ask the user for access or to paste the contents.\n\n",
     );
@@ -264,9 +260,7 @@ pub(super) fn build_external_runner_prompt(
     out.push_str("If you determine that another repository is needed:\n\n");
     out.push_str("- do not search the user's filesystem broadly\n");
     out.push_str("- do not guess hidden paths\n");
-    out.push_str(
-        "- ask explicitly under `## Access requests` (see Output contract below)\n\n",
-    );
+    out.push_str("- ask explicitly under `## Access requests` (see Output contract below)\n\n");
 
     out.push_str("## Task instructions\n\n");
     out.push_str(cleaned_materialized_body.trim());
@@ -291,9 +285,7 @@ pub(super) fn build_external_runner_prompt(
     out.push_str(
         "If the target file does not exist: create it with valid YAML frontmatter following vault conventions.\n\n",
     );
-    out.push_str(
-        "If it exists: edit in place, preserving useful existing structure.\n\n",
-    );
+    out.push_str("If it exists: edit in place, preserving useful existing structure.\n\n");
     out.push_str(
         "If information is unclear, do not invent facts. Add a section\n`## Questions for developer` at the bottom of the file (or in a\nsibling note if you didn't write a primary file) so the question lives\nalongside the work.\n\n",
     );
@@ -344,10 +336,7 @@ mod tests {
     #[test]
     fn materialize_uses_local_path_for_lido_legacy_pattern() {
         let v = vars("subgraph", Some("/Users/me/Work/Lido/subgraph"));
-        let out = materialize_prompt_body(
-            "cd /Users/andreifi/Work/Lido/<repo-path> && ls",
-            &v,
-        );
+        let out = materialize_prompt_body("cd /Users/andreifi/Work/Lido/<repo-path> && ls", &v);
         assert_eq!(out, "cd /Users/me/Work/Lido/subgraph && ls");
         assert!(!out.contains("/Users//Users"));
     }
@@ -378,16 +367,13 @@ mod tests {
 
     #[test]
     fn detect_unresolved_finds_angle_and_curly() {
-        let placeholders = detect_unresolved_placeholders(
-            "a <foo> b {bar_baz} c <baz-quux> d",
-        );
+        let placeholders = detect_unresolved_placeholders("a <foo> b {bar_baz} c <baz-quux> d");
         assert_eq!(placeholders, vec!["<foo>", "{bar_baz}", "<baz-quux>"]);
     }
 
     #[test]
     fn detect_unresolved_ignores_numeric_and_lone_brackets() {
-        let placeholders =
-            detect_unresolved_placeholders("at <3, {1}, <>, x < y, {");
+        let placeholders = detect_unresolved_placeholders("at <3, {1}, <>, x < y, {");
         assert!(placeholders.is_empty(), "got: {:?}", placeholders);
     }
 }

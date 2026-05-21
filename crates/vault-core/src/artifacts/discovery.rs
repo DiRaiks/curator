@@ -282,8 +282,7 @@ pub(crate) fn discover_projects(
         if slug.starts_with('_') {
             continue;
         }
-        let project_rel =
-            rel_of(root, &sub).unwrap_or_else(|| format!("02_projects/{slug}"));
+        let project_rel = rel_of(root, &sub).unwrap_or_else(|| format!("02_projects/{slug}"));
         let index = sub.join("_index.md");
         if !index.is_file() {
             diagnostics.push(Diagnostic {
@@ -293,8 +292,7 @@ pub(crate) fn discover_projects(
             });
             continue;
         }
-        let index_rel =
-            rel_of(root, &index).unwrap_or_else(|| format!("{project_rel}/_index.md"));
+        let index_rel = rel_of(root, &index).unwrap_or_else(|| format!("{project_rel}/_index.md"));
         let mut project = Project {
             slug,
             path: project_rel,

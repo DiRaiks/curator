@@ -22,3 +22,5 @@ apps/desktop/src-tauri/gen/
 # Env
 .env
 .env.local
+
+/design

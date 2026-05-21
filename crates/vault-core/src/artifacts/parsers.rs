@@ -13,8 +13,7 @@ use crate::types::{ArtifactKind, WorkflowArtifact};
 use crate::util::pretty_stem;
 
 pub(super) fn parse_vault_skill(path: &Path, rel: &str) -> Result<WorkflowArtifact, String> {
-    let m = read_frontmatter_full(path)
-        .ok_or_else(|| "missing YAML frontmatter".to_string())?;
+    let m = read_frontmatter_full(path).ok_or_else(|| "missing YAML frontmatter".to_string())?;
     let id = fm_string(&m, "id").ok_or_else(|| "missing `id`".to_string())?;
     let title = fm_string(&m, "title").ok_or_else(|| "missing `title`".to_string())?;
     Ok(WorkflowArtifact {
@@ -106,10 +105,7 @@ pub(super) fn parse_claude_agent(path: &Path, rel: &str) -> WorkflowArtifact {
         kind: ArtifactKind::ClaudeAgent,
         runnable: artifact_runnable(&ArtifactKind::ClaudeAgent),
         id: id.clone(),
-        title: m
-            .as_ref()
-            .and_then(|m| fm_string(m, "title"))
-            .unwrap_or(id),
+        title: m.as_ref().and_then(|m| fm_string(m, "title")).unwrap_or(id),
         description: m.as_ref().and_then(|m| fm_string(m, "description")),
         version: None,
         status: None,

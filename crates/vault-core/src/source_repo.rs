@@ -97,17 +97,14 @@ pub fn inspect_source_repo(local_path: &Path) -> SourceRepoInspection {
         };
     }
 
-    let is_git_repo = run_git(local_path, &["rev-parse", "--is-inside-work-tree"])
-        .as_deref()
-        == Some("true");
+    let is_git_repo =
+        run_git(local_path, &["rev-parse", "--is-inside-work-tree"]).as_deref() == Some("true");
 
     let (branch, dirty, short_commit, last_commit_unix_secs) = if is_git_repo {
-        let branch = run_git(local_path, &["branch", "--show-current"])
-            .filter(|s| !s.is_empty());
-        let dirty = run_git(local_path, &["status", "--porcelain"])
-            .map(|s| !s.is_empty());
-        let commit = run_git(local_path, &["rev-parse", "--short", "HEAD"])
-            .filter(|s| !s.is_empty());
+        let branch = run_git(local_path, &["branch", "--show-current"]).filter(|s| !s.is_empty());
+        let dirty = run_git(local_path, &["status", "--porcelain"]).map(|s| !s.is_empty());
+        let commit =
+            run_git(local_path, &["rev-parse", "--short", "HEAD"]).filter(|s| !s.is_empty());
         // `%ct` = committer date, unix timestamp. Newer than %at (author
         // date) for rebase / cherry-pick scenarios, which is what we want
         // for "when did this branch last move".
@@ -188,10 +185,7 @@ fn read_repo_top_level(root: &Path) -> Vec<TopLevelEntry> {
         if name.starts_with(".env") || name.starts_with("._") {
             continue;
         }
-        let is_dir = entry
-            .file_type()
-            .map(|t| t.is_dir())
-            .unwrap_or(false);
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
         entries.push(TopLevelEntry { name, is_dir });
         if entries.len() >= MAX_TOPLEVEL {
             break;

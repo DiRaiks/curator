@@ -112,7 +112,12 @@ pub fn start_watch(
         watch_one(&mut debouncer, root)?;
     }
 
-    Ok((WatchToken { _debouncer: debouncer }, rx))
+    Ok((
+        WatchToken {
+            _debouncer: debouncer,
+        },
+        rx,
+    ))
 }
 
 fn watch_one(

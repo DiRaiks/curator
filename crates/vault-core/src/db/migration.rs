@@ -63,10 +63,7 @@ pub struct LegacyJsonReport {
 /// only — the others still get a chance to import. The function as a
 /// whole returns `Err` only when something truly unexpected happens
 /// (e.g. the DB itself errored).
-pub fn migrate_legacy_json(
-    db: &AppDb,
-    data_dir: &Path,
-) -> Result<LegacyJsonReport, AppDbError> {
+pub fn migrate_legacy_json(db: &AppDb, data_dir: &Path) -> Result<LegacyJsonReport, AppDbError> {
     let mut report = LegacyJsonReport::default();
 
     // Dismissed recommendations -------------------------------------
@@ -77,11 +74,9 @@ pub fn migrate_legacy_json(
         // JSON file (e.g. by restoring a backup).
         let empty: i64 = {
             let conn = db.lock();
-            conn.query_row(
-                "SELECT COUNT(*) FROM dismissed_recommendations",
-                [],
-                |r| r.get(0),
-            )?
+            conn.query_row("SELECT COUNT(*) FROM dismissed_recommendations", [], |r| {
+                r.get(0)
+            })?
         };
         if empty == 0 {
             match read_json::<LegacyDismissedFile>(&dismissed_path) {

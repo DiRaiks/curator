@@ -294,9 +294,7 @@ impl AppDb {
                         title: row.get(6)?,
                         started_at_ms: row.get(7)?,
                         ended_at_ms: row.get(8)?,
-                        exit_success: row
-                            .get::<_, Option<i64>>(9)?
-                            .map(|v| v != 0),
+                        exit_success: row.get::<_, Option<i64>>(9)?.map(|v| v != 0),
                         input_tokens: row.get(10)?,
                         output_tokens: row.get(11)?,
                         cost_usd: row.get(12)?,

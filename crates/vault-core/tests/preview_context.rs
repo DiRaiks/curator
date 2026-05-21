@@ -6,9 +6,7 @@
 
 use std::path::PathBuf;
 
-use vault_core::{
-    preview_context, IncludeReason, WarningKind,
-};
+use vault_core::{preview_context, IncludeReason, WarningKind};
 
 fn demo_vault_path() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -39,8 +37,7 @@ fn preview_for_threat_model_on_sample_project() {
         "demo sample-project has no security/threat-model.md"
     );
 
-    let included_paths: Vec<&str> =
-        r.included.iter().map(|f| f.path.as_str()).collect();
+    let included_paths: Vec<&str> = r.included.iter().map(|f| f.path.as_str()).collect();
 
     // Always-include set.
     assert!(
@@ -71,8 +68,7 @@ fn preview_for_threat_model_on_sample_project() {
         "must not include journal/"
     );
     assert!(
-        !included_paths
-            .contains(&"02_projects/sample-project/private-decision-2026-05-17.md"),
+        !included_paths.contains(&"02_projects/sample-project/private-decision-2026-05-17.md"),
         "fm scope override must keep private-decision out"
     );
 
@@ -111,8 +107,7 @@ fn preview_for_threat_model_on_sample_project() {
     assert!(r.source_repo.local_path.is_some());
 
     // Warnings.
-    let warning_kinds: Vec<&WarningKind> =
-        r.warnings.iter().map(|w| &w.kind).collect();
+    let warning_kinds: Vec<&WarningKind> = r.warnings.iter().map(|w| &w.kind).collect();
     assert!(
         warning_kinds.contains(&&WarningKind::OutputFileMissing),
         "missing output_file should be flagged"

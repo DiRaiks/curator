@@ -34,8 +34,7 @@ fn unique_temp_vault(tag: &str) -> PathBuf {
 
 #[test]
 fn read_existing_md_file_in_demo_vault() {
-    let content =
-        read_markdown_file(&demo_vault_path(), "00_meta/AGENTS.md").expect("read ok");
+    let content = read_markdown_file(&demo_vault_path(), "00_meta/AGENTS.md").expect("read ok");
     assert!(
         content.contains("Instructions for AI agents"),
         "expected demo AGENTS.md content"
@@ -73,8 +72,8 @@ fn write_rejects_missing_file() {
 #[test]
 fn write_rejects_path_outside_vault() {
     let temp = unique_temp_vault("write-outside");
-    let err = write_markdown_file(&temp, "../escape.md", "data")
-        .expect_err("traversal must be rejected");
+    let err =
+        write_markdown_file(&temp, "../escape.md", "data").expect_err("traversal must be rejected");
     assert!(matches!(err, MarkdownFileError::InvalidPath(_)));
     let _ = std::fs::remove_dir_all(&temp);
 }
@@ -84,8 +83,7 @@ fn write_rejects_git_path() {
     let temp = unique_temp_vault("write-git");
     std::fs::create_dir_all(temp.join(".git")).unwrap();
     std::fs::write(temp.join(".git/test.md"), "x").unwrap();
-    let err = write_markdown_file(&temp, ".git/test.md", "x")
-        .expect_err(".git must be rejected");
+    let err = write_markdown_file(&temp, ".git/test.md", "x").expect_err(".git must be rejected");
     assert!(matches!(err, MarkdownFileError::InvalidPath(_)));
     let _ = std::fs::remove_dir_all(&temp);
 }
@@ -114,8 +112,8 @@ fn write_rejects_root_claude_path() {
 #[test]
 fn write_rejects_bak_suffix() {
     let temp = unique_temp_vault("write-bak");
-    let err = write_markdown_file(&temp, "foo.md.bak", "x")
-        .expect_err(".bak suffix must be rejected");
+    let err =
+        write_markdown_file(&temp, "foo.md.bak", "x").expect_err(".bak suffix must be rejected");
     assert!(matches!(err, MarkdownFileError::InvalidPath(_)));
     let _ = std::fs::remove_dir_all(&temp);
 }
@@ -130,8 +128,7 @@ fn create_writes_template() {
     assert!(content.contains("# new-note"));
     assert!(content.contains("TODO\n"));
 
-    let on_disk =
-        std::fs::read_to_string(temp.join("sub/dir/new-note.md")).expect("file on disk");
+    let on_disk = std::fs::read_to_string(temp.join("sub/dir/new-note.md")).expect("file on disk");
     assert_eq!(on_disk, content);
     let _ = std::fs::remove_dir_all(&temp);
 }

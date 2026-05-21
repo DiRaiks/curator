@@ -162,9 +162,9 @@ fn validate_md_path(vault_root: &Path, rel: &str) -> Result<PathBuf, MarkdownFil
     // Canonicalize the vault root, then validate that the deepest existing
     // ancestor of the target path still lives inside it. This catches
     // symlinks-escape attempts even when the target file does not exist yet.
-    let canonical_vault = vault_root.canonicalize().map_err(|e| {
-        MarkdownFileError::InvalidPath(format!("vault root not accessible: {e}"))
-    })?;
+    let canonical_vault = vault_root
+        .canonicalize()
+        .map_err(|e| MarkdownFileError::InvalidPath(format!("vault root not accessible: {e}")))?;
     let abs = canonical_vault.join(&rel_norm);
     let existing = canonicalize_existing_ancestor(&abs)?;
     if !existing.starts_with(&canonical_vault) {
@@ -208,10 +208,7 @@ fn canonicalize_existing_ancestor(path: &Path) -> Result<PathBuf, MarkdownFileEr
 /// destroy whatever was there.
 ///
 /// Returns the vault-relative path the draft landed at.
-pub fn promote_draft(
-    vault_root: &Path,
-    draft_path: &str,
-) -> Result<String, MarkdownFileError> {
+pub fn promote_draft(vault_root: &Path, draft_path: &str) -> Result<String, MarkdownFileError> {
     // Load + parse the draft.
     let abs_draft = validate_md_path(vault_root, draft_path)?;
     if !abs_draft.is_file() {
@@ -220,9 +217,7 @@ pub fn promote_draft(
     let content = std::fs::read_to_string(&abs_draft)?;
 
     let (raw_fm, body) = split_frontmatter(&content).ok_or_else(|| {
-        MarkdownFileError::InvalidPath(
-            "draft has no YAML frontmatter; cannot promote".into(),
-        )
+        MarkdownFileError::InvalidPath("draft has no YAML frontmatter; cannot promote".into())
     })?;
 
     let mut map: serde_yaml_ng::Mapping = serde_yaml_ng::from_str(raw_fm)
@@ -238,9 +233,7 @@ pub fn promote_draft(
     let dest_rel = dest_value
         .as_str()
         .ok_or_else(|| {
-            MarkdownFileError::InvalidPath(
-                "`proposed_destination` must be a string".into(),
-            )
+            MarkdownFileError::InvalidPath("`proposed_destination` must be a string".into())
         })?
         .to_string();
 
@@ -248,10 +241,7 @@ pub fn promote_draft(
     // an audit trail; `source_run` is kept (it points back at the run
     // that produced this note) but no longer needed as a draft signal.
     let status_key = serde_yaml_ng::Value::String("status".into());
-    map.insert(
-        status_key,
-        serde_yaml_ng::Value::String("promoted".into()),
-    );
+    map.insert(status_key, serde_yaml_ng::Value::String("promoted".into()));
     // Record what the draft was previously at — useful in commit logs.
     let provenance_key = serde_yaml_ng::Value::String("promoted_from".into());
     map.insert(
@@ -286,10 +276,7 @@ pub fn promote_draft(
 /// Delete a draft from the vault. Same path validation as the other
 /// markdown_io entry points; rejects writes into forbidden zones so a
 /// stray "discard" can't be tricked into deleting a system file.
-pub fn discard_draft(
-    vault_root: &Path,
-    draft_path: &str,
-) -> Result<(), MarkdownFileError> {
+pub fn discard_draft(vault_root: &Path, draft_path: &str) -> Result<(), MarkdownFileError> {
     let abs = validate_md_path(vault_root, draft_path)?;
     if !abs.is_file() {
         return Err(MarkdownFileError::NotFound(draft_path.to_string()));
@@ -352,8 +339,8 @@ mod draft_tests {
             "# Reentrancy\n\nThe pattern observed was…\n",
         );
 
-        let dest = promote_draft(&vault, "01_inbox/_drafts/reentrancy-pattern.md")
-            .expect("promote");
+        let dest =
+            promote_draft(&vault, "01_inbox/_drafts/reentrancy-pattern.md").expect("promote");
         assert_eq!(dest, "03_areas/patterns/reentrancy/wcKeyCrops.md");
 
         // Original draft is gone.
@@ -362,10 +349,9 @@ mod draft_tests {
             .exists());
 
         // Destination has the body and stripped/rewritten frontmatter.
-        let promoted = std::fs::read_to_string(
-            vault.join("03_areas/patterns/reentrancy/wcKeyCrops.md"),
-        )
-        .unwrap();
+        let promoted =
+            std::fs::read_to_string(vault.join("03_areas/patterns/reentrancy/wcKeyCrops.md"))
+                .unwrap();
         assert!(promoted.contains("# Reentrancy"));
         assert!(!promoted.contains("proposed_destination"));
         assert!(promoted.contains("status: promoted"));
@@ -393,15 +379,14 @@ mod draft_tests {
             "existing body",
         );
 
-        let err = promote_draft(&vault, "01_inbox/_drafts/x.md")
-            .expect_err("must reject overwrite");
+        let err =
+            promote_draft(&vault, "01_inbox/_drafts/x.md").expect_err("must reject overwrite");
         assert!(matches!(err, MarkdownFileError::AlreadyExists(_)));
 
         // Draft survives — promotion was atomic-failed.
         assert!(vault.join("01_inbox/_drafts/x.md").exists());
         // Existing destination untouched.
-        let existing = std::fs::read_to_string(vault.join("03_areas/patterns/x.md"))
-            .unwrap();
+        let existing = std::fs::read_to_string(vault.join("03_areas/patterns/x.md")).unwrap();
         assert!(existing.contains("existing body"));
 
         let _ = std::fs::remove_dir_all(&vault);
@@ -416,8 +401,7 @@ mod draft_tests {
             "status: draft-from-agent\n",
             "body",
         );
-        let err = promote_draft(&vault, "01_inbox/_drafts/no-dest.md")
-            .expect_err("must reject");
+        let err = promote_draft(&vault, "01_inbox/_drafts/no-dest.md").expect_err("must reject");
         assert!(matches!(err, MarkdownFileError::InvalidPath(_)));
         // Draft survives.
         assert!(vault.join("01_inbox/_drafts/no-dest.md").exists());

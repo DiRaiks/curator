@@ -26,10 +26,10 @@ pub use types::*;
 mod config;
 pub use config::VAULT_FORMAT_VERSION_MAJOR;
 
-mod util;
+mod artifacts;
 mod frontmatter;
 mod scope;
-mod artifacts;
+mod util;
 
 mod scan;
 pub use scan::{scan_vault, ScanError};

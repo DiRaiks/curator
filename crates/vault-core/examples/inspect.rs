@@ -8,9 +8,7 @@ use std::env;
 use vault_core::inspect_source_repo;
 
 fn main() {
-    let path = env::args()
-        .nth(1)
-        .expect("usage: inspect <local_path>");
+    let path = env::args().nth(1).expect("usage: inspect <local_path>");
     let r = inspect_source_repo(std::path::Path::new(&path));
 
     println!("local_path:  {}", r.local_path);

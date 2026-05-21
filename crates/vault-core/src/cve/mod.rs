@@ -103,12 +103,12 @@ pub enum CveScanError {
 pub fn scan_project_vulnerabilities(
     project_root: &Path,
 ) -> Result<ProjectVulnerabilityScan, CveScanError> {
-    let canon = project_root.canonicalize().map_err(|e| {
-        CveScanError::PathNotAccessible {
+    let canon = project_root
+        .canonicalize()
+        .map_err(|e| CveScanError::PathNotAccessible {
             path: project_root.display().to_string(),
             source: e,
-        }
-    })?;
+        })?;
 
     let mut warnings: Vec<String> = Vec::new();
     let mut lock_files: Vec<String> = Vec::new();
@@ -152,12 +152,14 @@ pub fn scan_project_vulnerabilities(
     // the same monorepo can name the same package. We keep the first
     // sighting's `source_lock_file` for attribution.
     packages.sort_by(|a, b| {
-        (a.ecosystem.as_str(), a.name.as_str(), a.version.as_str())
-            .cmp(&(b.ecosystem.as_str(), b.name.as_str(), b.version.as_str()))
+        (a.ecosystem.as_str(), a.name.as_str(), a.version.as_str()).cmp(&(
+            b.ecosystem.as_str(),
+            b.name.as_str(),
+            b.version.as_str(),
+        ))
     });
-    packages.dedup_by(|a, b| {
-        a.ecosystem == b.ecosystem && a.name == b.name && a.version == b.version
-    });
+    packages
+        .dedup_by(|a, b| a.ecosystem == b.ecosystem && a.name == b.name && a.version == b.version);
 
     let packages_scanned = packages.len();
 

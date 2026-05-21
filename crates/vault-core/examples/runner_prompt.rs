@@ -15,8 +15,7 @@ fn main() {
     let project = env::args().nth(2).expect("missing project slug");
     let prompt = env::args().nth(3).expect("missing prompt id");
 
-    let r = preview_context(std::path::Path::new(&vault), &project, &prompt)
-        .expect("preview ok");
+    let r = preview_context(std::path::Path::new(&vault), &project, &prompt).expect("preview ok");
     print!("{}", r.external_runner_prompt);
     if !r.unresolved_placeholders.is_empty() {
         eprintln!(

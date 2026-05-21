@@ -35,9 +35,7 @@ fn demo_vault_matches_expectations() {
     assert!(!r.has_git, "demo vault has no .git/");
 
     // Workflow artifact catalogue per kind.
-    let count_kind = |k: ArtifactKind| {
-        r.artifacts.iter().filter(|a| a.kind == k).count()
-    };
+    let count_kind = |k: ArtifactKind| r.artifacts.iter().filter(|a| a.kind == k).count();
     assert_eq!(
         count_kind(ArtifactKind::AgentPrompt),
         3,
@@ -128,8 +126,7 @@ fn demo_vault_matches_expectations() {
     );
 
     // Projects unchanged.
-    let project_slugs: Vec<&str> =
-        r.projects.iter().map(|p| p.slug.as_str()).collect();
+    let project_slugs: Vec<&str> = r.projects.iter().map(|p| p.slug.as_str()).collect();
     assert_eq!(project_slugs, vec!["empty-project", "sample-project"]);
 
     // Document scope (sanity).
@@ -174,13 +171,13 @@ fn demo_vault_matches_expectations() {
 
     // .bak and warning diagnostics survive.
     let has_warning_no_index = r.diagnostics.iter().any(|d| {
-        matches!(d.level, DiagnosticLevel::Warning)
-            && d.message.contains("no-index-project")
+        matches!(d.level, DiagnosticLevel::Warning) && d.message.contains("no-index-project")
     });
     assert!(has_warning_no_index);
-    let has_bak_info = r.diagnostics.iter().any(|d| {
-        matches!(d.level, DiagnosticLevel::Info) && d.message.contains(".bak")
-    });
+    let has_bak_info = r
+        .diagnostics
+        .iter()
+        .any(|d| matches!(d.level, DiagnosticLevel::Info) && d.message.contains(".bak"));
     assert!(has_bak_info);
 
     let bak_indexed = r.markdown_files.iter().any(|f| f.path.ends_with(".bak"));

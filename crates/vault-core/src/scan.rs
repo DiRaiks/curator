@@ -12,14 +12,12 @@ use thiserror::Error;
 use walkdir::WalkDir;
 
 use crate::artifacts::{
-    artifact_kind_label, discover_agent_prompts, discover_claude_agents,
-    discover_claude_commands, discover_claude_rules, discover_claude_skills, discover_projects,
-    discover_vault_skills, kind_sort_index,
+    artifact_kind_label, discover_agent_prompts, discover_claude_agents, discover_claude_commands,
+    discover_claude_rules, discover_claude_skills, discover_projects, discover_vault_skills,
+    kind_sort_index,
 };
 use crate::config::{read_vault_config, VAULT_FORMAT_VERSION_MAJOR};
-use crate::frontmatter::{
-    fm_bool, fm_string, parse_frontmatter_from_head, FRONTMATTER_HEAD_BYTES,
-};
+use crate::frontmatter::{fm_bool, fm_string, parse_frontmatter_from_head, FRONTMATTER_HEAD_BYTES};
 use crate::scope::{compute_scope, scope_label, zone_sort_priority};
 use crate::types::{
     ArtifactKind, Diagnostic, DiagnosticLevel, Draft, MarkdownFile, Project, ScanResult, Scope,
@@ -143,8 +141,9 @@ pub fn scan_vault(root: &Path) -> Result<ScanResult, ScanError> {
         let (scope, zone_root) = compute_scope(&rel, fm.as_ref());
         let sensitivity = fm.as_ref().and_then(|m| fm_string(m, "sensitivity"));
         let audience = fm.as_ref().and_then(|m| fm_string(m, "audience"));
-        let include_in_ai_context =
-            fm.as_ref().and_then(|m| fm_bool(m, "include_in_ai_context"));
+        let include_in_ai_context = fm
+            .as_ref()
+            .and_then(|m| fm_bool(m, "include_in_ai_context"));
         let note_type = fm.as_ref().and_then(|m| fm_string(m, "type"));
         let project_fm = fm.as_ref().and_then(|m| fm_string(m, "project"));
 

@@ -15,8 +15,7 @@ fn main() {
     let project = args.next().expect("missing project slug");
     let prompt = args.next().expect("missing prompt id");
 
-    let p = preview_context(std::path::Path::new(&vault), &project, &prompt)
-        .expect("preview ok");
+    let p = preview_context(std::path::Path::new(&vault), &project, &prompt).expect("preview ok");
 
     println!(
         "project={} prompt={} output_file={:?} exists={}",
@@ -47,11 +46,7 @@ fn main() {
         IncludeReason::ProjectDocument,
         IncludeReason::ExistingOutputFile,
     ] {
-        let files: Vec<_> = p
-            .included
-            .iter()
-            .filter(|f| f.reason == reason)
-            .collect();
+        let files: Vec<_> = p.included.iter().filter(|f| f.reason == reason).collect();
         if files.is_empty() {
             continue;
         }

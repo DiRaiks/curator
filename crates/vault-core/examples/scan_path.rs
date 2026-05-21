@@ -22,8 +22,7 @@ fn main() {
     );
 
     println!("--- artifacts by kind ---");
-    let mut by_kind: std::collections::BTreeMap<String, usize> =
-        std::collections::BTreeMap::new();
+    let mut by_kind: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for a in &r.artifacts {
         let label = match &a.kind {
             ArtifactKind::AgentPrompt => "agent-prompt",

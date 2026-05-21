@@ -17,7 +17,7 @@ use std::path::Path;
 use thiserror::Error;
 use walkdir::WalkDir;
 
-use crate::scan::{scan_vault, is_pruned, ScanError};
+use crate::scan::{is_pruned, scan_vault, ScanError};
 use crate::types::{
     ContextPreview, ExcludedCounts, IncludeReason, IncludedFile, PreviewWarning, Scope,
     SourceRepoStatus, WarningKind,
@@ -74,10 +74,7 @@ pub fn preview_context(
     if !prompt.runnable {
         warnings.push(PreviewWarning {
             kind: WarningKind::PromptNotRunnable,
-            message: format!(
-                "selected prompt `{}` is not marked runnable",
-                prompt.id
-            ),
+            message: format!("selected prompt `{}` is not marked runnable", prompt.id),
             path: Some(prompt.path.clone()),
         });
     }
@@ -135,10 +132,7 @@ pub fn preview_context(
             if !output_exists {
                 warnings.push(PreviewWarning {
                     kind: WarningKind::OutputFileMissing,
-                    message: format!(
-                        "output_file `{}` does not exist yet",
-                        resolved
-                    ),
+                    message: format!("output_file `{}` does not exist yet", resolved),
                     path: Some(resolved.clone()),
                 });
             }
@@ -166,8 +160,7 @@ pub fn preview_context(
         reason: IncludeReason::SelectedPrompt,
     });
 
-    if r
-        .markdown_files
+    if r.markdown_files
         .iter()
         .any(|f| f.path == project.index_file)
     {
@@ -215,8 +208,7 @@ pub fn preview_context(
     }
 
     // Static-policy exclusions: `*.bak`, `.env*`, `*.pem`, `*.key`.
-    let (bak_count, ignored_count) =
-        count_static_excluded_in_project(vault_root, &project.path);
+    let (bak_count, ignored_count) = count_static_excluded_in_project(vault_root, &project.path);
     excluded.bak = bak_count;
     excluded.ignored_path += ignored_count;
 
@@ -233,8 +225,7 @@ pub fn preview_context(
     };
 
     // ---------- External runner prompt ----------
-    let raw_body = std::fs::read_to_string(vault_root.join(&prompt.path))
-        .unwrap_or_default();
+    let raw_body = std::fs::read_to_string(vault_root.join(&prompt.path)).unwrap_or_default();
     let body_no_fm = strip_frontmatter_block(&raw_body);
     let vars = MaterializeVars {
         slug: &project.slug,
