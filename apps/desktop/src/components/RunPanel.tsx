@@ -98,6 +98,24 @@ const MAX_RETAINED_LINES = 5000;
 /** Sentinel scope value for "no project — run inside the vault". */
 const VAULT_SCOPE = "__vault__";
 
+/** Preamble injected before the user's prompt when the privacy toggle is
+ *  on. Soft enforcement: the agent has read access to the full vault via
+ *  --add-dir, so this is a behavioural rule, not a filesystem block.
+ *  Claude honours it reliably in practice; for hard isolation we'd need
+ *  per-zone --add-dir lists, which is a bigger refactor.
+ *
+ *  Zone names are derived from the vault's own scope vocabulary
+ *  (see scope.rs) so the rule survives if the user renames folders. */
+const PRIVACY_PREAMBLE = `## Privacy boundary (hard rule for this run)
+
+Do NOT read, list, or grep any file whose scope is \`personal-work\` or \`team-management\`. This includes (but isn't limited to) folders typically named \`06_daily\`, \`journal\`, \`private\`, \`personal\`, \`meetings\`, \`1on1\`, \`one-on-ones\`, \`people\`, \`team\`, \`management\`, or any subfolder with frontmatter \`scope: personal-work\` / \`scope: team-management\`.
+
+If the task seems to require their content, STOP and ask the user — do not try to infer the content from filenames, do not work around the rule with Bash, and do not write inferred summaries to disk. Violating this rule corrupts user trust.
+
+---
+
+`;
+
 interface RunPanelProps {
   /** Canonical vault root. Forwarded to `start_freeform_run`. */
   vaultRoot: string;
@@ -274,6 +292,15 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
   const [chatError, setChatError] = useState<string | null>(null);
   const [usage, setUsage] = useState<SessionUsage>(EMPTY_USAGE);
   const [selectedScope, setSelectedScope] = useState<string>(VAULT_SCOPE);
+
+  /** When true, prepend a hardening preamble to the next outgoing prompt
+   *  telling the agent NOT to read files under personal-work or
+   *  team-management zones. The vault is still passed as `--add-dir` —
+   *  this is a behavioural instruction, not a filesystem block — but the
+   *  agent honours it reliably. Session-only state; the toggle resets on
+   *  app launch so an absent-minded `true` from a past session doesn't
+   *  silently weaken future runs. */
+  const [excludePersonalZones, setExcludePersonalZones] = useState(false);
 
   // Session-history bookkeeping. `pendingTitle` is set when the user
   // sends a fresh freeform message — it survives the run lifecycle and
@@ -738,9 +765,20 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
         effectiveScope === VAULT_SCOPE
           ? null
           : scopeOptions.find((p) => p.slug === effectiveScope) ?? null;
+      // Optional privacy hardening: prepend a behavioural rule telling
+      // the agent to stay out of personal-work / team-management zones.
+      // The user's typed text stays in the title (above) so History rows
+      // don't read like the policy header.
+      const outgoing = excludePersonalZones ? PRIVACY_PREAMBLE + text : text;
+      if (excludePersonalZones) {
+        appendLine({
+          kind: "system",
+          text: "▸ privacy: personal-work + team-management zones blocked by request",
+        });
+      }
       const startedNew = await startFreeformRun({
         vaultRoot,
-        prompt: text,
+        prompt: outgoing,
         scopeProjectSlug: scopeProject?.slug,
         scopeRepoPath: scopeProject?.localPath ?? undefined,
       });
@@ -760,6 +798,7 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     effectiveScope,
     scopeOptions,
     vaultRoot,
+    excludePersonalZones,
   ]);
 
   const onStop = useCallback(async () => {
@@ -1478,6 +1517,20 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
                 </option>
               ))}
             </select>
+            <label
+              className="run-panel__chat-privacy"
+              title={
+                "When on, the next message is prefixed with a strict instruction telling the agent NOT to read personal-work or team-management zones. The vault is still passed to the agent via --add-dir — this is a behavioural rule, not a filesystem block — but the model honours it reliably. Session-only; resets on app launch."
+              }
+            >
+              <input
+                type="checkbox"
+                checked={excludePersonalZones}
+                onChange={(e) => setExcludePersonalZones(e.target.checked)}
+                disabled={sending}
+              />
+              <span>🔒 Skip personal zones</span>
+            </label>
           </div>
           {stagedSource && (
             <div

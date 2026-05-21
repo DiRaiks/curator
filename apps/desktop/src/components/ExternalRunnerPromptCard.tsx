@@ -88,42 +88,38 @@ export function ExternalRunnerPromptCard({
       className="preview__runner-prompt"
       aria-label="External runner prompt"
     >
-      <header className="preview__section-header">
-        <h4 className="preview__section-title">External Runner Prompt</h4>
-        <div className="preview__controls">
-          <button
-            type="button"
-            className="btn btn--primary btn--small"
-            onClick={onOpenInChat}
-            title="Stage this prompt as a chat draft so you can review, add context, or pre-approve tool permissions before sending."
-          >
-            Open in chat
-          </button>
-          <button
-            type="button"
-            className="btn btn--small"
-            onClick={() => {
-              void onCopy();
-            }}
-            title="Copy prompt to paste into another agent (Zed, Codex, …)."
-          >
-            Copy
-          </button>
-          <button
-            type="button"
-            className="btn btn--small"
-            onClick={() => setShowPreview((v) => !v)}
-            aria-expanded={showPreview}
-          >
-            {showPreview ? "Hide preview" : "Preview"}
-          </button>
-        </div>
-      </header>
+      <div className="preview__controls">
+        <button
+          type="button"
+          className="btn btn--primary btn--small"
+          onClick={onOpenInChat}
+          title="Stage this prompt as a chat draft so you can review, add context, or pre-approve tool permissions before sending."
+        >
+          Open in chat
+        </button>
+        <button
+          type="button"
+          className="btn btn--small"
+          onClick={() => {
+            void onCopy();
+          }}
+          title="Copy prompt to paste into another agent (Zed, Codex, …)."
+        >
+          Copy
+        </button>
+        <button
+          type="button"
+          className="btn btn--small"
+          onClick={() => setShowPreview((v) => !v)}
+          aria-expanded={showPreview}
+        >
+          {showPreview ? "Hide preview" : "Preview"}
+        </button>
+      </div>
       <p className="preview__hint">
         <strong>Open in chat</strong> stages the prompt in the bottom panel —
-        edit it, attach extra context, then Send when ready.
-        <strong> Copy</strong> exports the prompt for paste into Zed Agent,
-        Codex, or another coding agent.
+        edit it, attach context, then Send when ready. Copy exports it for
+        paste into another agent.
       </p>
       <label className="preview__runtime-input">
         <span className="preview__runtime-input-label">Runtime input</span>

@@ -11,6 +11,13 @@ import type {
 } from "../types";
 import { maskHome } from "../utils/path";
 import { ExternalRunnerPromptCard } from "./ExternalRunnerPromptCard";
+import { Tooltip } from "./Tooltip";
+
+const SURFACED_TOOLTIP =
+  "Files the prompt makes the agent aware of. AGENTS.md, the prompt itself, the project index, and any existing output file are explicitly required reads; project documents are surfaced via the project-folder pointer but the agent decides which to open.\n\nThe agent has read access to the entire vault via --add-dir; this list is a map, not a sandbox.";
+
+const PRIVACY_ZONES_TOOLTIP =
+  "Zones AGENTS.md asks the agent to leave alone. Listed for transparency — the agent has read access to the full vault and these files are not blocked at the filesystem level. Use the chat panel's 'Skip personal zones' toggle to inject a hard preamble for runs where this matters.";
 
 // ---------- Labels ----------
 
@@ -112,13 +119,13 @@ export function ContextPreviewPanel({
       )}
       <VaultFilesBlock files={preview.included} />
       <ExcludedBlock counts={preview.excludedCounts} />
-      {/* Secondary action: copy the runner-agnostic prompt for paste
-       * into Zed / Claude / Codex / Cursor. Collapsed by default so the
-       * card focuses on the run plan; advanced users can expand it. */}
+      {/* Secondary action: stage the prompt into the chat panel, or copy
+       * it for paste into Zed / Claude / Codex / Cursor. Collapsed by
+       * default so the card focuses on the run plan; advanced users
+       * expand it. */}
       <details className="external-runner-details">
         <summary className="external-runner-details__summary">
-          External runner prompt — copy to paste into Zed / Claude / Codex /
-          Cursor
+          Runner prompt — open in chat, or copy for another agent
         </summary>
         <ExternalRunnerPromptCard
           prompt={preview.externalRunnerPrompt}
@@ -403,10 +410,18 @@ function VaultFilesBlock({ files }: { files: IncludedFile[] }) {
   return (
     <section
       className="preview__included"
-      aria-label="Vault files made available"
+      aria-label="Vault files surfaced to the agent"
     >
       <h4 className="preview__section-title">
-        Included · {files.length} file{files.length === 1 ? "" : "s"}
+        Surfaced · {files.length} file{files.length === 1 ? "" : "s"}
+        <Tooltip content={SURFACED_TOOLTIP} placement="bottom" align="start">
+          <span
+            className="preview__section-hint"
+            aria-label="What 'surfaced' means"
+          >
+            (info)
+          </span>
+        </Tooltip>
       </h4>
       {files.length === 0 ? (
         <p className="empty">No vault files would be included.</p>
@@ -448,10 +463,25 @@ function ExcludedBlock({ counts }: { counts: ExcludedCounts }) {
   const total = BUCKETS.reduce((acc, { key }) => acc + counts[key], 0);
 
   return (
-    <section className="preview__excluded" aria-label="Excluded content">
+    <section
+      className="preview__excluded"
+      aria-label="Privacy zones listed off-limits by convention"
+    >
       <h4 className="preview__section-title">
-        Excluded · {total} file{total === 1 ? "" : "s"}
-        <span className="preview__total">counts only — no contents shown</span>
+        Privacy zones · {total} file{total === 1 ? "" : "s"}
+        <span className="preview__total">informational — not blocked</span>
+        <Tooltip
+          content={PRIVACY_ZONES_TOOLTIP}
+          placement="bottom"
+          align="start"
+        >
+          <span
+            className="preview__section-hint"
+            aria-label="What 'privacy zones' means"
+          >
+            (info)
+          </span>
+        </Tooltip>
       </h4>
       {nonZero.length === 0 ? (
         <p className="empty">Nothing excluded.</p>
@@ -470,9 +500,12 @@ function ExcludedBlock({ counts }: { counts: ExcludedCounts }) {
         </ul>
       )}
       <p className="preview__excluded-hint">
-        These categories are excluded from project workflows by default. Their
-        file contents are <strong>not</strong> read, displayed, or prepared
-        for AI context.
+        Listed here for transparency. By default the agent has read access
+        to the entire vault via <code>--add-dir</code>; these zones are{" "}
+        <strong>not</strong> blocked at the filesystem level. Toggle{" "}
+        <strong>🔒 Skip personal zones</strong> in the chat panel to
+        inject a hard preamble that tells the agent to stay out of
+        personal-work and team-management content for that run.
       </p>
     </section>
   );
