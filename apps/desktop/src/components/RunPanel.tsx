@@ -78,6 +78,15 @@ interface OutputLine {
    *  those rows in `lines` from when the original turn streamed, so
    *  appending again would show duplicates above each resume reply. */
   toolCallId?: string;
+  /** When true, the line is hidden from the DOM (CSS `display: none`).
+   *  Set on streaming lines whose accumulated text matches the start
+   *  of an earlier line — likely a replay being rebuilt by the agent
+   *  on `session/load`. The flag flips off (and the visible text gets
+   *  trimmed of the matched prefix) once the stream grows past the
+   *  prior content, revealing only the genuinely-new tail. Without
+   *  this, every resume reply briefly flashed a duplicate of the
+   *  previous turn's text before finalisation dedup spliced it out. */
+  hidden?: boolean;
 }
 
 type RunStatus =
@@ -469,9 +478,18 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
         } else {
           mergedText = last.text + line.text;
         }
+        // Apply replay-anticipation: if the accumulated text is
+        // a prefix-or-equal of an earlier line, hide it until the
+        // stream grows past the match. When it does grow past, the
+        // visible text gets trimmed of the matched prefix so only
+        // the genuinely-new tail appears. See
+        // `classifyStreamingVisibility` for the rules.
+        const earlier = prev.slice(0, prev.length - 1);
+        const vis = classifyStreamingVisibility(mergedText, line.kind, earlier);
         const merged: OutputLine = {
           ...last,
-          text: mergedText,
+          text: vis.text,
+          hidden: vis.hidden,
         };
         const head = prev.slice(0, prev.length - 1);
         return prev.length >= MAX_RETAINED_LINES
@@ -560,9 +578,18 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
         }
       }
 
+      // First streaming chunk of a fresh line (no coalesce match
+      // above) — apply replay-anticipation here too so the very
+      // first chunk of a replayed message is hidden from frame 1.
+      let lineToAppend = line;
+      if (line.streaming) {
+        const vis = classifyStreamingVisibility(line.text, line.kind, working);
+        lineToAppend = { ...line, text: vis.text, hidden: vis.hidden };
+      }
+
       const next = working.length >= MAX_RETAINED_LINES
-        ? [...working.slice(working.length - MAX_RETAINED_LINES + 1), line]
-        : [...working, line];
+        ? [...working.slice(working.length - MAX_RETAINED_LINES + 1), lineToAppend]
+        : [...working, lineToAppend];
       return next;
     });
   }, []);
@@ -1723,7 +1750,11 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
           {lines.map((l, i) => (
             <span
               key={i}
-              className={"run-panel__line run-panel__line--" + l.kind}
+              className={
+                "run-panel__line run-panel__line--" +
+                l.kind +
+                (l.hidden ? " run-panel__line--hidden" : "")
+              }
             >
               {renderLineWithCodeBlocks(l.text)}
               {"\n"}
@@ -2358,6 +2389,67 @@ function resetAcpUsageBaseline(): void {
  * literal characters with no `dangerouslySetInnerHTML`; styling
  * lives in CSS only.
  */
+/**
+ * Decide whether an in-flight streaming line should be visible, and
+ * what visible text to show.
+ *
+ * On `session/load` ACP agents (claude-agent-acp, codex-acp) replay
+ * the prior turn's events as if they were fresh — including
+ * agent_message_chunk streams that re-build the previous assistant
+ * response character by character. Without intervention the user
+ * sees the prior turn's text flash by before the new turn's actual
+ * content starts.
+ *
+ * Resolution by relationship between the accumulated text and the
+ * earliest matching prior line of the same kind:
+ *
+ *  - `text` equals a prior line → replay completed; HIDE (the
+ *    next event will either replace this line with itself again or
+ *    extend it past with new content, see below).
+ *  - `text` is a strict prefix of a prior line (still shorter) →
+ *    replay still being typed; HIDE.
+ *  - `text` strictly extends a prior line (prior fully contained) →
+ *    the replay finished and new content has begun; REVEAL with
+ *    `text` trimmed of the replayed prefix.
+ *  - No prior matches → genuinely-new content from the start;
+ *    REVEAL as-is.
+ *
+ * Picks the *longest* prior prefix when several would qualify, so a
+ * shorter accidental prefix doesn't trim less than it should.
+ */
+function classifyStreamingVisibility(
+  text: string,
+  kind: LineKind,
+  earlier: readonly OutputLine[],
+): { hidden: boolean; text: string } {
+  let longestPriorAsPrefix = "";
+  let priorWeAreAPrefixOf: string | null = null;
+  for (const l of earlier) {
+    if (l.kind !== kind) continue;
+    if (l.text === text) {
+      // Exact match — replay is at full re-build, still tentative.
+      return { hidden: true, text };
+    }
+    if (text.startsWith(l.text) && l.text.length > longestPriorAsPrefix.length) {
+      // We extend this prior — candidate for "reveal and trim".
+      longestPriorAsPrefix = l.text;
+    } else if (l.text.startsWith(text)) {
+      // We're still shorter than this prior — replay-in-progress.
+      priorWeAreAPrefixOf = l.text;
+    }
+  }
+  if (longestPriorAsPrefix.length > 0) {
+    return {
+      hidden: false,
+      text: text.slice(longestPriorAsPrefix.length).replace(/^[\s]+/, ""),
+    };
+  }
+  if (priorWeAreAPrefixOf !== null) {
+    return { hidden: true, text };
+  }
+  return { hidden: false, text };
+}
+
 function renderLineWithCodeBlocks(text: string): React.ReactNode {
   if (!text.includes("```")) return text;
   const fence = /```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g;

@@ -2930,6 +2930,16 @@ button {
   font-style: italic;
 }
 
+/* Lines tagged as tentative streaming (text matches start of an
+ * earlier line — likely a replay being re-typed by the agent on
+ * `session/load`). Hide entirely until the stream extends past the
+ * match or the line gets spliced at finalisation. Without this,
+ * every resume reply briefly flashed a duplicate of the previous
+ * turn's text before dedup kicked in. */
+.run-panel__line--hidden {
+  display: none;
+}
+
 /* Fenced code block (`\`\`\`lang … \`\`\``) inside a chat line.
  * Renders inline within the parent <pre>, so we lean on the parent's
  * whitespace preservation and just add a subtle background +
