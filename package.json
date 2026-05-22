@@ -9,7 +9,8 @@
   ],
   "scripts": {
     "dev": "npm run dev -w apps/desktop",
-    "build": "npm run build -w apps/desktop",
+    "build": "npm run build -w apps/desktop && npm run open:dmg",
+    "open:dmg": "ls -t target/release/bundle/dmg/*.dmg 2>/dev/null | head -1 | xargs -I{} open {}",
     "tauri": "npm run tauri -w apps/desktop",
     "tauri:dev": "npm run tauri -w apps/desktop -- dev",
     "tauri:build": "npm run tauri -w apps/desktop -- build",

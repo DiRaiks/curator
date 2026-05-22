@@ -1431,14 +1431,18 @@ fn toggle_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 /// calling this after `run()` starts is racy. Hence the `pub fn` exposed
 /// to `main.rs`.
 ///
-/// Why `-lc` instead of `-ilc`: `-i` (interactive) sources `~/.zshrc` /
-/// `~/.bashrc`, which on many real machines means nvm / conda / mise /
-/// sdkman init scripts — easily 0.5–3 seconds of work at app launch,
-/// blocking the splash screen. `-l` (login) sources the lighter
-/// `~/.zprofile` / `~/.bash_profile` where users actually put their
-/// `export PATH=…` lines, so it's enough for our needs without paying the
-/// interactive-init cost. Users with non-standard PATH setups can still
-/// set `CLAUDE_BIN` to an absolute path.
+/// Two-pass strategy:
+///   1. `-lc` (login) sources `~/.zprofile` / `~/.bash_profile` — cheap,
+///      covers users who put `export PATH=…` there.
+///   2. If after pass 1 `node` or `claude` still aren't findable, retry
+///      with `-ilc` (interactive login) which additionally sources
+///      `~/.zshrc` / `~/.bashrc` — that's where nvm / mise / volta / asdf
+///      init scripts live and where most dev installs of `node` end up.
+///      Pays the ~0.5–1s interactive-init cost only when the cheap pass
+///      isn't enough.
+///
+/// Users with non-standard PATH setups can still set `CLAUDE_BIN` to an
+/// absolute path.
 #[cfg(target_os = "macos")]
 pub fn prime_user_path() {
     use std::collections::HashSet;
@@ -1464,48 +1468,69 @@ pub fn prime_user_path() {
         })
         .unwrap_or_else(|| "/bin/zsh".to_string());
 
-    // `-l` (login) sources `~/.zprofile` / `~/.bash_profile` where PATH
-    // exports live. Sentinels bracket the value so banner output from a
-    // chatty shell doesn't corrupt parsing.
-    let out = match Command::new(&shell)
-        .args(["-lc", &format!("printf '{START}%s{END}' \"$PATH\"")])
-        .output()
-    {
-        Ok(o) => o,
-        Err(e) => {
-            eprintln!("prime_user_path: failed to spawn {shell}: {e}");
-            return;
+    // Capture PATH from a shell invocation. Sentinels bracket the value
+    // so banner output from a chatty shell doesn't corrupt parsing.
+    fn capture_path(shell: &str, flags: &str) -> Option<String> {
+        let out = Command::new(shell)
+            .args([flags, &format!("printf '{START}%s{END}' \"$PATH\"")])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
         }
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let s = stdout.find(START)?;
+        let e = stdout.find(END)?;
+        let value = stdout[s + START.len()..e].to_string();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    }
+
+    fn merge_path(shell_path: &str) {
+        let current = std::env::var("PATH").unwrap_or_default();
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut parts: Vec<&str> = Vec::new();
+        for p in shell_path.split(':').chain(current.split(':')) {
+            if p.is_empty() {
+                continue;
+            }
+            if seen.insert(p) {
+                parts.push(p);
+            }
+        }
+        // SAFETY: called from `main()` before any thread is spawned. See
+        // the doc comment above for why this matters. `set_var` was
+        // marked `unsafe` in Rust 1.81; current toolchains accept it as
+        // safe still but will error in a future edition.
+        std::env::set_var("PATH", parts.join(":"));
+    }
+
+    fn path_can_find(name: &str) -> bool {
+        let path = match std::env::var_os("PATH") {
+            Some(p) => p,
+            None => return false,
+        };
+        std::env::split_paths(&path).any(|dir| dir.join(name).is_file())
+    }
+
+    // Pass 1: cheap login shell.
+    let Some(login_path) = capture_path(&shell, "-lc") else {
+        eprintln!("prime_user_path: -lc capture failed for {shell}");
+        return;
     };
-    if !out.status.success() {
-        eprintln!("prime_user_path: {shell} exited non-zero");
-        return;
-    }
+    merge_path(&login_path);
 
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let Some(s) = stdout.find(START) else { return };
-    let Some(e) = stdout.find(END) else { return };
-    let shell_path = &stdout[s + START.len()..e];
-    if shell_path.is_empty() {
-        return;
-    }
-
-    let current = std::env::var("PATH").unwrap_or_default();
-    let mut seen: HashSet<&str> = HashSet::new();
-    let mut parts: Vec<&str> = Vec::new();
-    for p in shell_path.split(':').chain(current.split(':')) {
-        if p.is_empty() {
-            continue;
-        }
-        if seen.insert(p) {
-            parts.push(p);
+    // Pass 2: only if the cheap pass didn't land the tools we need.
+    // nvm / mise / volta init lives in ~/.zshrc, not ~/.zprofile — pay
+    // the interactive-init cost once to pick them up.
+    if !path_can_find("node") || !path_can_find("claude") {
+        if let Some(interactive_path) = capture_path(&shell, "-ilc") {
+            merge_path(&interactive_path);
         }
     }
-    // SAFETY: called from `main()` before any thread is spawned. See the
-    // doc comment above for why this matters. `set_var` was marked
-    // `unsafe` in Rust 1.81; current toolchains accept it as safe still
-    // but will error in a future edition.
-    std::env::set_var("PATH", parts.join(":"));
 }
 
 #[cfg(not(target_os = "macos"))]
