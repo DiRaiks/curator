@@ -137,6 +137,13 @@ Tracked separately, but the major pieces in flight:
   read/write into personal zones via `.vault/config.yml`
 - **Tool whitelisting from `claude-agent.tools[]` frontmatter** + an
   Approve-tools dialog for dangerous capabilities
+- **Persistent agent permission rules** — the inline permission card
+  (via ACP `session/request_permission`) handles ad-hoc approvals
+  today; a follow-up adds persistent allow/deny lists per chat or
+  globally (`Bash(curl:*) allow`, `Read(~/.ssh/**) deny`), per-runner
+  sandbox levels for codex (`read-only` / `workspace-write` /
+  `danger-full-access`), and a UI surface to manage them. Storage
+  likely co-located with session history in `app.db`.
 - **Conversation persistence** — keep the last N session transcripts
   on disk so reopening the IDE restores context
 
