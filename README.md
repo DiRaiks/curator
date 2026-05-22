@@ -96,10 +96,16 @@ See [`PROJECT_BRIEF.md`](./PROJECT_BRIEF.md) for the full vision and
 
 ```bash
 npm install
+./scripts/fetch-acp-binaries.sh
 npm run tauri:dev
 ```
 
-That's it. `cargo` deps fetch on first dev run.
+`fetch-acp-binaries.sh` downloads the pinned per-platform `codex-acp`
+native binary from npm into `apps/desktop/src-tauri/binaries/`. It's a
+~170 MB download per platform and is `.gitignored` rather than
+committed (re-run after pulling if the pinned version changes).
+The `claude-agent-acp` JS wrapper is tiny and lives in
+`apps/desktop/src-tauri/resources/acp/` committed directly.
 
 The Welcome screen offers two paths:
 

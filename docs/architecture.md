@@ -48,8 +48,9 @@
 │  artifacts/    — discovery + parsing of agent-prompts / claude-      │
 │                  skills / agents / commands / rules / vault-skills   │
 │  preview/      — `preview_context` + runner-agnostic prompt builder  │
-│  runner/       — Runner trait + ClaudeCode impl; coordinator-pattern │
-│                  threading; output cap; --resume support             │
+│  runner/       — Runner trait + ACP-driven Claude/Codex impls;       │
+│                  tokio-based transport over `agent-client-protocol`; │
+│                  permission flow + session resume                    │
 │  markdown_io   — vault-rooted read/write/create/promote/discard      │
 │                  with path validation (deny-list of sensitive dirs)  │
 │  source_repo   — read-only git inspection (branch, dirty, commit,    │
@@ -134,7 +135,7 @@ pub trait Runner: Send + Sync {
     fn start(&self, req: RunRequest) -> Result<RunHandle, RunnerError>;
 }
 
-pub enum RunnerKind { ClaudeCode /* + future variants */ }
+pub enum RunnerKind { ClaudeCode, Codex }
 
 pub struct RunRequest {
     pub workdir: PathBuf,
@@ -142,42 +143,99 @@ pub struct RunRequest {
     pub prompt: String,
     pub runtime_input: Option<String>,
     pub resume_session_id: Option<String>,
+    pub model: Option<String>,
 }
 
 pub enum RunEvent {
-    Stdout(String),
+    Stdout(String),               // ACP `session/update` JSON, one per line
     Stderr(String),
     Truncated { dropped_bytes: usize },
+    PermissionRequest(PermissionRequest), // from ACP `session/request_permission`
+    SessionStarted { session_id: String }, // post `session/new` or `session/load`
     Exit { code: Option<i32>, success: bool },
 }
 ```
 
-`runner/claude.rs` is the only implementation today. It spawns:
+Both runners (`AcpClaudeRunner`, `AcpCodexRunner`) speak the open
+[Agent Client Protocol](https://agentclientprotocol.com/) (ACP) over
+JSON-RPC on a subprocess's stdio. We don't drive `claude -p` or
+`codex exec` directly anymore — instead we spawn the vendored
+ACP-server wrappers, which give us interactive permission requests,
+edit-review, terminal streaming, and the same wire shape for both
+agents.
+
+### Spawn shapes
+
+**Claude** (`AcpClaudeRunner`):
 
 ```
-claude -p "<prompt>"
-       --output-format stream-json
-       --verbose
-       --permission-mode acceptEdits
-       [--resume <session_id>]
-       [--add-dir <dir>] …
+node <bundled>/resources/acp/claude-agent-acp/dist/index.js
+  env CLAUDE_CODE_EXECUTABLE=<system claude>
 ```
 
-Threading model per run:
-- One subprocess under `Arc<Mutex<Child>>` for safe access by kill +
-  waiter
-- Two reader threads (stdout, stderr) own only the pipe handle
-- One coordinator thread `join`s both readers (guaranteeing every
-  output line precedes the `Exit` event), then polls `try_wait` until
-  the child reaps
-- Output cap at 4 MiB total across stdout+stderr via
-  `Mutex<TruncationState>`; readers keep draining past the cap so the
-  child doesn't block on writes; one `Truncated` event fires at the
-  first overflow
+The JS wrapper is small (1.6 MB, committed) and delegates to the
+user's system `claude` binary via `CLAUDE_CODE_EXECUTABLE`. We
+explicitly do not ship the SDK's bundled platform binary (208 MB per
+platform); requiring `claude` already on `PATH` matches how the IDE
+behaved pre-ACP.
 
-Permission mode `acceptEdits` only auto-approves file-edit tools
-(Write / Edit / MultiEdit / NotebookEdit). Bash and other tools still
-respect the user's global Claude Code config.
+**Codex** (`AcpCodexRunner`):
+
+```
+<bundled>/binaries/codex-acp           (Tauri externalBin sidecar)
+```
+
+The codex-acp binary is a standalone 172 MB native executable that
+embeds its own codex runtime. It's `.gitignored` and fetched into
+`apps/desktop/src-tauri/binaries/codex-acp-<target-triple>` by
+`scripts/fetch-acp-binaries.sh` (pinned npm version). Tauri's
+externalBin slot then strips the triple suffix at bundle time and
+ships the binary alongside the .app.
+
+### Threading model
+
+The transport (`runner/acp/transport.rs`) spawns one worker OS thread
+per run. The thread owns a single-threaded tokio runtime which
+drives the `agent-client-protocol` Rust crate's `Client`. The
+async-to-sync bridge is three `std::sync::mpsc` channels:
+
+- `events` — `RunEvent`s flow from ACP notification handlers / the
+  coordinator into the sync receiver the Tauri shell consumes.
+- `permissions` — host approval decisions (`PermissionDecision`) flow
+  in via a `spawn_blocking`-bridged pump task; an internal
+  `HashMap<request_id, oneshot::Sender>` correlates them with the
+  pending `request_permission` callback waiting to respond.
+- `kill` — `oneshot` signal; dropping the runtime cancels every
+  outstanding task and the child receives EOF on stdin.
+
+### Session lifecycle (per turn)
+
+1. `initialize` — protocol V1 handshake.
+2. `session/new` (fresh chat) or `session/load` (resume by
+   `resume_session_id`). Both branches forward
+   `additional_directories` so the agent can read the vault from a
+   project-repo cwd.
+3. `session/set_model` (optional, if `RunRequest.model` is set).
+   Demoted to a Stderr event on unsupported agents.
+4. Emit `RunEvent::SessionStarted { session_id }` so the host can
+   stash the id for the next resume.
+5. `session/prompt` — the user's message. The await resolves when
+   the agent's turn completes; every chunk, tool call, plan, and
+   permission request arrives via `session/update` notifications or
+   the `session/request_permission` RPC in the meantime.
+6. Emit `RunEvent::Exit` when the prompt response arrives or the
+   kill signal fires.
+
+### Permission flow
+
+`PermissionRequestCard` in the frontend renders an inline approval
+prompt whenever the agent sends a `session/request_permission` RPC.
+The Tauri shell's `approve_tool_use` / `deny_tool_use` commands
+forward the user's choice through the typed
+`Killer::respond_to_permission(request_id, decision)` API into the
+runner's pump task. This is what the pre-ACP `claude -p` integration
+couldn't do — the legacy Claude CLI didn't activate `canUseTool`
+from a non-SDK host, so the permission card was dead code.
 
 ## Drafts workflow (inbox-to-review)
 

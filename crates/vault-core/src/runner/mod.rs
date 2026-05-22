@@ -43,12 +43,9 @@ use std::sync::mpsc;
 
 use thiserror::Error;
 
-mod claude;
-mod codex;
-mod subprocess;
+mod acp;
 
-pub use claude::{build_permission_response_line, ClaudeRunner};
-pub use codex::CodexRunner;
+pub use acp::{AcpClaudeRunner, AcpCodexRunner};
 
 /// Soft cap on total bytes emitted across stdout + stderr per run, before
 /// further output is dropped (with one `Truncated` event).
@@ -149,6 +146,18 @@ pub enum RunEvent {
     /// user's choice is sent back via [`RunHandle::respond_to_permission`].
     /// The run resumes once a `control_response` is delivered.
     PermissionRequest(PermissionRequest),
+    /// The agent has minted a session id via `session/new` (or the
+    /// equivalent `session/load` on resume). Fires once per run,
+    /// before the first `Stdout`. The id is what the host stashes
+    /// for `resume_run` / `resume_freeform_run` to continue the
+    /// conversation on the next turn.
+    ///
+    /// Pre-ACP runners surfaced this implicitly via Claude's
+    /// `system init` JSON line in stdout; ACP returns the id as the
+    /// response to a structured RPC, so we lift it into its own
+    /// event variant instead of forcing the frontend to parse a
+    /// runner-specific stream shape.
+    SessionStarted { session_id: String },
     /// Subprocess exited. The final event of the stream; the channel
     /// becomes disconnected shortly after. By construction, every prior
     /// `Stdout` / `Stderr` line has been emitted before this — the
@@ -207,33 +216,42 @@ pub enum PermissionDecision {
     },
 }
 
+/// Reply paired with a permission `request_id` and the host's
+/// chosen [`PermissionDecision`]. Flows from the Tauri shell
+/// (`approve_tool_use` / `deny_tool_use` commands) into the runner,
+/// which correlates the id with the pending ACP `request_permission`
+/// callback and responds to the agent.
+pub type PermissionResponse = (String, PermissionDecision);
+
 /// Handle to a live run. Owns the event receiver, the kill switch and
-/// the stdin write channel in a single struct so a single owner can
-/// manage all three. Use [`RunHandle::into_parts`] when these need to
-/// live in different threads / storage slots (typical for the Tauri
-/// shell, where the receiver pumps events on its own thread and the
-/// killer + stdin sender live in long-lived app state).
+/// the permission-decision channel in a single struct so a single
+/// owner can manage all three. Use [`RunHandle::into_parts`] when
+/// these need to live in different threads / storage slots (typical
+/// for the Tauri shell, where the receiver pumps events on its own
+/// thread and the killer + decision sender live in long-lived app
+/// state).
 pub struct RunHandle {
     events: mpsc::Receiver<RunEvent>,
     kill: Option<Box<dyn FnOnce() + Send>>,
-    /// Sender into the per-run stdin writer thread. `None` for runners
-    /// that don't open child stdin (legacy path / test fixtures). When
-    /// present, each sent string is written as one line + newline to the
-    /// subprocess. Used for the SDK control protocol — initialize +
-    /// initial user message on start, control_response on approve/deny.
-    stdin: Option<mpsc::Sender<String>>,
+    /// Sender for host-supplied permission decisions. `None` for
+    /// runner backends that don't support interactive approval
+    /// (legacy / fixtures). When present, each sent
+    /// `(request_id, decision)` pair is routed to the correlated
+    /// pending `request_permission` callback, which fulfils the
+    /// agent's RPC and unblocks its turn.
+    permissions: Option<mpsc::Sender<PermissionResponse>>,
 }
 
 impl RunHandle {
     pub(crate) fn new(
         events: mpsc::Receiver<RunEvent>,
         kill: Box<dyn FnOnce() + Send>,
-        stdin: Option<mpsc::Sender<String>>,
+        permissions: Option<mpsc::Sender<PermissionResponse>>,
     ) -> Self {
         Self {
             events,
             kill: Some(kill),
-            stdin,
+            permissions,
         }
     }
 
@@ -259,20 +277,23 @@ impl RunHandle {
         }
     }
 
-    /// Send a raw line to the subprocess stdin. Best-effort: returns
-    /// `false` if the runner had no stdin pipe (legacy path) or the
-    /// writer thread has already terminated (subprocess closed stdin).
-    /// Newline is appended by the writer thread.
-    pub fn send_stdin(&self, line: String) -> bool {
-        match &self.stdin {
-            Some(tx) => tx.send(line).is_ok(),
+    /// Send a permission decision back to the runner. Best-effort:
+    /// returns `false` if the runner doesn't support interactive
+    /// permissions, or if the worker handling the pending request
+    /// has already shut down. The runner is responsible for
+    /// correlating `request_id` with the pending `request_permission`
+    /// callback registered when the event was emitted.
+    pub fn respond_to_permission(&self, request_id: String, decision: PermissionDecision) -> bool {
+        match &self.permissions {
+            Some(tx) => tx.send((request_id, decision)).is_ok(),
             None => false,
         }
     }
 
-    /// Split the handle into its receiver, kill switch, and stdin sink.
-    /// Lets the caller stash the long-lived bits (killer + stdin) in
-    /// app state while moving the receiver to a worker thread.
+    /// Split the handle into its receiver, kill switch, and
+    /// permission sink. Lets the caller stash the long-lived bits
+    /// (killer + permission sender) in app state while moving the
+    /// receiver to a worker thread.
     ///
     /// Errors if called after [`Self::stop`] already consumed the kill
     /// closure. Returning `Result` (instead of panicking, as the earlier
@@ -282,14 +303,14 @@ impl RunHandle {
         let RunHandle {
             events,
             kill,
-            stdin,
+            permissions,
         } = self;
         let kill = kill.ok_or("RunHandle::into_parts called after stop()")?;
         Ok((
             events,
             Killer {
                 inner: Some(kill),
-                stdin,
+                permissions,
             },
         ))
     }
@@ -300,12 +321,12 @@ impl RunHandle {
 /// to terminate. Subsequent calls on a separately-held `Option<Killer>`
 /// would naturally no-op once the slot is empty.
 ///
-/// Also carries the stdin sender so a caller that holds the killer (e.g.
-/// the Tauri shell's `ActiveRun`) can write `control_response` lines to
-/// the running subprocess without keeping the full `RunHandle` around.
+/// Also carries the permission sender so a caller that holds the killer
+/// (e.g. the Tauri shell's `ActiveRun`) can route approve/deny decisions
+/// to the runner without keeping the full `RunHandle` around.
 pub struct Killer {
     inner: Option<Box<dyn FnOnce() + Send>>,
-    stdin: Option<mpsc::Sender<String>>,
+    permissions: Option<mpsc::Sender<PermissionResponse>>,
 }
 
 impl Killer {
@@ -315,10 +336,11 @@ impl Killer {
         }
     }
 
-    /// Send one line to the subprocess stdin. See [`RunHandle::send_stdin`].
-    pub fn send_stdin(&self, line: String) -> bool {
-        match &self.stdin {
-            Some(tx) => tx.send(line).is_ok(),
+    /// Send a permission decision to the runner.
+    /// See [`RunHandle::respond_to_permission`].
+    pub fn respond_to_permission(&self, request_id: String, decision: PermissionDecision) -> bool {
+        match &self.permissions {
+            Some(tx) => tx.send((request_id, decision)).is_ok(),
             None => false,
         }
     }

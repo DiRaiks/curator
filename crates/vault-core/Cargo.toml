@@ -21,6 +21,32 @@ ureq = { version = "2", features = ["json"] }
 # sqlite3 from source so we don't depend on the host system having it
 # (matters for the Tauri-packaged build crossing dev machines).
 rusqlite = { version = "0.32", features = ["bundled"] }
+# Agent Client Protocol (ACP) client. Drives our runner subsystem —
+# we spawn vendored ACP-server subprocesses (claude-agent-acp,
+# codex-acp) and speak JSON-RPC 2.0 over their stdio. The crate
+# provides typed message schemas, async client/agent traits, and
+# the JSON-RPC framing.
+# `unstable_session_model` enables SetSessionModelRequest and the
+# `models` field on NewSessionResponse — required so we can forward
+# the per-tab model picker through ACP. `unstable_session_additional_directories`
+# enables NewSessionRequest.additional_directories so a project chat
+# can still expose the vault root to the agent (claude-agent-acp 0.36
+# supports it; codex-acp 0.14 ignores it harmlessly).
+# Both features are tagged "unstable" upstream — bumping the crate is
+# a deliberate sync; cross-reference against the agents' advertised
+# capabilities when updating.
+agent-client-protocol = { version = "0.12", features = ["unstable_session_model", "unstable_session_additional_directories", "unstable_session_usage"] }
+# tokio is a hard transitive dep of agent-client-protocol — its
+# async stdio handling, JSON-RPC framing, and notification
+# dispatch all require an async runtime. We pull a focused feature
+# set (process / io-util / rt / sync / macros) rather than the
+# kitchen-sink `full`. The runner module is the only place that
+# touches async; the rest of vault-core stays sync.
+tokio = { version = "1", features = ["rt-multi-thread", "io-util", "process", "sync", "macros", "time"] }
+# Bridging adapter between tokio AsyncRead/AsyncWrite and the
+# futures-io traits the ACP crate consumes for its transport.
+tokio-util = { version = "0.7", features = ["compat"] }
+futures = "0.3"
 
 [dev-dependencies]
 # Temp directories for migration-shim tests that need real files on disk.

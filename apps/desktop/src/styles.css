@@ -2930,6 +2930,32 @@ button {
   font-style: italic;
 }
 
+/* Fenced code block (`\`\`\`lang … \`\`\``) inside a chat line.
+ * Renders inline within the parent <pre>, so we lean on the parent's
+ * whitespace preservation and just add a subtle background +
+ * left-border accent so the code segment reads as visually
+ * distinct from the surrounding agent prose. */
+.run-panel__codeblock {
+  display: inline-block;
+  background: rgba(127, 127, 127, 0.08);
+  border-left: 2px solid var(--accent, #5b8def);
+  padding: 1px 8px;
+  margin: 2px 0;
+  font-style: normal;
+  color: var(--text);
+  border-radius: 0 3px 3px 0;
+}
+
+.run-panel__codeblock-lang {
+  display: inline-block;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-weight: 600;
+  font-style: normal;
+}
+
 /* Chat input area at the bottom of the run panel. Hosts the scope
  * dropdown, the message textarea, and the Send/Reply button. Visible
  * whenever the panel is expanded and not actively running. */

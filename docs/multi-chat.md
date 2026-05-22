@@ -225,12 +225,15 @@ Now:
 - The pending state lives on `RunPanel.pendingPermission`, gated by
   the same `isMine(runId)` filter as stream events.
 - `approve_tool_use` / `deny_tool_use` take `runId` + `requestId`,
-  routing the response to the specific run's stdin channel via
-  `RunState.runs[runId].killer.send_stdin(…)`.
-- Closing a tab with a pending permission is safe — the backend's
-  `pending_permissions` set is dropped together with the `ActiveRun`,
-  and a later `send_stdin` would fail harmlessly because the
-  subprocess is gone.
+  routing the typed decision via
+  `RunState.runs[runId].killer.respond_to_permission(request_id,
+  decision)`. The runner's pump task correlates `request_id` against
+  its in-flight permission map and fulfils the agent's pending
+  `session/request_permission` RPC over ACP.
+- Closing a tab with a pending permission is safe — the runner's
+  pending map drops together with its worker thread, and the
+  agent's RPC future gets dropped on disconnect (codex-acp /
+  claude-agent-acp both clean up the paused turn).
 
 ## Status aggregation (AI handle / StatusBar)
 

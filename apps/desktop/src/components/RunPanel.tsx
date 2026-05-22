@@ -64,6 +64,20 @@ type LineKind = "stdout" | "stderr" | "system" | "user";
 interface OutputLine {
   kind: LineKind;
   text: string;
+  /** Marks lines that are part of an in-flight streaming chunk
+   *  (currently only ACP `agent_message_chunk`). Adjacent streaming
+   *  lines of the same kind get concatenated into one buffer line
+   *  rather than rendered as N stray entries — codex-acp ships text
+   *  in word-sized fragments which otherwise produced one-token-per-
+   *  line waterfall output. A non-streaming line breaks the chain. */
+  streaming?: boolean;
+  /** ACP `tool_call_id` for lines that represent a tool invocation
+   *  or its completion update. Used to dedup replays: ACP agents
+   *  (notably claude-agent-acp) re-emit prior turn events on
+   *  `session/load` to rehydrate the client view; we already have
+   *  those rows in `lines` from when the original turn streamed, so
+   *  appending again would show duplicates above each resume reply. */
+  toolCallId?: string;
 }
 
 type RunStatus =
@@ -404,11 +418,151 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
   // pathological run doesn't blow up the DOM. The backend's own 4 MB cap
   // already bounds total bytes; this is a second-line guard against very
   // long output dominated by short lines.
+  //
+  // Streaming-chunk coalescing: if the incoming line is marked
+  // `streaming` and the last buffer line is also a streaming line of
+  // the same kind, the new text is concatenated into that line
+  // rather than pushed as a new entry. This keeps agent messages
+  // that arrive as many tiny chunks (codex-acp emits word-sized
+  // fragments via `agent_message_chunk`) readable as paragraphs
+  // instead of a one-token-per-line waterfall. Any non-streaming
+  // line breaks the chain — subsequent streaming text starts a
+  // fresh coalesced line.
   const appendLine = useCallback((line: OutputLine) => {
     setLines((prev) => {
-      const next = prev.length >= MAX_RETAINED_LINES
-        ? [...prev.slice(prev.length - MAX_RETAINED_LINES + 1), line]
-        : [...prev, line];
+      const last = prev[prev.length - 1];
+
+      // Coalesce path: streaming chunks of the same logical message
+      // merge into one buffer line rather than rendering as a
+      // word-per-line waterfall.
+      //
+      // ACP doesn't standardise whether `agent_message_chunk` events
+      // carry incremental deltas or cumulative growing-prefix
+      // snapshots, and the wrappers disagree:
+      //  - claude-agent-acp 0.37 emits incremental fragments
+      //    ("Соз", "дал", " пап") — concatenate naively.
+      //  - codex-acp 0.14 emits cumulative snapshots ("Соз",
+      //    "Создал", "Создал папку") — naive concatenation here
+      //    produces a visible doubling ("СозСоздалСоздал папку").
+      //
+      // Disambiguate by checking the prefix relationship between
+      // `last.text` and `line.text`:
+      //  - `line.text` extends `last.text` → cumulative; the new
+      //    chunk already contains everything we'd have built
+      //    incrementally, so replace.
+      //  - `last.text` extends `line.text` → an out-of-order older
+      //    snapshot arrived after a newer one; ignore it, keep
+      //    `last.text` as-is.
+      //  - Neither is a prefix → genuine incremental delta, append.
+      const isContinuation =
+        line.streaming &&
+        last &&
+        last.streaming &&
+        last.kind === line.kind &&
+        (!line.toolCallId || last.toolCallId === line.toolCallId);
+      if (isContinuation) {
+        let mergedText: string;
+        if (line.text.startsWith(last.text)) {
+          mergedText = line.text;
+        } else if (last.text.startsWith(line.text)) {
+          mergedText = last.text;
+        } else {
+          mergedText = last.text + line.text;
+        }
+        const merged: OutputLine = {
+          ...last,
+          text: mergedText,
+        };
+        const head = prev.slice(0, prev.length - 1);
+        return prev.length >= MAX_RETAINED_LINES
+          ? [...head.slice(head.length - MAX_RETAINED_LINES + 1), merged]
+          : [...head, merged];
+      }
+
+      // Id-keyed replace path. Lines carrying a `toolCallId` (ACP
+      // `tool_call` start markers and `tool_call_update` content
+      // updates) replace any existing line with the same id rather
+      // than appending. This unifies three flows behind one rule:
+      //  - In-flight updates: codex emits multiple `tool_call_update`
+      //    events as a command's stdout streams in. Each carries
+      //    the same id; each "replace" overwrites the prior partial
+      //    output with the latest cumulative state.
+      //  - Final status update: when status flips to completed/failed,
+      //    the line updates in place with the terminal marker — the
+      //    user sees a single `← completed\n<output>` line that
+      //    grows then closes, not N separate lines.
+      //  - Resume replay: claude-agent-acp re-emits the prior turn's
+      //    tool_call + tool_call_update events on `session/load`
+      //    with their original ids. The replace path overwrites the
+      //    already-rendered line with itself — visually a no-op,
+      //    structurally clean.
+      if (line.toolCallId) {
+        const existing = prev.findIndex((l) => l.toolCallId === line.toolCallId);
+        if (existing !== -1) {
+          const replaced = [...prev];
+          replaced[existing] = line;
+          return replaced;
+        }
+        // Fall through to the append path below for first-time ids.
+      }
+
+      // Finalize-and-dedup-streaming path. When a non-streaming
+      // line arrives and the prior line was streaming, the prior
+      // line is now "done" — neither claude-agent-acp 0.37 nor
+      // codex-acp 0.14 emits a stable `messageId` on
+      // `agent_message_chunk`, so id-based dedup is unavailable for
+      // assistant text. Fall back to text-prefix matching against
+      // earlier lines of the same kind:
+      //  - If the finalised line is verbatim equal to an earlier
+      //    one → full replay, splice it out.
+      //  - If the finalised line STARTS WITH an earlier one →
+      //    partial replay merged with new content (codex emits
+      //    replay-chunks and new-chunks in one unbroken stream so
+      //    they coalesce). Trim the replay prefix, keep the new
+      //    tail.
+      //
+      // False-positive risk: an agent that legitimately starts a
+      // new message with the same opening as an earlier one will
+      // get the duplicated prefix silently stripped. Acceptable
+      // for chat-flow agents that rarely repeat themselves; the
+      // alternative (no dedup) is a much worse UX bug.
+      let working = prev;
+      if (
+        !line.streaming &&
+        line.kind !== "stderr" &&
+        last &&
+        last.streaming &&
+        working.length >= 2
+      ) {
+        const finalised = last;
+        const earlier = working.slice(0, working.length - 1);
+        let bestPrefix = "";
+        for (const l of earlier) {
+          if (l.kind !== finalised.kind) continue;
+          if (
+            finalised.text.startsWith(l.text) &&
+            l.text.length > bestPrefix.length
+          ) {
+            bestPrefix = l.text;
+          }
+        }
+        if (bestPrefix.length > 0) {
+          const remainder = finalised.text.slice(bestPrefix.length);
+          if (remainder.length === 0) {
+            working = earlier;
+          } else {
+            const trimmed: OutputLine = {
+              ...finalised,
+              text: remainder.replace(/^[\s]+/, ""),
+            };
+            working = [...earlier, trimmed];
+          }
+        }
+      }
+
+      const next = working.length >= MAX_RETAINED_LINES
+        ? [...working.slice(working.length - MAX_RETAINED_LINES + 1), line]
+        : [...working, line];
       return next;
     });
   }, []);
@@ -435,6 +589,21 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
       // every following filter check.
       const isMine = (runId: string) => currentRunIdRef.current === runId;
       const un = await onRunEvents({
+        onSessionStarted: (ev) => {
+          // ACP mints the session id structurally and emits it
+          // before the first stdout. Pre-ACP we extracted it by
+          // parsing Claude's `system init` JSON out of stdout —
+          // that path is gone.
+          if (!isMine(ev.runId)) return;
+          setSessionId(ev.sessionId);
+          // The ACP usage extractor tracks a cumulative-per-session
+          // baseline so each `usage_update` produces a proper delta
+          // (the wire shape carries running totals, not deltas).
+          // Reset the baseline whenever a fresh session id arrives
+          // so the first usage_update of the new session is its own
+          // absolute count, not a delta against the previous run.
+          resetAcpUsageBaseline();
+        },
         onStarted: (ev) => {
           // Strict run-id match: only adopt this `run:started` if we
           // already have its id (set by the spawn-command optimistic
@@ -494,30 +663,32 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
         },
         onStdout: (ev) => {
           if (!isMine(ev.runId)) return;
-          // Dispatch by runner so each backend's JSONL shape is
-          // decoded by the right parser. The runner id arrives on
-          // every event indirectly via the status snapshot we captured
-          // in `adoptStarted`/`onStarted`. `runner` may be empty on
-          // older mount-sync events; default to Claude there since
-          // it was the only backend before this slice.
-          const stdoutRunner = normalizeRunnerId(
-            currentRunIdRef.current !== null && currentStartedRef.current
-              ? currentStartedRef.current.runner
-              : null,
-          );
-          // Single JSON.parse per stream line — three downstream
-          // consumers (session id capture, usage accumulation, the
-          // pretty-printer) all read the same object. Parsing once
-          // and dispatching keeps long bursts cheap.
-          const parsed = parseStreamLine(ev.line);
-          const sid = extractSessionId(stdoutRunner, parsed.obj);
-          if (sid) setSessionId(sid);
-          const delta = extractUsageDelta(stdoutRunner, parsed.obj);
+          // Every ACP `session/update` notification arrives as a
+          // JSON line on stdout — the Rust transport intentionally
+          // doesn't decode it, so schema evolution upstream doesn't
+          // force a Rust release. The single ACP renderer below
+          // handles every variant uniformly across Claude + Codex.
+          const update = parseAcpUpdate(ev.line);
+          if (update === null) {
+            // Non-JSON line or unparseable update. Surface raw so a
+            // wrapper banner / debug print still shows up.
+            const trimmed = ev.line.trim();
+            if (trimmed !== "") {
+              appendLine({ kind: "stdout", text: ev.line });
+            }
+            return;
+          }
+          const delta = extractAcpUsageDelta(update);
           if (delta) {
             setUsage((prev) => mergeUsage(prev, delta));
           }
-          for (const rendered of renderStreamLine(stdoutRunner, parsed)) {
-            appendLine({ kind: rendered.kind, text: rendered.text });
+          for (const rendered of renderAcpUpdate(update)) {
+            appendLine({
+              kind: rendered.kind,
+              text: rendered.text,
+              streaming: rendered.streaming,
+              toolCallId: rendered.toolCallId,
+            });
           }
         },
         onStderr: (ev) => {
@@ -1554,7 +1725,7 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
               key={i}
               className={"run-panel__line run-panel__line--" + l.kind}
             >
-              {l.text}
+              {renderLineWithCodeBlocks(l.text)}
               {"\n"}
             </span>
           ))}
@@ -2020,21 +2191,73 @@ function buildRunStatusInfo(
   };
 }
 
-// ---------- Claude stream-line parsing ----------
+// ---------- ACP session-update parsing ----------
+//
+// The Rust transport (`runner/acp/transport.rs`) forwards every
+// `session/update` notification verbatim as a JSON line on the
+// run's stdout channel. The frontend decodes it once with
+// `parseAcpUpdate`, pulls token-usage deltas out of `usage_update`
+// variants, and renders the rest as styled chat lines.
+//
+// Why decode here (frontend) instead of in Rust:
+//  - Schema evolution: when `agent-client-protocol` adds a new
+//    `SessionUpdate` variant, only the renderer needs touching.
+//    Rust transport stays runner-agnostic.
+//  - Cross-runner UX: Claude (via claude-agent-acp) and Codex (via
+//    codex-acp) both speak ACP, so there's exactly one renderer
+//    instead of the prior per-runner branches.
+//
+// Wire format (camelCase due to serde discriminator + camelCase
+// rename_all on payload structs):
+//
+//   {"sessionUpdate":"agentMessageChunk","content":{"type":"text","text":"..."}}
+//   {"sessionUpdate":"agentThoughtChunk","content":{"type":"text","text":"..."}}
+//   {"sessionUpdate":"userMessageChunk","content":{"type":"text","text":"..."}}
+//   {"sessionUpdate":"toolCall","toolCallId":"...","title":"...","kind":"...","status":"...","content":[...],"rawInput":{...}}
+//   {"sessionUpdate":"toolCallUpdate","toolCallId":"...","status":"...","content":[...]}
+//   {"sessionUpdate":"plan","entries":[{"status":"pending","content":"..."}]}
+//   {"sessionUpdate":"availableCommandsUpdate",...}
+//   {"sessionUpdate":"currentModeUpdate",...}
+//   {"sessionUpdate":"sessionInfoUpdate","title":"..."}
+//   {"sessionUpdate":"usageUpdate","contextWindow":{...},"costUsd":...}
+//
+// Note: serde's snake_case rename on enum variants combined with
+// the camelCase tag field name `sessionUpdate` and camelCase struct
+// fields can produce mixed casing on the wire. We probe both
+// snake_case (`agent_message_chunk`) and camelCase
+// (`agentMessageChunk`) when matching variant tags to be robust to
+// the agent-client-protocol crate's actual output.
 
-/** Parsed representation of one stdout line from claude. `obj` is the
- *  JSON object when the line parses; `null` for plain text / unparseable
- *  lines. `raw` is always carried so the renderer can fall back to
- *  printing the line verbatim. */
-interface ParsedClaudeLine {
+/** Parsed ACP `SessionUpdate`. `obj` is the deserialized JSON when
+ *  the line parses as an object; `null` for unparseable / non-JSON
+ *  lines (those fall back to raw stdout in the consumer). `raw` is
+ *  carried so the renderer can echo lines we don't recognise. */
+interface ParsedAcpUpdate {
   obj: Record<string, unknown> | null;
   raw: string;
 }
 
-/** Single JSON.parse per stdout line. Cheaper than the prior pipeline
- *  where three helpers each parsed the same line; for long streams the
- *  saving is linear in line count. */
-function parseClaudeLine(raw: string): ParsedClaudeLine {
+interface RenderedLine {
+  kind: LineKind;
+  text: string;
+  /** Forwarded to OutputLine.streaming on append. See [`OutputLine`]
+   *  for the coalescing semantics. */
+  streaming?: boolean;
+  /** Forwarded to OutputLine.toolCallId on append. See [`OutputLine`]
+   *  for the dedup semantics. */
+  toolCallId?: string;
+}
+
+interface UsageDelta {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  costUsd: number;
+  model: string | null;
+}
+
+function parseAcpUpdate(raw: string): ParsedAcpUpdate | null {
   const trimmed = raw.trim();
   if (trimmed === "" || trimmed[0] !== "{") return { obj: null, raw };
   try {
@@ -2045,79 +2268,372 @@ function parseClaudeLine(raw: string): ParsedClaudeLine {
   }
 }
 
-// ---------- Session usage tracking ----------
+/** Normalise the `sessionUpdate` discriminator to a snake_case key
+ *  so the renderer / extractor switches don't have to enumerate both
+ *  casings. */
+function acpUpdateKind(obj: Record<string, unknown>): string | null {
+  const k = readString(obj, "sessionUpdate") ?? readString(obj, "session_update");
+  if (!k) return null;
+  return k.replace(/[A-Z]/g, (m) => "_" + m.toLowerCase());
+}
 
 /**
- * A single line's contribution to cumulative usage. Token deltas come
- * from `assistant.message.usage`; cost deltas come from `result.total_cost_usd`.
- * `model` is captured from the first `system init` event we see.
+ * Pull a token-usage delta out of a `usage_update` event. ACP's
+ * payload reports cumulative session totals on each tick, so the
+ * renderer-side `mergeUsage` (which adds deltas) would over-count
+ * if we passed the absolute numbers through. We compute a delta
+ * against the previously-observed total via a module-local cache —
+ * keyed by `runId` once the host wires it through, but for now a
+ * single global last-snapshot is sufficient because only one ACP
+ * stream-line at a time hits this function (event listeners are
+ * serialised on the renderer thread).
+ *
+ * Schema (unstable_session_usage feature; payload may grow):
+ *   {
+ *     "sessionUpdate": "usage_update",
+ *     "contextWindow": {
+ *       "inputTokens": 1234, "outputTokens": 567,
+ *       "cacheCreationTokens": 0, "cacheReadTokens": 12000
+ *     },
+ *     "costUsd": 0.0123
+ *   }
  */
-interface UsageDelta {
-  inputTokens: number;
-  outputTokens: number;
-  cacheCreationTokens: number;
-  cacheReadTokens: number;
-  costUsd: number;
-  model: string | null;
+let _lastAcpUsage: { in: number; out: number; cacheCreate: number; cacheRead: number; cost: number } | null = null;
+
+function extractAcpUsageDelta(parsed: ParsedAcpUpdate): UsageDelta | null {
+  if (parsed.obj === null) return null;
+  if (acpUpdateKind(parsed.obj) !== "usage_update") return null;
+  const ctx = parsed.obj["contextWindow"];
+  const inputTokens = isRecord(ctx) ? readNumber(ctx, "inputTokens") ?? 0 : 0;
+  const outputTokens = isRecord(ctx) ? readNumber(ctx, "outputTokens") ?? 0 : 0;
+  const cacheCreation = isRecord(ctx) ? readNumber(ctx, "cacheCreationTokens") ?? 0 : 0;
+  const cacheRead = isRecord(ctx) ? readNumber(ctx, "cacheReadTokens") ?? 0 : 0;
+  const cost = readNumber(parsed.obj, "costUsd") ?? 0;
+
+  const prev = _lastAcpUsage ?? { in: 0, out: 0, cacheCreate: 0, cacheRead: 0, cost: 0 };
+  const delta: UsageDelta = {
+    inputTokens: Math.max(0, inputTokens - prev.in),
+    outputTokens: Math.max(0, outputTokens - prev.out),
+    cacheCreationTokens: Math.max(0, cacheCreation - prev.cacheCreate),
+    cacheReadTokens: Math.max(0, cacheRead - prev.cacheRead),
+    costUsd: Math.max(0, cost - prev.cost),
+    model: null,
+  };
+  _lastAcpUsage = {
+    in: inputTokens,
+    out: outputTokens,
+    cacheCreate: cacheCreation,
+    cacheRead: cacheRead,
+    cost,
+  };
+  return delta;
 }
 
-function extractClaudeUsageDelta(
-  parsed: Record<string, unknown> | null,
-): UsageDelta | null {
-  if (parsed === null) return null;
-  const type = readString(parsed, "type");
+/**
+ * Reset the cached cumulative-usage snapshot. Called from the chat
+ * lifecycle when a new conversation starts so the first
+ * `usage_update` of the new session produces the absolute counts as
+ * the delta (instead of subtracting against a stale prior session).
+ */
+function resetAcpUsageBaseline(): void {
+  _lastAcpUsage = null;
+}
 
-  if (type === "system") {
-    // System init carries the model — capture it once so the tooltip can
-    // show what's running. No token deltas here.
-    const model = readString(parsed, "model");
-    if (model) {
-      return {
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheCreationTokens: 0,
-        cacheReadTokens: 0,
-        costUsd: 0,
-        model,
-      };
+/** Render one ACP `SessionUpdate` JSON object as one or more chat
+ *  lines. Variants we don't recognise fall through to a raw stdout
+ *  echo so unknown agent capabilities are still visible to the user. */
+// ---------- Inline markdown rendering: fenced code blocks ----------
+
+/**
+ * Split one OutputLine's text into React nodes, peeling fenced code
+ * blocks (` ```lang … ``` `) into styled segments. Agents emit tool
+ * results and code excerpts as markdown — without this the user
+ * sees the literal backtick fences, which look like garbage in a
+ * monospace renderer that's already preserving the formatting.
+ *
+ * Scope: we render ONLY fenced blocks, not full markdown. Inline
+ * emphasis, links, headings stay as plain text — chat output rarely
+ * uses them meaningfully, and parsing full markdown opens an XSS
+ * surface without a sanitiser. The fence parse is a regex over
+ * literal characters with no `dangerouslySetInnerHTML`; styling
+ * lives in CSS only.
+ */
+function renderLineWithCodeBlocks(text: string): React.ReactNode {
+  if (!text.includes("```")) return text;
+  const fence = /```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g;
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  let key = 0;
+  let match: RegExpExecArray | null;
+  while ((match = fence.exec(text)) !== null) {
+    const [whole, lang, body] = match;
+    if (match.index > cursor) {
+      parts.push(text.slice(cursor, match.index));
     }
-    return null;
+    parts.push(
+      <span key={key++} className="run-panel__codeblock">
+        {lang ? (
+          <span className="run-panel__codeblock-lang">{lang}</span>
+        ) : null}
+        {lang ? "\n" : ""}
+        {body.replace(/\n$/, "")}
+      </span>,
+    );
+    cursor = match.index + whole.length;
   }
-
-  if (type === "assistant") {
-    const message = parsed["message"];
-    if (!isRecord(message)) return null;
-    const usage = message["usage"];
-    if (!isRecord(usage)) return null;
-    return {
-      inputTokens: readNumber(usage, "input_tokens") ?? 0,
-      outputTokens: readNumber(usage, "output_tokens") ?? 0,
-      cacheCreationTokens: readNumber(usage, "cache_creation_input_tokens") ?? 0,
-      cacheReadTokens: readNumber(usage, "cache_read_input_tokens") ?? 0,
-      costUsd: 0,
-      model: null,
-    };
+  if (cursor < text.length) {
+    parts.push(text.slice(cursor));
   }
+  return <>{parts}</>;
+}
 
-  if (type === "result") {
-    // Final cost arrives at the end of each turn. We add it to the
-    // session running total. The result envelope's `usage` block
-    // repeats per-turn token counts that are already accounted for by
-    // assistant events, so we don't double-count tokens here.
-    const cost = readNumber(parsed, "total_cost_usd");
-    if (cost == null) return null;
-    return {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheCreationTokens: 0,
-      cacheReadTokens: 0,
-      costUsd: cost,
-      model: null,
-    };
+function renderAcpUpdate(parsed: ParsedAcpUpdate): RenderedLine[] {
+  const { obj, raw } = parsed;
+  if (obj === null) {
+    if (raw.trim() === "") return [];
+    return [{ kind: "stdout", text: raw }];
   }
+  const kind = acpUpdateKind(obj);
+  switch (kind) {
+    case "user_message_chunk":
+      // We echo the user's message locally before invoke (see
+      // `onSend` → `appendLine({kind: "user", ...})`). The ACP echo
+      // duplicates that line — skip to keep the chat clean.
+      return [];
+    case "agent_message_chunk": {
+      const text = readContentText(obj["content"]);
+      if (!text) return [];
+      // Mark as streaming so `appendLine` coalesces adjacent chunks
+      // into one paragraph instead of a word-per-line waterfall —
+      // codex-acp in particular emits text in very small fragments.
+      // No `toolCallId` is set: claude-agent-acp 0.37 does not emit
+      // a stable `messageId` on these chunks (verified empirically
+      // even with the SDK's `unstable_message_id` Cargo feature on),
+      // so id-based replay dedup isn't available. The
+      // finalize-then-text-compare path in `appendLine` handles the
+      // replay case structurally instead.
+      return [{ kind: "stdout", text, streaming: true }];
+    }
+    case "agent_thought_chunk": {
+      const text = readContentText(obj["content"]);
+      if (!text) return [{ kind: "system", text: "🧠 thinking…" }];
+      const head = truncate(text.replace(/\s+/g, " ").trim(), 200);
+      return [{ kind: "system", text: `🧠 ${head}` }];
+    }
+    case "tool_call":
+      return renderAcpToolCall(obj);
+    case "tool_call_update":
+      return renderAcpToolCallUpdate(obj);
+    case "plan":
+      return renderAcpPlan(obj);
+    case "available_commands_update":
+    case "current_mode_update":
+    case "config_option_update":
+    case "session_info_update":
+    case "usage_update":
+      // Metadata — feed into other handlers (set_session_id /
+      // usage delta) or ignore for rendering.
+      return [];
+    default:
+      // Unknown variant — surface raw so we don't silently drop
+      // agent capabilities the renderer hasn't caught up to.
+      return [{ kind: "stdout", text: raw }];
+  }
+}
 
+/** Pull human-readable text out of an ACP `ContentBlock`. The block
+ *  is a discriminated union — only `text` carries inline text we can
+ *  render in a `<pre>` cleanly. Other variants (image, audio,
+ *  resource_link, embedded_resource) are summarised as a placeholder. */
+function readContentText(content: unknown): string | null {
+  if (!isRecord(content)) return null;
+  const type = readString(content, "type");
+  if (type === "text") {
+    return readString(content, "text") ?? null;
+  }
+  if (type === "image") return "(image)";
+  if (type === "audio") return "(audio)";
+  if (type === "resource_link") {
+    const uri = readString(content, "uri");
+    return uri ? `(resource: ${uri})` : "(resource)";
+  }
+  if (type === "embedded_resource") return "(embedded resource)";
   return null;
 }
+
+/**
+ * Render a `tool_call` start. ACP's `ToolCall` carries a human
+ * `title` field — prefer that over reconstructing one from kind +
+ * input. Falls back to `kind` (`execute` / `read` / `edit` / …) so
+ * malformed agent emissions still get a marker line.
+ */
+function renderAcpToolCall(obj: Record<string, unknown>): RenderedLine[] {
+  const title = readString(obj, "title");
+  const kind = readString(obj, "kind") ?? "tool";
+  const label = title ?? toolKindLabel(kind);
+  const summary = summariseToolInput(obj["rawInput"]);
+  const toolCallId = toolCallDedupKey(obj, "start");
+  return [{ kind: "system", text: `→ ${label}${summary}`, toolCallId }];
+}
+
+/**
+ * Render a `tool_call_update`. The agent sends these in flight as
+ * the tool produces output or transitions status. We only surface a
+ * compact `←` line on terminal status transitions (`completed`,
+ * `failed`) so in-progress chatter doesn't flood the chat.
+ */
+function renderAcpToolCallUpdate(obj: Record<string, unknown>): RenderedLine[] {
+  // `ToolCallUpdate` is a patch: every field is optional. Codex
+  // sends updates that carry only `content` (output streaming in
+  // without a status change), while Claude tends to send one
+  // terminal `status: completed` update that includes content.
+  // Render either case — silence only the purely progressive
+  // in-flight updates that have nothing visible to show (status:
+  // in_progress without content).
+  const status = readString(obj, "status");
+  const fullOutput = extractToolCallFullText(obj["content"]);
+
+  // No content + non-terminal status: nothing useful to show. (A
+  // tool_call_update with status=in_progress and no content is just
+  // "still working" chatter the agent emits as throughput.)
+  if (fullOutput === null && status !== "completed" && status !== "failed") {
+    return [];
+  }
+
+  const isFailed = status === "failed";
+  const tag = isFailed ? "stderr" : "system";
+  const prefix = isFailed ? "✘" : "←";
+  const statusLabel = status ?? (fullOutput !== null ? "output" : "update");
+  const toolCallId = toolCallDedupKey(obj, "end");
+
+  // Surface the tool's actual output verbatim. Earlier versions
+  // capped it at 200 chars and collapsed whitespace, which made a
+  // `curl ...` response or a file read indistinguishable from a
+  // generic "completed" marker. We cap at MAX_TOOL_OUTPUT_CHARS
+  // to keep DOM cost bounded for pathologically large outputs.
+  const text =
+    fullOutput === null
+      ? `${prefix} ${statusLabel}`
+      : `${prefix} ${statusLabel}\n${clipToolOutput(fullOutput)}`;
+  return [{ kind: tag, text, toolCallId }];
+}
+
+const MAX_TOOL_OUTPUT_CHARS = 4096;
+
+function clipToolOutput(s: string): string {
+  if (s.length <= MAX_TOOL_OUTPUT_CHARS) return s;
+  return s.slice(0, MAX_TOOL_OUTPUT_CHARS - 1) + "…";
+}
+
+/** Build a dedup key for a tool-call event. `tool_call` and
+ *  `tool_call_update` share the same `toolCallId` but render
+ *  distinct lines (`→` start vs `←` end), so the key namespaces them
+ *  with a `start:` / `end:` prefix. `undefined` when the event has no
+ *  id (defensive — malformed agent emissions skip the dedup gate). */
+function toolCallDedupKey(
+  obj: Record<string, unknown>,
+  side: "start" | "end",
+): string | undefined {
+  const id = readString(obj, "toolCallId") ?? readString(obj, "tool_call_id");
+  return id ? `${side}:${id}` : undefined;
+}
+
+/** Render an agent's high-level execution plan. Each entry becomes
+ *  one system line marked with the appropriate status glyph; the
+ *  user can read the full plan at a glance without expanding any
+ *  details. */
+function renderAcpPlan(obj: Record<string, unknown>): RenderedLine[] {
+  const entries = obj["entries"];
+  if (!Array.isArray(entries)) return [];
+  const out: RenderedLine[] = [{ kind: "system", text: "▤ plan:" }];
+  for (const entry of entries) {
+    if (!isRecord(entry)) continue;
+    const status = readString(entry, "status") ?? "pending";
+    const content = readString(entry, "content") ?? "";
+    const glyph =
+      status === "completed" ? "✓" : status === "in_progress" ? "•" : "▢";
+    out.push({ kind: "system", text: `  ${glyph} ${truncate(content, 200)}` });
+  }
+  return out;
+}
+
+/** Map ACP `ToolKind` enum (`execute` / `read` / `edit` / `search` /
+ *  …) to a short user-facing label. The wire form is a string we
+ *  don't constrain to a hardcoded union — a future kind we don't
+ *  know about renders as-is rather than blocking the chat. */
+function toolKindLabel(kind: string): string {
+  switch (kind) {
+    case "execute":
+      return "Bash";
+    case "read":
+      return "Read";
+    case "edit":
+      return "Edit";
+    case "delete":
+      return "Delete";
+    case "move":
+      return "Move";
+    case "search":
+      return "Search";
+    case "fetch":
+      return "Fetch";
+    case "think":
+      return "Think";
+    default:
+      return kind;
+  }
+}
+
+/** Pick a representative one-liner from the raw_input JSON the agent
+ *  is about to feed the tool. We probe a curated list of common
+ *  fields (`command` for bash, `filePath` for edits, etc.) and fall
+ *  back to nothing rather than dump the whole payload. */
+function summariseToolInput(input: unknown): string {
+  if (!isRecord(input)) return "";
+  const fields = [
+    "command",
+    "filePath",
+    "file_path",
+    "path",
+    "pattern",
+    "query",
+    "url",
+    "prompt",
+  ];
+  for (const f of fields) {
+    const v = readString(input, f);
+    if (v) return ` ${truncate(v, 200)}`;
+  }
+  return "";
+}
+
+/** Pull the verbatim text output out of a `ToolCallContent[]` array.
+ *  ACP `ToolCallContent` is a union of inline content blocks and
+ *  diff payloads — we concatenate every text-bearing entry without
+ *  whitespace collapsing so the user reads the tool's actual output.
+ *  Returns `null` when the array contains no text we can render
+ *  (e.g. diff-only updates). The caller adds the `← completed`
+ *  marker and a length cap. */
+function extractToolCallFullText(content: unknown): string | null {
+  if (!Array.isArray(content) || content.length === 0) return null;
+  const parts: string[] = [];
+  for (const item of content) {
+    if (!isRecord(item)) continue;
+    const itemType = readString(item, "type");
+    if (itemType === "content") {
+      const inner = item["content"];
+      const text = readContentText(inner);
+      if (text) parts.push(text);
+    } else if (itemType === "diff") {
+      const path = readString(item, "path") ?? "?";
+      parts.push(`diff ${path}`);
+    }
+  }
+  if (parts.length === 0) return null;
+  return parts.join("\n");
+}
+
+// ---------- Session usage display helpers ----------
 
 function mergeUsage(prev: SessionUsage, delta: UsageDelta): SessionUsage {
   return {
@@ -2157,8 +2673,7 @@ function formatCost(usd: number): string {
 }
 
 function formatUsageSummary(u: SessionUsage): string {
-  const totalIn =
-    u.inputTokens + u.cacheCreationTokens + u.cacheReadTokens;
+  const totalIn = u.inputTokens + u.cacheCreationTokens + u.cacheReadTokens;
   const parts: string[] = [];
   if (totalIn > 0) parts.push(`${formatTokens(totalIn)} in`);
   if (u.outputTokens > 0) parts.push(`${formatTokens(u.outputTokens)} out`);
@@ -2171,8 +2686,7 @@ function formatUsageTooltip(u: SessionUsage): string {
   lines.push("Session usage (cumulative across resume turns)");
   if (u.model) lines.push(`Model: ${u.model}`);
   lines.push("");
-  const totalIn =
-    u.inputTokens + u.cacheCreationTokens + u.cacheReadTokens;
+  const totalIn = u.inputTokens + u.cacheCreationTokens + u.cacheReadTokens;
   lines.push(`Input total: ${totalIn.toLocaleString()} tokens`);
   if (u.inputTokens > 0)
     lines.push(`  Fresh: ${u.inputTokens.toLocaleString()}`);
@@ -2185,21 +2699,11 @@ function formatUsageTooltip(u: SessionUsage): string {
     lines.push(`Cost so far: ${formatCost(u.costUsd)}`);
   } else {
     // Subscription accounts (Claude Pro / Max / Team / Enterprise)
-    // don't get per-call billing; claude omits `total_cost_usd` or
-    // emits 0. Token counters still work because `message.usage` is
-    // always populated. Make the absence explicit instead of leaving
-    // the user wondering whether the run was free.
+    // and Codex on ChatGPT auth don't get per-call billing. ACP's
+    // unstable `usage_update` may omit `costUsd` for those tiers.
     lines.push("Cost: not reported (subscription plan)");
   }
   return lines.join("\n");
-}
-
-function extractClaudeSessionId(
-  parsed: Record<string, unknown> | null,
-): string | null {
-  if (parsed === null) return null;
-  if (readString(parsed, "type") !== "system") return null;
-  return readString(parsed, "session_id") ?? null;
 }
 
 function formatBytes(n: number): string {
@@ -2208,173 +2712,7 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(2)} MiB`;
 }
 
-// ---------- Claude stream-json renderer ----------
-
-interface RenderedLine {
-  kind: LineKind;
-  text: string;
-}
-
-/**
- * Claude Code's `--output-format stream-json --verbose` emits one JSON
- * object per line, each with a `type` field. This function turns the raw
- * line into one or more display-friendly lines. Unknown shapes fall
- * through as plain stdout so we never silently drop output.
- *
- * Format reference (approximate, may change between claude versions):
- *   { type: "system", subtype: "init", ... }            // session start
- *   { type: "assistant", message: { content: [...] } }  // model turn
- *   { type: "user", message: { content: [...] } }       // tool results
- *   { type: "result", subtype: "success"|"error_...", result?: "..." }
- *
- * Inside `message.content[]`:
- *   { type: "text", text: "..." }
- *   { type: "tool_use", name: "Bash", input: {...} }
- *   { type: "tool_result", content: "..." | [...] }
- */
-function renderClaudeStreamLine(parsed: ParsedClaudeLine): RenderedLine[] {
-  const { obj, raw } = parsed;
-  if (obj === null) {
-    // Either the line was empty or didn't parse as a JSON object;
-    // fall back to printing it verbatim so we never silently drop
-    // output we don't recognise.
-    if (raw.trim() === "") return [];
-    return [{ kind: "stdout", text: raw }];
-  }
-  const type = readString(obj, "type");
-
-  switch (type) {
-    case "system": {
-      const subtype = readString(obj, "subtype") ?? "init";
-      const model = readString(obj, "model");
-      const cwd = readString(obj, "cwd");
-      const parts = [`◆ system: ${subtype}`];
-      if (model) parts.push(`model=${model}`);
-      if (cwd) parts.push(`cwd=${cwd}`);
-      return [{ kind: "system", text: parts.join(" · ") }];
-    }
-    case "assistant":
-      return renderMessageContent(obj, "assistant");
-    case "user":
-      return renderMessageContent(obj, "user");
-    case "result": {
-      // `result.result` is a recap of the final assistant message that we
-      // already rendered from the `assistant.message.content[].text` block,
-      // so we deliberately don't emit it here — otherwise the answer
-      // appears twice. Only render the result marker line itself.
-      const subtype = readString(obj, "subtype") ?? "?";
-      const duration = readNumber(obj, "duration_ms");
-      const cost = readNumber(obj, "total_cost_usd");
-      const parts = [`◆ result: ${subtype}`];
-      if (duration != null) parts.push(`${Math.round(duration / 1000)}s`);
-      if (cost != null) parts.push(`$${cost.toFixed(4)}`);
-      return [{ kind: "system", text: parts.join(" · ") }];
-    }
-    case "rate_limit_event": {
-      // Top-level rate-limit pings — too chatty to show inline and
-      // they're not actionable to the user mid-run.
-      const info = obj["rate_limit_info"];
-      if (isRecord(info)) {
-        const status = readString(info, "status");
-        if (status && status !== "allowed") {
-          return [{ kind: "stderr", text: `⚠ rate limit: ${status}` }];
-        }
-      }
-      return [];
-    }
-    case "stream_event":
-      // Internal stream-level event (e.g. partial-message deltas in newer
-      // claude versions). Not interesting at this rendering level.
-      return [];
-    default:
-      return [{ kind: "stdout", text: raw }];
-  }
-}
-
-function renderMessageContent(
-  envelope: Record<string, unknown>,
-  role: "assistant" | "user",
-): RenderedLine[] {
-  const message = envelope["message"];
-  if (!isRecord(message)) return [];
-  const content = message["content"];
-  if (!Array.isArray(content)) return [];
-
-  const out: RenderedLine[] = [];
-  for (const block of content) {
-    if (!isRecord(block)) continue;
-    const btype = readString(block, "type");
-    switch (btype) {
-      case "text": {
-        const text = readString(block, "text");
-        if (text) out.push({ kind: "stdout", text });
-        break;
-      }
-      case "thinking": {
-        // Extended-thinking blocks are verbose chain-of-thought — render
-        // a tiny one-line marker so the user sees "the agent is thinking"
-        // without flooding the panel. First ~120 chars of the content
-        // are enough to confirm something is happening.
-        const text = readString(block, "thinking") ?? "";
-        const head = truncate(text.replace(/\s+/g, " ").trim(), 120);
-        out.push({
-          kind: "system",
-          text: head === "" ? `🧠 thinking…` : `🧠 ${head}`,
-        });
-        break;
-      }
-      case "tool_use": {
-        const name = readString(block, "name") ?? "?";
-        const input = block["input"];
-        const summary = summarizeToolInput(name, input);
-        out.push({ kind: "system", text: `→ ${name}${summary}` });
-        break;
-      }
-      case "tool_result": {
-        const c = block["content"];
-        const isError = readBool(block, "is_error") === true;
-        const summary = summarizeToolResult(c);
-        out.push({
-          kind: isError ? "stderr" : "system",
-          text: `← ${isError ? "error: " : ""}${summary}`,
-        });
-        break;
-      }
-      default: {
-        // Unknown block kind — show role + a hint so debugging is possible.
-        out.push({
-          kind: "system",
-          text: `(${role}: unknown block ${btype ?? "?"})`,
-        });
-      }
-    }
-  }
-  return out;
-}
-
-function summarizeToolInput(_name: string, input: unknown): string {
-  if (!isRecord(input)) return "";
-  // Common cases: command/file_path/pattern for first-class tools.
-  const fields = ["command", "file_path", "path", "pattern", "url", "prompt"];
-  for (const f of fields) {
-    const v = readString(input, f);
-    if (v) return ` ${truncate(v, 200)}`;
-  }
-  return "";
-}
-
-function summarizeToolResult(content: unknown): string {
-  if (typeof content === "string") return truncate(content, 240);
-  if (Array.isArray(content)) {
-    const text = content
-      .filter(isRecord)
-      .map((b) => readString(b, "text") ?? "")
-      .filter((s) => s !== "")
-      .join(" ");
-    return truncate(text || "(no text)", 240);
-  }
-  return "(non-text result)";
-}
+// ---------- Generic JSON helpers ----------
 
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
@@ -2393,267 +2731,4 @@ function readString(o: Record<string, unknown>, k: string): string | undefined {
 function readNumber(o: Record<string, unknown>, k: string): number | undefined {
   const v = o[k];
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
-}
-
-function readBool(o: Record<string, unknown>, k: string): boolean | undefined {
-  const v = o[k];
-  return typeof v === "boolean" ? v : undefined;
-}
-
-// ---------- Runner-dispatched stream parsing ----------
-
-/**
- * Cross-runner facade over the per-runner parsers below. The
- * `onStdout` handler picks the right parser based on the active
- * `RunStartedEvent.runner`. Codex emits its own JSONL shape, so the
- * dispatch is mandatory — feeding a Codex `turn.completed` event into
- * the Claude parser would silently drop the usage delta.
- */
-function parseStreamLine(raw: string): ParsedClaudeLine {
-  // The wire format on both runners is "{} per line", so parse-or-
-  // passthrough is shared. Per-runner shape inspection happens in
-  // `renderStreamLine` / `extract*` below.
-  return parseClaudeLine(raw);
-}
-
-function extractSessionId(
-  runner: AgentRunnerId,
-  parsed: Record<string, unknown> | null,
-): string | null {
-  if (parsed === null) return null;
-  return runner === "codex"
-    ? extractCodexSessionId(parsed)
-    : extractClaudeSessionId(parsed);
-}
-
-function extractUsageDelta(
-  runner: AgentRunnerId,
-  parsed: Record<string, unknown> | null,
-): UsageDelta | null {
-  if (parsed === null) return null;
-  return runner === "codex"
-    ? extractCodexUsageDelta(parsed)
-    : extractClaudeUsageDelta(parsed);
-}
-
-function renderStreamLine(
-  runner: AgentRunnerId,
-  parsed: ParsedClaudeLine,
-): RenderedLine[] {
-  return runner === "codex"
-    ? renderCodexStreamLine(parsed)
-    : renderClaudeStreamLine(parsed);
-}
-
-// ---------- Codex JSONL parsing ----------
-//
-// Event shapes (codex 0.132):
-//   {"type":"thread.started","thread_id":"<uuid>"}
-//   {"type":"turn.started"}
-//   {"type":"item.started","item":{"id","type":"command_execution","command","status":"in_progress"}}
-//   {"type":"item.completed","item":{"id","type":"command_execution","command","exit_code","status":"completed","aggregated_output"}}
-//   {"type":"item.completed","item":{"id","type":"agent_message","text":"..."}}
-//   {"type":"turn.completed","usage":{"input_tokens","cached_input_tokens","output_tokens","reasoning_output_tokens"}}
-//
-// Codex tracks separate input + cache buckets, and exposes reasoning
-// tokens which we fold into `outputTokens` for display so the chip
-// matches the user's intuition ("tokens generated").
-
-function extractCodexSessionId(
-  parsed: Record<string, unknown>,
-): string | null {
-  if (readString(parsed, "type") !== "thread.started") return null;
-  return readString(parsed, "thread_id") ?? null;
-}
-
-function extractCodexUsageDelta(
-  parsed: Record<string, unknown>,
-): UsageDelta | null {
-  if (readString(parsed, "type") !== "turn.completed") return null;
-  const usage = parsed["usage"];
-  if (!isRecord(usage)) return null;
-  const inputTokens = readNumber(usage, "input_tokens") ?? 0;
-  const cachedInput = readNumber(usage, "cached_input_tokens") ?? 0;
-  const outputTokens = readNumber(usage, "output_tokens") ?? 0;
-  const reasoning = readNumber(usage, "reasoning_output_tokens") ?? 0;
-  // Codex reports cumulative-per-turn counts. Pre-multi-runner the
-  // Claude path summed deltas across turns; replicate that semantic
-  // by adding the new turn's counts on top of the accumulated total.
-  // Reasoning tokens go into output so they're counted (visible cost
-  // proxy on subscription plans where costUsd is missing).
-  return {
-    inputTokens,
-    outputTokens: outputTokens + reasoning,
-    cacheCreationTokens: 0,
-    // Codex doesn't distinguish "cache create" from "cache read" —
-    // treat cached input as read-side.
-    cacheReadTokens: cachedInput,
-    // Codex `--json` doesn't emit a per-turn cost in 0.132. Leaving
-    // costUsd at 0 — the panel falls back to "Cost: not reported"
-    // (matches the subscription-plan branch of Claude).
-    costUsd: 0,
-    model: null,
-  };
-}
-
-/**
- * Codex's JSONL is simpler than Claude's stream-json — there's no
- * `assistant.message.content` block walk, just flat per-event items.
- * Map them to the same RenderedLine shape so the panel's `<pre>` can
- * render them uniformly.
- */
-function renderCodexStreamLine(parsed: ParsedClaudeLine): RenderedLine[] {
-  const { obj, raw } = parsed;
-  if (obj === null) {
-    if (raw.trim() === "") return [];
-    return [{ kind: "stdout", text: raw }];
-  }
-  const type = readString(obj, "type");
-  switch (type) {
-    case "thread.started": {
-      const id = readString(obj, "thread_id") ?? "?";
-      return [{ kind: "system", text: `◆ session ${id.slice(0, 8)}…` }];
-    }
-    case "turn.started":
-      // Tiny marker so the user sees the model is now thinking.
-      // Codex doesn't emit a per-message "thinking" event the way
-      // Claude does — this is the closest equivalent.
-      return [{ kind: "system", text: "🧠 thinking…" }];
-    case "item.started": {
-      const item = obj["item"];
-      if (!isRecord(item)) return [];
-      return renderCodexItem(item, /* started */ true);
-    }
-    case "item.completed": {
-      const item = obj["item"];
-      if (!isRecord(item)) return [];
-      return renderCodexItem(item, /* started */ false);
-    }
-    case "turn.completed": {
-      const usage = obj["usage"];
-      if (!isRecord(usage)) return [{ kind: "system", text: "◆ turn complete" }];
-      const total =
-        (readNumber(usage, "input_tokens") ?? 0) +
-        (readNumber(usage, "output_tokens") ?? 0) +
-        (readNumber(usage, "reasoning_output_tokens") ?? 0);
-      return [{ kind: "system", text: `◆ turn complete · ${formatTokens(total)} tok` }];
-    }
-    case "turn.failed": {
-      // Failed turn — codex stuffs the API error in `error.message`
-      // as a JSON string (e.g. model not supported on this auth tier).
-      // Extract the inner message so the user sees a one-liner
-      // instead of a wall of nested JSON.
-      const err = obj["error"];
-      const msg = isRecord(err) ? readString(err, "message") : undefined;
-      return [
-        {
-          kind: "stderr",
-          text: `✘ turn failed: ${extractCodexErrorMessage(msg)}`,
-        },
-      ];
-    }
-    case "error": {
-      // Top-level error events arrive in addition to (or instead of)
-      // `turn.failed`. Same shape — nested JSON in `message`.
-      const msg = readString(obj, "message");
-      return [
-        {
-          kind: "stderr",
-          text: `✘ error: ${extractCodexErrorMessage(msg)}`,
-        },
-      ];
-    }
-    default:
-      // Codex may grow new event types between versions; surface the
-      // raw line so we don't silently drop it.
-      return [{ kind: "stdout", text: raw }];
-  }
-}
-
-/**
- * Codex wraps the upstream API error in a JSON string inside its
- * own `message` field — pulling out the human-readable bit takes
- * one optional re-parse:
- *
- *   message = '{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"…"}}'
- *
- * If the string doesn't parse or doesn't have the expected nested
- * shape, fall back to the raw string so we never hide the original
- * payload.
- */
-function extractCodexErrorMessage(raw: string | undefined): string {
-  if (!raw) return "(no message)";
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (isRecord(parsed)) {
-      const inner = parsed["error"];
-      if (isRecord(inner)) {
-        const msg = readString(inner, "message");
-        if (msg) return msg;
-      }
-      const flatMsg = readString(parsed, "message");
-      if (flatMsg) return flatMsg;
-    }
-  } catch {
-    // Fall through to the raw string.
-  }
-  return raw;
-}
-
-/**
- * Render a single codex `item.{started,completed}` payload. Different
- * item types render differently:
- *
- * - `agent_message` — model text. Surfaces as `stdout` so the chat
- *   reads naturally; only emitted on `item.completed` (the started
- *   event has no text yet).
- * - `command_execution` — shell command. Started gets a `→` marker so
- *   the user sees codex is about to run something; completed gets a
- *   `←` marker with the exit code so failures stand out.
- * - Anything else — minimal one-liner with the item type, so a future
- *   codex release adding new item kinds doesn't drop output.
- */
-function renderCodexItem(
-  item: Record<string, unknown>,
-  started: boolean,
-): RenderedLine[] {
-  const itype = readString(item, "type") ?? "?";
-  switch (itype) {
-    case "agent_message": {
-      // Only the `item.completed` carries text — `item.started` for
-      // agent_message has nothing useful.
-      if (started) return [];
-      const text = readString(item, "text");
-      if (!text) return [];
-      return [{ kind: "stdout", text }];
-    }
-    case "command_execution": {
-      const command = readString(item, "command") ?? "?";
-      if (started) {
-        return [{ kind: "system", text: `→ Bash ${truncate(command, 200)}` }];
-      }
-      const code = readNumber(item, "exit_code");
-      const out = readString(item, "aggregated_output") ?? "";
-      const head = truncate(out.replace(/\s+/g, " ").trim(), 200);
-      const status =
-        code === 0
-          ? `exit 0${head ? ` · ${head}` : ""}`
-          : `exit ${code ?? "?"}${head ? ` · ${head}` : ""}`;
-      return [
-        {
-          kind: code === 0 ? "system" : "stderr",
-          text: `← ${status}`,
-        },
-      ];
-    }
-    default: {
-      // Unknown item kind — pass through with a hint marker.
-      return [
-        {
-          kind: "system",
-          text: started ? `→ ${itype}` : `← ${itype} done`,
-        },
-      ];
-    }
-  }
 }

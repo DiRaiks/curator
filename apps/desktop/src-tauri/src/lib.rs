@@ -1,3 +1,5 @@
+mod acp_paths;
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -5,6 +7,8 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Emitter, Manager, State};
+
+use crate::acp_paths::AcpPaths;
 
 /// Walk the vault directory tree. Heavy I/O (walkdir + per-file head read +
 /// six artifact passes) — must run off the main thread or the UI freezes on
@@ -370,6 +374,16 @@ struct RunExitPayload {
     run_id: String,
     code: Option<i32>,
     success: bool,
+}
+
+/// `run:session-started` payload. Fired once per run when the ACP
+/// agent has minted (or loaded) a session id. The frontend stashes
+/// the id so a subsequent Reply / Stop can target it cleanly.
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RunSessionStartedPayload {
+    run_id: String,
+    session_id: String,
 }
 
 /// `run:permission-request` event payload. Mirrors the runner's
@@ -811,16 +825,38 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<RunStartedPayload, String> {
         // here rather than a trait-object indirection. Both runners
         // implement the same `Runner` trait and produce the same
         // `RunHandle` shape, so the rest of the pipeline is agnostic.
+        //
+        // The bundled ACP agent paths were resolved once during
+        // `setup` and stashed in Tauri state. A missing entry means
+        // resolution failed at boot (logged to stderr); surface the
+        // same error inline so the user sees actionable feedback in
+        // the chat rather than an opaque crash.
+        let acp_paths: AcpPaths = app
+            .try_state::<AcpPaths>()
+            .map(|s| (*s).clone())
+            .ok_or_else(|| {
+                "ACP agent paths not resolved at startup — see logs. \
+                 Verify `apps/desktop/src-tauri/resources/acp/` and run \
+                 `./scripts/fetch-acp-binaries.sh` from the repo root."
+                    .to_string()
+            })?;
+
         use vault_core::runner::Runner as _;
         let handle = match runner_kind {
             vault_core::runner::RunnerKind::ClaudeCode => {
-                vault_core::runner::ClaudeRunner::new()
+                vault_core::runner::AcpClaudeRunner::new(
+                    acp_paths.node_bin.clone(),
+                    acp_paths.claude_wrapper_js.clone(),
+                    acp_paths.claude_bin.clone(),
+                )
+                .start(req)
+                .map_err(|e| e.to_string())?
+            }
+            vault_core::runner::RunnerKind::Codex => {
+                vault_core::runner::AcpCodexRunner::new(acp_paths.codex_acp_bin.clone())
                     .start(req)
                     .map_err(|e| e.to_string())?
             }
-            vault_core::runner::RunnerKind::Codex => vault_core::runner::CodexRunner::new()
-                .start(req)
-                .map_err(|e| e.to_string())?,
         };
         let (events, killer) = handle.into_parts().map_err(|e| e.to_string())?;
 
@@ -931,6 +967,15 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<RunStartedPayload, String> {
                         },
                     );
                 }
+                RunEvent::SessionStarted { session_id } => {
+                    let _ = app_for_thread.emit(
+                        "run:session-started",
+                        RunSessionStartedPayload {
+                            run_id: run_id_for_thread.clone(),
+                            session_id,
+                        },
+                    );
+                }
                 RunEvent::Exit { code, success } => {
                     let _ = app_for_thread.emit(
                         "run:exit",
@@ -1010,9 +1055,8 @@ fn approve_tool_use(
         updated_input,
         updated_permissions,
     };
-    let line = vault_core::runner::build_permission_response_line(&request_id, &decision);
-    if !active.killer.send_stdin(line) {
-        return Err("failed to send control_response — subprocess closed stdin".into());
+    if !active.killer.respond_to_permission(request_id, decision) {
+        return Err("failed to deliver approval — runner has no live permission channel".into());
     }
     Ok(())
 }
@@ -1040,9 +1084,8 @@ fn deny_tool_use(
     let decision = vault_core::runner::PermissionDecision::Deny {
         message: message.unwrap_or_else(|| "user denied".to_string()),
     };
-    let line = vault_core::runner::build_permission_response_line(&request_id, &decision);
-    if !active.killer.send_stdin(line) {
-        return Err("failed to send control_response — subprocess closed stdin".into());
+    if !active.killer.respond_to_permission(request_id, decision) {
+        return Err("failed to deliver denial — runner has no live permission channel".into());
     }
     Ok(())
 }
@@ -1475,6 +1518,22 @@ pub fn run() {
         .setup(|app| {
             app.manage(WatchState::default());
             app.manage(RunState::default());
+
+            // Resolve the bundled ACP agent paths once at startup.
+            // Failure here means the bundled JS wrapper or the
+            // fetched codex-acp binary is missing — fatal for the
+            // runner subsystem. We log the precise error and let the
+            // app boot anyway: every spawn attempt will then return
+            // the same error inline in the chat, which beats a silent
+            // crash on launch.
+            match acp_paths::resolve(app.app_handle()) {
+                Ok(paths) => {
+                    app.manage(paths);
+                }
+                Err(e) => {
+                    eprintln!("acp_paths: {e}");
+                }
+            }
 
             // Consolidated SQLite store. One file under
             // app_local_data_dir holds sessions, dismissed

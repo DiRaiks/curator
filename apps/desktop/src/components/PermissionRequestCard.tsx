@@ -186,6 +186,7 @@ function summariseToolInput(_tool: string, input: unknown): string {
   for (const field of [
     "command",
     "file_path",
+    "filePath",
     "path",
     "pattern",
     "url",
@@ -193,13 +194,28 @@ function summariseToolInput(_tool: string, input: unknown): string {
   ]) {
     const v = obj[field];
     if (typeof v === "string" && v.length > 0) {
-      return v.length > 240 ? v.slice(0, 239) + "…" : v;
+      return clip(v);
+    }
+    // codex-acp ships `command` as a string array — typically
+    // `["/bin/zsh", "-lc", "<actual command>"]`. Pull the shell
+    // payload out (last element) so the card shows the user the
+    // meaningful command rather than the wrapper invocation.
+    if (Array.isArray(v) && v.every((it) => typeof it === "string")) {
+      const arr = v as string[];
+      const meaningful =
+        arr.length >= 3 && (arr[0] === "/bin/zsh" || arr[0] === "/bin/bash")
+          ? arr[arr.length - 1]
+          : arr.join(" ");
+      if (meaningful.length > 0) return clip(meaningful);
     }
   }
   try {
-    const j = JSON.stringify(input);
-    return j.length > 240 ? j.slice(0, 239) + "…" : j;
+    return clip(JSON.stringify(input));
   } catch {
     return "";
   }
+}
+
+function clip(s: string): string {
+  return s.length > 240 ? s.slice(0, 239) + "…" : s;
 }

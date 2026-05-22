@@ -24,3 +24,13 @@ apps/desktop/src-tauri/gen/
 .env.local
 
 /design
+
+# Vendored ACP agent assets. Both the codex-acp native binary
+# (~170 MB per platform) and the claude-agent-acp JS wrapper tree
+# (~33 MB after stripping tests) are fetched via
+# scripts/fetch-acp-binaries.sh from pinned npm registry versions.
+# Keeping them out of git keeps `git diff` legible and version bumps
+# tracked through the script's pinned constants.
+apps/desktop/src-tauri/binaries/codex-acp-*
+apps/desktop/src-tauri/resources/acp/node_modules/
+apps/desktop/src-tauri/resources/acp/.claude-acp.version

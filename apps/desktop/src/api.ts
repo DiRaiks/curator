@@ -321,6 +321,21 @@ export interface RunExitEvent {
 }
 
 /**
+ * Fires once per run when the ACP agent mints (or loads) a session
+ * id. The frontend stashes it so a subsequent `resumeRun` /
+ * `resumeFreeformRun` can continue the same conversation thread.
+ *
+ * Pre-ACP runners surfaced the session id by reading Claude's
+ * stream-json `system init` payload out of stdout; ACP returns it as
+ * a structured response to `session/new`, so the Rust side lifts it
+ * into its own event variant and emits it before the first stdout.
+ */
+export interface RunSessionStartedEvent {
+  runId: string;
+  sessionId: string;
+}
+
+/**
  * Permission-request event payload — fires when claude pauses awaiting
  * a tool-use decision via the SDK control protocol (Bash, network,
  * MCP, …). The frontend renders a modal and resolves with
@@ -507,6 +522,7 @@ export async function getRuns(): Promise<RunStartedEvent[]> {
  */
 export async function onRunEvents(handlers: {
   onStarted?: (e: RunStartedEvent) => void;
+  onSessionStarted?: (e: RunSessionStartedEvent) => void;
   onStdout?: (e: RunLineEvent) => void;
   onStderr?: (e: RunLineEvent) => void;
   onTruncated?: (e: RunTruncatedEvent) => void;
@@ -521,6 +537,12 @@ export async function onRunEvents(handlers: {
     const h = handlers.onStarted;
     pending.push(
       listen<RunStartedEvent>("run:started", (ev) => h(ev.payload)),
+    );
+  }
+  if (handlers.onSessionStarted) {
+    const h = handlers.onSessionStarted;
+    pending.push(
+      listen<RunSessionStartedEvent>("run:session-started", (ev) => h(ev.payload)),
     );
   }
   if (handlers.onStdout) {
