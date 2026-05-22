@@ -4666,7 +4666,8 @@ button {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   background: var(--panel);
   border-right: 1px solid var(--border);
   font-family: var(--font-mono);
@@ -4857,8 +4858,6 @@ button {
 }
 
 .sidebar__files {
-  flex: 1;
-  overflow: auto;
   min-height: 0;
 }
 
