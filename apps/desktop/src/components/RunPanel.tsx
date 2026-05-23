@@ -33,6 +33,7 @@ import {
   classifyStreamingVisibility,
   extractAcpUsageDelta,
   parseAcpUpdate,
+  PLAN_DEDUP_KEY,
   renderAcpUpdate,
   resetAcpUsageBaseline,
   type LineKind,
@@ -227,6 +228,11 @@ export interface ChatTabStatusInfo {
    *  the maximum across reporting tabs (they all see the same DB; a
    *  newly-mounted tab may briefly lag with `null`). */
   savedCount: number | null;
+  /** Per-tab collapsed flag. The host uses this on the *active* tab to
+   *  drop the drawer back to its content-driven height — without it
+   *  the user-set drawer height would leave an empty band below the
+   *  collapsed header. */
+  collapsed: boolean;
 }
 
 /** Snapshot of the live run state suitable for ambient UI surfaces
@@ -1411,6 +1417,7 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
       outputTokens: usage.outputTokens,
       costUsd: usage.costUsd,
       savedCount: lastSessions?.length ?? null,
+      collapsed,
     });
   }, [
     chatId,
@@ -1422,6 +1429,7 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     usage.outputTokens,
     usage.costUsd,
     lastSessions,
+    collapsed,
   ]);
 
   const subscribeToStatus = useCallback(
@@ -1634,6 +1642,23 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
   const showChatInput =
     !collapsed && status.kind !== "running" && status.kind !== "stopping";
 
+  // Latest agent plan / todo-list snapshot. The ACP renderer collapses
+  // every `SessionUpdate.plan` emission into one line keyed by
+  // `PLAN_DEDUP_KEY` (see `renderAcpPlan`), so the most-recent plan is
+  // simply the latest line in `lines` carrying that id. We surface it
+  // as a sticky widget above the scrollable output and elide the same
+  // entry from the inline stream so it doesn't render twice.
+  const latestPlan = useMemo<string | null>(() => {
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (lines[i]!.toolCallId === PLAN_DEDUP_KEY) return lines[i]!.text;
+    }
+    return null;
+  }, [lines]);
+  const visibleLines = useMemo(
+    () => lines.filter((l) => l.toolCallId !== PLAN_DEDUP_KEY),
+    [lines],
+  );
+
   return (
     <aside
       className={"run-panel" + (collapsed ? " run-panel--collapsed" : "")}
@@ -1745,13 +1770,22 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
           {collapsed ? "Show" : "Hide"}
         </button>
       </header>
-      {!collapsed && lines.length > 0 && (
+      {!collapsed && latestPlan && (
+        <div
+          className="run-panel__plan"
+          role="status"
+          aria-label="Agent plan"
+        >
+          <pre className="run-panel__plan-body">{latestPlan}</pre>
+        </div>
+      )}
+      {!collapsed && visibleLines.length > 0 && (
         <pre
           ref={outputRef}
           className="run-panel__output"
           onScroll={onScroll}
         >
-          {lines.map((l, i) => (
+          {visibleLines.map((l, i) => (
             <span
               key={i}
               className={

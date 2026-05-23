@@ -52,6 +52,34 @@ function nextChatId(): string {
   return `chat-${chatIdCounter}-${Date.now()}`;
 }
 
+/** localStorage key for the user-set chat drawer height. */
+const HEIGHT_STORAGE_KEY = "vw.runPanelHeight";
+/** Default height (px) on first launch — matches the historical
+ *  hard-coded `max-height: 360px` so existing users see no change. */
+const DEFAULT_HEIGHT = 360;
+/** Floor: header + tabs row stay reachable. */
+const MIN_HEIGHT = 120;
+
+function loadStoredHeight(): number {
+  try {
+    const raw = localStorage.getItem(HEIGHT_STORAGE_KEY);
+    if (!raw) return DEFAULT_HEIGHT;
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) && n >= MIN_HEIGHT ? n : DEFAULT_HEIGHT;
+  } catch {
+    // Private mode / disabled storage — fall back silently. The user's
+    // resize won't persist this session but the drag still works.
+    return DEFAULT_HEIGHT;
+  }
+}
+
+function clampHeight(px: number): number {
+  // Cap at 90% of the viewport so the drawer can't eat the editor
+  // entirely. Cheap upper bound — re-evaluated live during the drag.
+  const ceiling = Math.max(MIN_HEIGHT, Math.floor(window.innerHeight * 0.9));
+  return Math.max(MIN_HEIGHT, Math.min(ceiling, px));
+}
+
 /**
  * Multi-chat host. Manages the list of open chat tabs, mounts one
  * `RunPanel` per tab (keeping inactive ones in the DOM but hidden so
@@ -80,6 +108,75 @@ export const RunPanelHost = forwardRef<RunPanelHandle, RunPanelHostProps>(
     ]);
     const [activeChatId, setActiveChatId] = useState<string>(
       () => chats[0]!.id,
+    );
+
+    // User-adjustable chat-drawer height. Persisted to localStorage so
+    // the layout sticks across app launches. A single height value
+    // applies to all tabs — drag-resizing the active panel reshapes the
+    // shared drawer (only one tab is visible at a time anyway).
+    const [panelHeight, setPanelHeight] = useState<number>(loadStoredHeight);
+    // Persist on every change. Cheap (write per mousemove is fine —
+    // localStorage handles 60Hz writes without breaking a sweat).
+    useEffect(() => {
+      try {
+        localStorage.setItem(HEIGHT_STORAGE_KEY, String(panelHeight));
+      } catch {
+        // Storage unavailable — ignore. Resize still works in-session.
+      }
+    }, [panelHeight]);
+
+    // Wrapper DOM ref. Used to snap `panelHeight` to the actual
+    // rendered height on `pointerup` — when the user drags the handle
+    // below `min-content`, the browser clamps the visual height to
+    // content but the JS state would otherwise keep the (now-stale)
+    // smaller value. Without the snap the *next* drag would start
+    // from the stale value and feel jumpy.
+    const wrapperRef = useRef<HTMLDivElement | null>(null);
+
+    // Drag-resize handle: capture mouse on pointerdown, install
+    // document-level listeners so the drag survives the cursor leaving
+    // the 4px hit area, recompute height as the cursor moves.
+    const startDragRef = useRef<{ startY: number; startH: number } | null>(
+      null,
+    );
+    const onDragStart = useCallback(
+      (e: React.PointerEvent<HTMLDivElement>) => {
+        e.preventDefault();
+        startDragRef.current = { startY: e.clientY, startH: panelHeight };
+
+        const onMove = (ev: PointerEvent) => {
+          const start = startDragRef.current;
+          if (!start) return;
+          // Cursor moving UP grows the drawer (drawer is anchored to
+          // the viewport bottom): dy = startY - currentY.
+          const dy = start.startY - ev.clientY;
+          setPanelHeight(clampHeight(start.startH + dy));
+        };
+        const onUp = () => {
+          startDragRef.current = null;
+          document.removeEventListener("pointermove", onMove);
+          document.removeEventListener("pointerup", onUp);
+          // Restore the default cursor / selection behaviour on the
+          // body. Drag-time we set `cursor: row-resize` + `user-select:
+          // none` via a body class so the cursor stays correct while
+          // hovering over child panels during the drag.
+          document.body.classList.remove("is-resizing-run-panel");
+          // Snap state to actual rendered height — covers the case
+          // where `min-height: min-content` clamped the drawer larger
+          // than the value we set on `setPanelHeight`.
+          const el = wrapperRef.current;
+          if (el) {
+            const rendered = el.offsetHeight;
+            if (Number.isFinite(rendered) && rendered > 0) {
+              setPanelHeight(clampHeight(rendered));
+            }
+          }
+        };
+        document.addEventListener("pointermove", onMove);
+        document.addEventListener("pointerup", onUp);
+        document.body.classList.add("is-resizing-run-panel");
+      },
+      [panelHeight],
     );
 
     // Per-tab status snapshots, keyed by chatId. Drives the tab-bar
@@ -368,7 +465,8 @@ export const RunPanelHost = forwardRef<RunPanelHandle, RunPanelHostProps>(
           prev.inputTokens === info.inputTokens &&
           prev.outputTokens === info.outputTokens &&
           prev.costUsd === info.costUsd &&
-          prev.savedCount === info.savedCount
+          prev.savedCount === info.savedCount &&
+          prev.collapsed === info.collapsed
         ) {
           return m;
         }
@@ -378,8 +476,35 @@ export const RunPanelHost = forwardRef<RunPanelHandle, RunPanelHostProps>(
       });
     }, []);
 
+    // Drag-resize only makes sense when the active chat is expanded —
+    // a collapsed drawer is just the tab strip + header strip, dragging
+    // a thicker wrapper would only insert empty space below. Read the
+    // active tab's collapsed flag (reported via `onStatusChange`) and
+    // switch the wrapper to content-driven height + hide the handle
+    // when collapsed.
+    const activeIsCollapsed = tabStatus.get(activeChatId)?.collapsed ?? true;
+
     return (
-      <>
+      <div
+        ref={wrapperRef}
+        className={
+          "run-panel-host" +
+          (activeIsCollapsed ? " run-panel-host--collapsed" : "")
+        }
+        style={
+          activeIsCollapsed ? undefined : { height: `${panelHeight}px` }
+        }
+      >
+        {!activeIsCollapsed && (
+          <div
+            className="run-panel-host__resize-handle"
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Resize chat drawer"
+            title="Drag to resize"
+            onPointerDown={onDragStart}
+          />
+        )}
         <div className="run-panel-host__tabs" role="tablist">
             {orderedTabs.map((c) => {
               const info = tabStatus.get(c.id);
@@ -467,7 +592,7 @@ export const RunPanelHost = forwardRef<RunPanelHandle, RunPanelHostProps>(
             onStatusChange={onTabStatusChange}
           />
         ))}
-      </>
+      </div>
     );
   },
 );

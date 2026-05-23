@@ -273,19 +273,36 @@ export function renderAcpToolCallUpdate(obj: Record<string, unknown>): RenderedL
   return [{ kind: tag, text, toolCallId }];
 }
 
+/** Stable dedup key for the agent's plan / todo list. Every
+ *  `SessionUpdate.plan` emission carries the current full snapshot of
+ *  the agent's todos — collapsing them all under one id lets the
+ *  `appendLine` replace-path overwrite the same block in place, so the
+ *  user sees one live-updating plan widget rather than a stack of
+ *  outdated copies. There is at most one plan per session, so a fixed
+ *  string is unambiguous. */
+export const PLAN_DEDUP_KEY = "plan";
+
 export function renderAcpPlan(obj: Record<string, unknown>): RenderedLine[] {
   const entries = obj["entries"];
   if (!Array.isArray(entries)) return [];
-  const out: RenderedLine[] = [{ kind: "system", text: "▤ plan:" }];
+
+  // Build the plan as a single multi-line block. Each todo gets a
+  // glyph indicating its status; truncate per-entry so a runaway
+  // agent (codex sometimes lists 20+ todos with long descriptions)
+  // can't push the rest of the chat off-screen.
+  const lines: string[] = ["▤ plan:"];
   for (const entry of entries) {
     if (!isRecord(entry)) continue;
     const status = readString(entry, "status") ?? "pending";
     const content = readString(entry, "content") ?? "";
     const glyph =
       status === "completed" ? "✓" : status === "in_progress" ? "•" : "▢";
-    out.push({ kind: "system", text: `  ${glyph} ${truncate(content, 200)}` });
+    lines.push(`  ${glyph} ${truncate(content, 200)}`);
   }
-  return out;
+
+  return [
+    { kind: "system", text: lines.join("\n"), toolCallId: PLAN_DEDUP_KEY },
+  ];
 }
 
 /** Build a dedup key for a tool-call event. `tool_call` and

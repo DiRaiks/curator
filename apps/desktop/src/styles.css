@@ -2462,13 +2462,77 @@ button {
 /* ---------- Run panel (bottom drawer) ---------- */
 
 .run-panel {
-  flex-shrink: 0;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   border-top: 1px solid var(--border);
   background: var(--panel);
-  max-height: 360px;
-  min-height: 36px;
+  /* When the drawer is dragged smaller than the panel's natural content
+   * (header + form + output), clip the overflow inside the panel
+   * instead of letting it push the global layout taller than the
+   * viewport. The user sees a chat that's too short to type into,
+   * which is the right cue to drag the drawer up — no scrollbar
+   * appears on the window itself. */
+  overflow: hidden;
+}
+
+/* When a chat is collapsed it shrinks back to its header — the host
+ * wrapper's height stays at the user's set value, but the panel inside
+ * doesn't fight to fill it. */
+.run-panel--collapsed {
+  flex: 0 0 auto;
+  max-height: 36px;
+}
+
+/* ---------- Multi-chat host wrapper (RunPanelHost) ---------- */
+
+/* Bottom drawer container. Owns the user-adjustable height shared by
+ * every chat tab (only one is visible at a time). Tabs row sits on
+ * top, then the active RunPanel fills the rest. */
+.run-panel-host {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* `height` is set inline by JS from persisted localStorage when the
+   * active chat is expanded. We give a fallback here in case JS hasn't
+   * measured yet. */
+  height: 360px;
+}
+
+/* When the active chat is collapsed the drawer drops back to its
+ * content-driven height (tabs row + collapsed header). Overrides the
+ * inline height that JS would otherwise apply — we don't even set the
+ * inline style in this state, but the class also wins by specificity
+ * if a stale style attribute lingers. */
+.run-panel-host--collapsed {
+  height: auto;
+}
+
+/* 4px hit area at the top edge of the drawer. Cursor: row-resize so
+ * the user discovers the affordance on hover. */
+.run-panel-host__resize-handle {
+  flex-shrink: 0;
+  height: 4px;
+  margin-bottom: -1px;
+  background: transparent;
+  cursor: row-resize;
+  border-top: 1px solid var(--border);
+  transition: background 80ms ease-out;
+}
+.run-panel-host__resize-handle:hover {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* During an active drag, freeze the body cursor + suppress text
+ * selection across the whole app. Without this, dragging fast past a
+ * `<pre>` triggered the text-selection cursor mid-drag and aborted
+ * the resize on accidental click. */
+body.is-resizing-run-panel,
+body.is-resizing-run-panel * {
+  cursor: row-resize !important;
+  user-select: none !important;
 }
 
 /* ---------- Multi-chat tab bar (RunPanelHost) ---------- */
@@ -2617,10 +2681,6 @@ button {
 .run-panel-host__tab-add:hover {
   color: var(--text);
   border-color: var(--accent);
-}
-
-.run-panel--collapsed {
-  max-height: 36px;
 }
 
 .run-panel__header {
@@ -2895,6 +2955,32 @@ button {
   white-space: pre-wrap;
   word-break: break-word;
   background: transparent;
+  color: var(--text);
+}
+
+/* Sticky plan widget. Sits between the chat header and the scrolling
+ * output so the latest agent plan / todo list stays visible no matter
+ * how far the user scrolls through the conversation. Constrained to a
+ * fraction of the drawer's height and scrolls internally when the
+ * agent emits a particularly long plan. */
+.run-panel__plan {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 30%;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel));
+  padding: 6px 12px;
+}
+
+.run-panel__plan-body {
+  margin: 0;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
   color: var(--text);
 }
 
