@@ -94,6 +94,15 @@ See [`PROJECT_BRIEF.md`](./PROJECT_BRIEF.md) for the full vision and
   approval is interactive: the agent's `session/request_permission`
   RPC surfaces an inline card in the chat tab. Your global
   `~/.claude/settings.json` allowlist still applies underneath.
+- **Codex** runner — `codex-acp` ships as a self-contained native
+  binary fetched by `scripts/fetch-acp-binaries.sh`, so you don't need
+  `codex` on `PATH` at runtime. Authentication, however, comes from
+  `~/.codex/` (config.toml + login state). The easiest way to populate
+  it is to install the upstream `codex` CLI once and run `codex login`
+  (or write `~/.codex/config.toml` with an OpenAI API key yourself);
+  after that codex-acp reuses the same auth.
+- **bash** — required to run `scripts/fetch-acp-binaries.sh`. Native
+  on macOS / Linux; on Windows use WSL or Git Bash.
 - Platform Tauri prerequisites — see
   https://v2.tauri.app/start/prerequisites/
 
