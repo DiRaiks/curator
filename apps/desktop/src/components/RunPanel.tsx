@@ -1023,11 +1023,22 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
         return;
       }
 
-      // Fresh freeform run. Capture the user's first message as the
-      // pending title BEFORE startFreeformRun resolves and the
-      // onStarted handler clears the draft. The title persists across
-      // the run lifecycle and surfaces as the History row's heading.
-      setPendingTitle(text.slice(0, 200));
+      // Fresh freeform run. Capture the title BEFORE startFreeformRun
+      // resolves and the onStarted handler clears the draft. The title
+      // persists across the run lifecycle and surfaces as the tab chip
+      // and History row's heading.
+      //
+      // For staged artifacts ("Open in chat" on a skill/agent) the
+      // prompt body starts with a verbose `# Vault Workflow Run: …`
+      // header followed by section scaffolding — slicing the first 200
+      // chars would fill the chip with that boilerplate. Use the
+      // compact `project/prompt` pair instead, matching the fallback
+      // already applied in the status broadcast below.
+      setPendingTitle(
+        stagedSource !== null
+          ? `${stagedSource.projectSlug}/${stagedSource.promptId}`
+          : text.slice(0, 200),
+      );
       const scopeProject =
         effectiveScope === VAULT_SCOPE
           ? null
@@ -1070,6 +1081,7 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     excludePersonalZones,
     selectedRunner,
     selectedModel,
+    stagedSource,
   ]);
 
   const onStop = useCallback(async () => {
