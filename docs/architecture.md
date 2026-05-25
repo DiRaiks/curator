@@ -76,6 +76,7 @@ plain Rust library crate so it can be:
 | ------------------------------------- | ---------------------------------------------------- |
 | vault config (parsed)                 | `.vault/config.yml` — declares `version:`            |
 | projects                              | `02_projects/<slug>/_index.md`                       |
+| per-machine project overlay (optional)| `02_projects/<slug>/_local.md` (merged on top of index)|
 | agent-produced drafts                 | `01_inbox/_drafts/*.md` (by convention)              |
 | vault-skills                          | `.vault/skills/*.skill.md`                           |
 | agent-prompts                         | `00_meta/agent-tasks/prompts/*.md`                   |

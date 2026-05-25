@@ -37,7 +37,7 @@ crates/vault-core/
     config.rs          # .vault/config.yml + format-version policy
     artifacts/         # artifact discovery + parsing (per kind)
     preview/           # run plan + runner-agnostic prompt builder
-    runner/            # CLI runner abstraction + ClaudeCode impl
+    runner/            # ACP-driven runner abstraction (Claude + Codex)
     markdown_io.rs     # vault-rooted read / write / create / promote / discard
     source_repo.rs     # read-only repo inspection (git status, detected files)
     scope.rs           # privacy-zone classification
@@ -72,11 +72,15 @@ docs/                  # architecture notes
    preview with GFM. Frontmatter renders as an editable form (or
    read-only metadata in preview). Wikilinks (`[[target]]`,
    `[[target|alias]]`) navigate by path or filename stem.
-3. **Embedded CLI runner** — spawns `claude -p <prompt>
-   --output-format stream-json --verbose --permission-mode acceptEdits
-   --add-dir <vault>` with cwd set to the project repo (validated via
-   a deny-list of sensitive paths). Streams events to a Run panel.
-   Supports `--resume <session_id>` for back-and-forth conversation.
+3. **Embedded ACP runner** — drives a vendored ACP server
+   (`claude-agent-acp` JS wrapper for Claude, `codex-acp` native
+   binary for Codex) over JSON-RPC on subprocess stdio. The vault is
+   forwarded via ACP `additional_directories`; cwd is set to the
+   project repo (validated via a deny-list of sensitive paths). A
+   tabbed bottom drawer runs up to 3 chats concurrently; each
+   streams `session/update` events, surfaces an inline permission
+   card on `session/request_permission`, and supports resume by
+   session id.
 4. **All artifact kinds runnable** — skills, commands, agents,
    vault-skills, and agent-prompts are all invokable. Only
    `claude-rule` is read-only (rules are policy fragments, not
@@ -129,11 +133,6 @@ interface ScanResult {
 
 Tracked separately, but the major pieces in flight:
 
-- **Recommendations engine** — rule-based hints in ProjectDetail
-  ("no domain.md yet — try the `01-domain` skill", "git changes
-  since last KB entry — try `session-reflect`", etc.)
-- **CVE feed integration** — pluggable feed sources, match against
-  project deps, surface as actionable suggestions
 - **Per-zone agent access toggles** — opt-in expansion of agent
   read/write into personal zones via `.vault/config.yml`
 - **Tool whitelisting from `claude-agent.tools[]` frontmatter** + an
@@ -145,8 +144,12 @@ Tracked separately, but the major pieces in flight:
   sandbox levels for codex (`read-only` / `workspace-write` /
   `danger-full-access`), and a UI surface to manage them. Storage
   likely co-located with session history in `app.db`.
-- **Conversation persistence** — keep the last N session transcripts
-  on disk so reopening the IDE restores context
+- **Conversation persistence beyond history** — session history rows
+  survive in the local SQLite, but in-progress chat state is lost on
+  restart; a follow-up keeps the last N transcripts hot-restorable.
+- **LLM-powered recommendations** — the rule-based engine (CVE / stub
+  index / stale updated / no local_path / …) is in place; a future
+  layer mixes in LLM-suggested skills based on project state.
 
 ## Design principles
 

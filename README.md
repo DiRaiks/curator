@@ -53,9 +53,12 @@ researchers, audit firms, internal sec teams, consultants.
   frontmatter form, and wikilink navigation (`[[target]]` /
   `[[target|alias]]`).
 - **Run** — any artifact (except `claude-rule`) against a project. The
-  IDE spawns `claude` in the repo with the vault as `--add-dir`,
-  streams events into a bottom Run panel, lets you Stop or Reply (via
-  `--resume <session_id>`).
+  IDE drives a vendored ACP server (`claude-agent-acp` for Claude,
+  `codex-acp` for Codex) over JSON-RPC, with the vault forwarded as
+  ACP `additional_directories` and cwd set to the project repo.
+  Up to 3 chats run concurrently in a tabbed bottom drawer; each tab
+  can Stop, Reply (resume by session id), or approve / deny tool calls
+  inline.
 - **Curate drafts** — agents drop proposed knowledge notes into
   `01_inbox/_drafts/` with `status: draft-from-agent` and
   `proposed_destination`. Review in the Drafts tab and Promote (moves
@@ -86,9 +89,11 @@ See [`PROJECT_BRIEF.md`](./PROJECT_BRIEF.md) for the full vision and
   see [`AGENTS.md`](./AGENTS.md) and [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 - **Rust** stable (developed against 1.95)
 - **Claude Code CLI** (`claude`) on `PATH` for the embedded runner.
-  Configure your global allowlist in `~/.claude/settings.json`; the
-  IDE passes `--permission-mode acceptEdits` so file writes don't
-  hang, but Bash / network / MCP still respect your config.
+  The IDE delegates to your system `claude` via the vendored
+  `claude-agent-acp` wrapper (`CLAUDE_CODE_EXECUTABLE` env). Tool-use
+  approval is interactive: the agent's `session/request_permission`
+  RPC surfaces an inline card in the chat tab. Your global
+  `~/.claude/settings.json` allowlist still applies underneath.
 - Platform Tauri prerequisites — see
   https://v2.tauri.app/start/prerequisites/
 
@@ -140,11 +145,11 @@ the bundled Curator icon set under `target/release/bundle/`.
 ## Privacy & security model
 
 - **No telemetry, no cloud sync, no auth** — single-user desktop tool.
-- Vault writes by the agent are auto-approved
-  (`--permission-mode acceptEdits`) because the vault is expected to
-  be git-tracked and you review via `git diff` before committing.
-  Other tools (Bash, MCP, network) follow your global Claude Code
-  config.
+- Tool-use approval is interactive via the inline permission card
+  driven by ACP's `session/request_permission` RPC. The vault is
+  expected to be git-tracked, so you review agent writes via
+  `git diff` before committing. Persistent allow/deny rules per chat
+  are on the roadmap.
 - Workdir for spawned subprocesses is canonicalized and checked
   against a deny-list of sensitive paths (`/etc`, `/Library`,
   `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, etc.) so a
