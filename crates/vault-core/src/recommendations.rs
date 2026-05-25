@@ -698,16 +698,15 @@ mod tests {
 
     #[test]
     fn is_stub_todo_heavy() {
-        let content = format!(
-            "{}",
-            (0..40)
-                .map(|i| if i % 2 == 0 {
-                    "Real content here.\n".to_string()
+        let content: String = (0..40)
+            .map(|i| {
+                if i % 2 == 0 {
+                    "Real content here.\n"
                 } else {
-                    "TODO: fill in.\n".to_string()
-                })
-                .collect::<String>()
-        );
+                    "TODO: fill in.\n"
+                }
+            })
+            .collect();
         assert!(is_stub(&content));
     }
 

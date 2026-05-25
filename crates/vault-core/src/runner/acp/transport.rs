@@ -207,9 +207,7 @@ async fn run_session(
     let pump_handle = tokio::task::spawn_blocking(move || {
         while let Ok((request_id, decision)) = perm_rx.recv() {
             let entry = {
-                let mut map = pending_for_pump
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
+                let mut map = pending_for_pump.lock().unwrap_or_else(|p| p.into_inner());
                 map.remove(&request_id)
             };
             if let Some(tx) = entry {
@@ -549,10 +547,7 @@ mod wire_shape_tests {
 
     #[test]
     fn tool_call_update_serialises_with_tool_call_id_at_top_level() {
-        let upd = ToolCallUpdate::new(
-            ToolCallId::from("tc-abc"),
-            ToolCallUpdateFields::default(),
-        );
+        let upd = ToolCallUpdate::new(ToolCallId::from("tc-abc"), ToolCallUpdateFields::default());
         let json = serde_json::to_value(SessionUpdate::ToolCallUpdate(upd)).unwrap();
         assert_eq!(json["sessionUpdate"], "tool_call_update");
         assert_eq!(json["toolCallId"], "tc-abc");

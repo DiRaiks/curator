@@ -226,9 +226,7 @@ mod tests {
     fn init_vault_refuses_already_initialised() {
         let dir = tempdir().expect("tempdir");
         init_vault(dir.path()).expect("first init");
-        let err = init_vault(dir.path())
-            .err()
-            .expect("second init should fail");
+        let err = init_vault(dir.path()).expect_err("second init should fail");
         assert!(matches!(err, BootstrapError::AlreadyInitialised(_)));
     }
 
@@ -308,9 +306,7 @@ mod tests {
             local_path: None,
         };
         init_project(dir.path(), &args).expect("first create");
-        let err = init_project(dir.path(), &args)
-            .err()
-            .expect("second create should fail");
+        let err = init_project(dir.path(), &args).expect_err("second create should fail");
         assert!(matches!(err, BootstrapError::ProjectExists(_)));
     }
 
@@ -359,8 +355,7 @@ mod tests {
                 local_path: Some("/etc"),
             },
         )
-        .err()
-        .expect("expected sensitive local_path to be rejected");
+        .expect_err("expected sensitive local_path to be rejected");
         assert!(matches!(err, BootstrapError::InvalidPath(_)));
     }
 }

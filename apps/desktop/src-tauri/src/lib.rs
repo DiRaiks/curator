@@ -843,15 +843,13 @@ fn spawn_and_pump(args: SpawnArgs<'_>) -> Result<RunStartedPayload, String> {
 
         use vault_core::runner::Runner as _;
         let handle = match runner_kind {
-            vault_core::runner::RunnerKind::ClaudeCode => {
-                vault_core::runner::AcpClaudeRunner::new(
-                    acp_paths.node_bin.clone(),
-                    acp_paths.claude_wrapper_js.clone(),
-                    acp_paths.claude_bin.clone(),
-                )
-                .start(req)
-                .map_err(|e| e.to_string())?
-            }
+            vault_core::runner::RunnerKind::ClaudeCode => vault_core::runner::AcpClaudeRunner::new(
+                acp_paths.node_bin.clone(),
+                acp_paths.claude_wrapper_js.clone(),
+                acp_paths.claude_bin.clone(),
+            )
+            .start(req)
+            .map_err(|e| e.to_string())?,
             vault_core::runner::RunnerKind::Codex => {
                 vault_core::runner::AcpCodexRunner::new(acp_paths.codex_acp_bin.clone())
                     .start(req)
