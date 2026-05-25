@@ -8,7 +8,8 @@
 //!
 //! `discover_projects` lives here too: it walks `02_projects/<slug>/_index.md`,
 //! parses the project frontmatter, and emits a warning per slug without an
-//! `_index.md`.
+//! `_index.md`. If a sibling `_local.md` exists, its frontmatter is merged on
+//! top — see [`apply_local_overlay`] for the rationale.
 
 use std::path::Path;
 
@@ -310,7 +311,120 @@ pub(crate) fn discover_projects(
             project.my_role = fm_string(&m, "my_role");
             project.default_base_branch = fm_string(&m, "default_base_branch");
         }
+        apply_local_overlay(&sub, &mut project);
         projects.push(project);
     }
     projects.sort_by(|a, b| a.slug.cmp(&b.slug));
+}
+
+/// If `<project>/_local.md` exists, merge its frontmatter on top of the
+/// `_index.md` values. The overlay file is the convention for keeping
+/// per-machine fields (`local_path`, the user's `my_role`, etc.) out of the
+/// shareable `_index.md` — typically by gitignoring `_local.md`. Any field
+/// present in the overlay wins; absent fields leave the `_index.md` value
+/// untouched.
+fn apply_local_overlay(project_dir: &Path, project: &mut Project) {
+    let overlay = project_dir.join("_local.md");
+    if !overlay.is_file() {
+        return;
+    }
+    let Some(m) = read_frontmatter_full(&overlay) else {
+        return;
+    };
+    if let Some(v) = fm_string(&m, "local_path") {
+        project.local_path = Some(v);
+    }
+    if let Some(v) = fm_string(&m, "repo") {
+        project.repo = Some(v);
+    }
+    if let Some(v) = fm_string(&m, "status") {
+        project.status = Some(v);
+    }
+    if let Some(v) = fm_string(&m, "my_role") {
+        project.my_role = Some(v);
+    }
+    if let Some(v) = fm_string(&m, "default_base_branch") {
+        project.default_base_branch = Some(v);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn local_overlay_supplies_missing_local_path() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let proj = root.join("02_projects/subgraph");
+        write(
+            &proj.join("_index.md"),
+            "---\ntype: project-overview\nrepo: https://example.test/sg\n---\n# subgraph\n",
+        );
+        write(
+            &proj.join("_local.md"),
+            "---\ntype: project-local-overlay\nlocal_path: /Users/me/Work/subgraph\n---\nlocal\n",
+        );
+
+        let mut projects = Vec::new();
+        let mut diagnostics = Vec::new();
+        discover_projects(root, &mut projects, &mut diagnostics);
+
+        assert_eq!(projects.len(), 1);
+        let p = &projects[0];
+        assert_eq!(p.slug, "subgraph");
+        assert_eq!(p.repo.as_deref(), Some("https://example.test/sg"));
+        assert_eq!(p.local_path.as_deref(), Some("/Users/me/Work/subgraph"));
+    }
+
+    #[test]
+    fn local_overlay_overrides_index_fields() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let proj = root.join("02_projects/demo");
+        write(
+            &proj.join("_index.md"),
+            "---\ntype: project-overview\nlocal_path: /old/index/path\nmy_role: reviewer\n---\n# demo\n",
+        );
+        write(
+            &proj.join("_local.md"),
+            "---\nlocal_path: /new/overlay/path\nmy_role: maintainer\n---\n",
+        );
+
+        let mut projects = Vec::new();
+        let mut diagnostics = Vec::new();
+        discover_projects(root, &mut projects, &mut diagnostics);
+
+        let p = &projects[0];
+        assert_eq!(p.local_path.as_deref(), Some("/new/overlay/path"));
+        assert_eq!(p.my_role.as_deref(), Some("maintainer"));
+    }
+
+    #[test]
+    fn missing_local_overlay_is_silent() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let proj = root.join("02_projects/plain");
+        write(
+            &proj.join("_index.md"),
+            "---\ntype: project-overview\nlocal_path: /from/index\n---\n",
+        );
+
+        let mut projects = Vec::new();
+        let mut diagnostics = Vec::new();
+        discover_projects(root, &mut projects, &mut diagnostics);
+
+        let p = &projects[0];
+        assert_eq!(p.local_path.as_deref(), Some("/from/index"));
+        assert!(diagnostics.is_empty(), "got: {diagnostics:?}");
+    }
 }

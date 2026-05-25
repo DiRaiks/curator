@@ -6,7 +6,7 @@ updated: 2026-05-17
 ---
 
 **Summary**: Demo vault meta folder. Mirrors the real-vault convention used by
-Vault Workflow IDE — `00_meta/` holds rules, the AI-agent profile, and prompts.
+Curator — `00_meta/` holds rules, the AI-agent profile, and prompts.
 
 # 00_meta — demo vault
 

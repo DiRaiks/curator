@@ -7,9 +7,9 @@
 //! shareable and the agent fetches what it needs from disk.
 //!
 //! Materialization is purely textual: a fixed table of placeholder → value
-//! pairs (`<project>` → slug, `<repo>` → repo url, …) plus two legacy
-//! patterns (`02_projects/<repo-path>/...` and a `/Users/…/Lido/<repo-path>`
-//! shim). No template engine, safe on untrusted content.
+//! pairs (`<project>` → slug, `<repo>` → repo url, …) plus one legacy
+//! pattern (`02_projects/<repo-path>/...`). No template engine, safe on
+//! untrusted content.
 
 use std::path::Path;
 
@@ -28,18 +28,13 @@ pub(super) struct MaterializeVars<'a> {
 /// Substitute project/prompt placeholders in the workflow body. Purely
 /// textual — no template engine — so this is safe on untrusted content.
 ///
-/// Two legacy patterns are special-cased:
+/// One legacy pattern is special-cased:
 ///
 /// - `02_projects/<repo-path>/...`  → `02_projects/{slug}/...`
-/// - `/Users/<...>/Work/Lido/<repo-path>` → project's `local_path`
-///   (never concatenated, so paths can't be duplicated)
 pub(super) fn materialize_prompt_body(body: &str, vars: &MaterializeVars<'_>) -> String {
     let slug = vars.slug;
     let mut s = body.to_string();
 
-    if let Some(local) = vars.local_path {
-        s = s.replace("/Users/andreifi/Work/Lido/<repo-path>", local);
-    }
     s = s.replace(
         "02_projects/<repo-path>/",
         &format!("02_projects/{}/", slug),
@@ -331,14 +326,6 @@ mod tests {
             out,
             "see subgraph at 02_projects/subgraph/architecture.md and subgraph"
         );
-    }
-
-    #[test]
-    fn materialize_uses_local_path_for_lido_legacy_pattern() {
-        let v = vars("subgraph", Some("/Users/me/Work/Lido/subgraph"));
-        let out = materialize_prompt_body("cd /Users/andreifi/Work/Lido/<repo-path> && ls", &v);
-        assert_eq!(out, "cd /Users/me/Work/Lido/subgraph && ls");
-        assert!(!out.contains("/Users//Users"));
     }
 
     #[test]

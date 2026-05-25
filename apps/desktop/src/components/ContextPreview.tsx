@@ -306,7 +306,8 @@ function SourceRepoCard({
     statusTag = {
       label: "no local path",
       cls: "tag--ref",
-      title: "Project does not declare `local_path` in _index.md.",
+      title:
+        "Project does not declare `local_path` in _index.md or _local.md.",
     };
   } else if (!inspection) {
     statusTag = {
@@ -357,7 +358,8 @@ function SourceRepoCard({
         </div>
       ) : (
         <p className="preview__hint">
-          Project `_index.md` doesn't declare <code>local_path</code>. The
+          Project doesn't declare <code>local_path</code> in{" "}
+          <code>_index.md</code> or a <code>_local.md</code> overlay. The
           sandbox workspace will run with vault files only.
         </p>
       )}

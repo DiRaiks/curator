@@ -3,7 +3,7 @@ name = "vault-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Vault scanning and parsing for Vault Workflow IDE"
+description = "Vault scanning and parsing for Curator"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

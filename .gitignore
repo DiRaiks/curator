@@ -8,7 +8,6 @@ dist/
 # Rust
 target/
 **/*.rs.bk
-Cargo.lock
 
 # Tauri
 apps/desktop/src-tauri/target/
@@ -18,6 +17,9 @@ apps/desktop/src-tauri/gen/
 .idea/
 .vscode/
 *.swp
+
+# Claude Code local settings (per-machine permissions, absolute paths)
+.claude/
 
 # Env
 .env

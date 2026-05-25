@@ -1,4 +1,4 @@
-//! Vault scanning + run-plan preview for the Vault Workflow IDE MVP.
+//! Vault scanning + run-plan preview for Curator.
 //!
 //! The MVP execution path is:
 //!     open vault → select project → select workflow → simple run plan →

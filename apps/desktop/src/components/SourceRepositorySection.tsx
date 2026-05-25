@@ -41,8 +41,8 @@ export function SourceRepositorySection({
           <span className="tag tag--ref">no local path</span>
         </header>
         <p className="preview__hint">
-          No local source repo path configured in this project's
-          {" "}<code>_index.md</code>.
+          No local source repo path configured in this project's{" "}
+          <code>_index.md</code> or <code>_local.md</code> overlay.
         </p>
       </section>
     );

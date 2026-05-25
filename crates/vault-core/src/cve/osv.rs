@@ -179,7 +179,7 @@ fn post_json<TReq: Serialize, TResp: for<'de> Deserialize<'de>>(
     let resp = agent
         .post(url)
         .set("Accept", "application/json")
-        .set("User-Agent", "vault-workflow-ide")
+        .set("User-Agent", "curator")
         .send_json(
             serde_json::to_value(body)
                 .map_err(|e| OsvError::InvalidJson(format!("serialize request: {e}")))?,

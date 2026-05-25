@@ -1,12 +1,12 @@
 [package]
-name = "vault-workflow-ide"
+name = "curator"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Vault Workflow IDE — desktop shell"
+description = "Curator — desktop shell"
 
 [lib]
-name = "vault_workflow_ide_lib"
+name = "curator_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

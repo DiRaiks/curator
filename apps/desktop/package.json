@@ -1,5 +1,5 @@
 {
-  "name": "@vault-workflow-ide/desktop",
+  "name": "@curator/desktop",
   "private": true,
   "version": "0.1.0",
   "type": "module",

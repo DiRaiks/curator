@@ -34,7 +34,7 @@ use crate::runner::{RunHandle, RunRequest, Runner, RunnerError, RunnerKind};
 ///   `apps/desktop/src-tauri/resources/acp/`).
 /// - [`claude_bin`](Self::claude_bin) — the system `claude`
 ///   binary discovered via PATH (priming for macOS GUI launches
-///   happens in `vault-workflow-ide`'s `prime_user_path`).
+///   happens in `curator`'s `prime_user_path`).
 pub struct AcpClaudeRunner {
     pub node_bin: PathBuf,
     pub wrapper_js: PathBuf,

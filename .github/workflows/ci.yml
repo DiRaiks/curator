@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# CI is the one place where install commands are expected, despite the
+# AGENTS.md / CONTRIBUTING.md policy against running them in dev/automation.
+# Keep this workflow as the only place that runs `npm ci` / `cargo` builds.
+
+jobs:
+  rust:
+    name: Rust (vault-core)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      # Only lint/test vault-core. The Tauri shell crate's build script
+      # (tauri-build) expects the externalBin codex-acp binary fetched by
+      # scripts/fetch-acp-binaries.sh (~170 MB per platform) which we skip
+      # in CI for speed. All real logic lives in vault-core.
+      - name: cargo clippy
+        run: cargo clippy -p vault-core --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test -p vault-core
+
+  frontend:
+    name: Frontend (apps/desktop)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Vitest
+        run: npm test --workspace apps/desktop

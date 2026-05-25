@@ -6,7 +6,7 @@ updated: 2026-05-17
 ---
 
 **Summary**: Demo vault that mirrors the **current** real-vault conventions
-Vault Workflow IDE recognizes. Sanitized fixture for onboarding and tests —
+Curator recognizes. Sanitized fixture for onboarding and tests —
 not the source of truth for any real workflow.
 
 # demo-vault

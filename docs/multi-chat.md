@@ -10,15 +10,15 @@ The bottom drawer is a tabbed surface:
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│  ● lido-eth-api/chat   × │ ● my-vault/04-th…  × │ ● New chat × │ + │
+│  ● acme-api/chat   × │ ● my-vault/04-th…  × │ ● New chat × │ + │
 ├────────────────────────────────────────────────────────────────────┤
-│  CHAT  [History]  running · lido-eth-api/chat        147K in · Stop│
+│  CHAT  [History]  running · acme-api/chat        147K in · Stop│
 │  ─────────────────────────────────────────────────────────────────│
-│  ▶ start claude-code · lido-eth-api/chat · cwd: /…                 │
+│  ▶ start claude-code · acme-api/chat · cwd: /…                 │
 │  ◆ system: init · model=claude-opus-4-7                            │
 │  ⚠ Permission: Claude wants to use Bash       [Deny][Allow once]…  │
 │  ─────────────────────────────────────────────────────────────────│
-│  SCOPE: lido-eth-api (repo)        ▸ Send · disabled while running │
+│  SCOPE: acme-api (repo)        ▸ Send · disabled while running │
 └────────────────────────────────────────────────────────────────────┘
 ```
 

@@ -156,7 +156,8 @@ export function SecurityPanel({ projects }: SecurityPanelProps) {
       {scannable.length === 0 ? (
         <p className="empty-state">
           No projects with a <code>local_path</code> set — add one in the
-          project's <code>_index.md</code> frontmatter to enable CVE scans.
+          project's <code>_index.md</code> (or a per-machine{" "}
+          <code>_local.md</code> overlay) to enable CVE scans.
         </p>
       ) : (
         <ul className="security-panel__list">

@@ -323,7 +323,7 @@ fn rule_no_local_path(project: &Project, out: &mut Vec<Recommendation>) {
         category: Category::Configuration,
         title: "No repo path linked".into(),
         detail: Some(
-            "Declare `local_path:` in the project's `_index.md` frontmatter to enable git integration and let the agent see your source code."
+            "Declare `local_path:` in the project's `_index.md` (or a per-machine `_local.md` overlay) to enable git integration and let the agent see your source code."
                 .into(),
         ),
         project_slug: Some(project.slug.clone()),

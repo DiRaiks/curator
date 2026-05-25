@@ -1,4 +1,4 @@
-# Vault Workflow IDE — Project Brief
+# Curator — Project Brief
 
 ## What this is
 
@@ -53,6 +53,7 @@ docs/                  # architecture notes
 | ------------------------------------- | ------------------------------------------------------- |
 | vault config (parsed)                 | `.vault/config.yml` — declares `version:`               |
 | projects                              | `02_projects/<slug>/_index.md`                          |
+| per-machine project overlay (optional)| `02_projects/<slug>/_local.md` (merged on top of index) |
 | zones (privacy classification)        | top-level folders + frontmatter `scope:`                |
 | vault-skills                          | `.vault/skills/*.skill.md`                              |
 | agent-prompts                         | `00_meta/agent-tasks/prompts/*.md`                      |
