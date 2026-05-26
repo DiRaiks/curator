@@ -234,12 +234,19 @@ function HistoryRow({
           <span>{duration}</span>
           <span aria-hidden="true">·</span>
           <span>{session.lineCount} lines</span>
-          {(session.inputTokens > 0 || session.outputTokens > 0) && (
+          {session.inputTokens > 0 && (
             <>
               <span aria-hidden="true">·</span>
               <span>
-                {formatTokens(session.inputTokens)} in /{" "}
-                {formatTokens(session.outputTokens)} out
+                {/* ACP-era rows store contextUsed → inputTokens column
+                 *  and contextSize → outputTokens column. Render as
+                 *  "X / Y" when size known, else "X ctx". Pre-ACP
+                 *  rows had real in/out totals here; they fall through
+                 *  the same renderer and just look like a context
+                 *  metric — not worth a schema migration to fix. */}
+                {session.outputTokens > 0
+                  ? `${formatTokens(session.inputTokens)} / ${formatTokens(session.outputTokens)}`
+                  : `${formatTokens(session.inputTokens)} ctx`}
               </span>
             </>
           )}

@@ -1,10 +1,10 @@
-import { beforeEach, describe, expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 
 import {
   acpUpdateKind,
   classifyStreamingVisibility,
   clipToolOutput,
-  extractAcpUsageDelta,
+  extractAcpUsageSnapshot,
   extractToolCallFullText,
   MAX_TOOL_OUTPUT_CHARS,
   parseAcpUpdate,
@@ -12,21 +12,11 @@ import {
   renderAcpToolCall,
   renderAcpToolCallUpdate,
   renderAcpUpdate,
-  resetAcpUsageBaseline,
   summariseToolInput,
   toolCallDedupKey,
   toolKindLabel,
   type LineSnapshot,
 } from "./acpRender";
-
-beforeEach(() => {
-  // The usage-delta extractor maintains a module-local baseline so
-  // ACP `usage_update` events (which report running totals, not
-  // deltas) produce a per-event delta on the consumer side. Tests
-  // share that state — reset it before each so a prior case's
-  // baseline doesn't leak into the next.
-  resetAcpUsageBaseline();
-});
 
 // ---------- parseAcpUpdate ----------
 
@@ -87,104 +77,95 @@ describe("acpUpdateKind", () => {
   });
 });
 
-// ---------- extractAcpUsageDelta ----------
+// ---------- extractAcpUsageSnapshot ----------
 
-describe("extractAcpUsageDelta", () => {
-  test("first usage_update returns the absolute counts as a delta", () => {
+describe("extractAcpUsageSnapshot", () => {
+  test("result-side usage_update returns used/size + cumulative cost", () => {
     const parsed = parseAcpUpdate(
       JSON.stringify({
         sessionUpdate: "usage_update",
-        contextWindow: {
-          inputTokens: 100,
-          outputTokens: 20,
-          cacheCreationTokens: 5,
-          cacheReadTokens: 1000,
-        },
-        costUsd: 0.0125,
+        used: 12345,
+        size: 200000,
+        cost: { amount: 0.0125, currency: "USD" },
       }),
     );
-    const delta = extractAcpUsageDelta(parsed!);
-    expect(delta).toEqual({
-      inputTokens: 100,
-      outputTokens: 20,
-      cacheCreationTokens: 5,
-      cacheReadTokens: 1000,
+    const snap = extractAcpUsageSnapshot(parsed!);
+    expect(snap).toEqual({
+      contextUsed: 12345,
+      contextSize: 200000,
       costUsd: 0.0125,
       model: null,
     });
   });
 
-  test("subsequent usage_update returns only the increase", () => {
-    extractAcpUsageDelta(
+  test("mid-stream usage_update reports used/size with cost=0", () => {
+    // claude-agent-acp ≥ 0.37 emits per-message_delta usage_updates
+    // without a `cost` object — only `result`-side events carry it.
+    const snap = extractAcpUsageSnapshot(
       parseAcpUpdate(
         JSON.stringify({
           sessionUpdate: "usage_update",
-          contextWindow: { inputTokens: 100, outputTokens: 20 },
-          costUsd: 0.01,
+          used: 9000,
+          size: 200000,
         }),
       )!,
     );
-    const delta = extractAcpUsageDelta(
-      parseAcpUpdate(
-        JSON.stringify({
-          sessionUpdate: "usage_update",
-          contextWindow: { inputTokens: 150, outputTokens: 50 },
-          costUsd: 0.03,
-        }),
-      )!,
-    );
-    expect(delta?.inputTokens).toBe(50);
-    expect(delta?.outputTokens).toBe(30);
-    expect(delta?.costUsd).toBeCloseTo(0.02, 6);
+    expect(snap).toEqual({
+      contextUsed: 9000,
+      contextSize: 200000,
+      costUsd: 0,
+      model: null,
+    });
   });
 
-  test("declining totals (impossible in practice) clamp to zero", () => {
-    extractAcpUsageDelta(
+  test("snapshots are absolute — repeated calls don't subtract", () => {
+    // The wire already carries snapshots, so the second call must
+    // return the larger value as-is, not a delta from the first.
+    extractAcpUsageSnapshot(
+      parseAcpUpdate(
+        JSON.stringify({ sessionUpdate: "usage_update", used: 100, size: 200000 }),
+      )!,
+    );
+    const snap = extractAcpUsageSnapshot(
+      parseAcpUpdate(
+        JSON.stringify({ sessionUpdate: "usage_update", used: 150, size: 200000 }),
+      )!,
+    );
+    expect(snap?.contextUsed).toBe(150);
+  });
+
+  test("non-USD currency suppresses cost (we don't carry currency)", () => {
+    const snap = extractAcpUsageSnapshot(
       parseAcpUpdate(
         JSON.stringify({
           sessionUpdate: "usage_update",
-          contextWindow: { inputTokens: 100 },
+          used: 1,
+          size: 200000,
+          cost: { amount: 999, currency: "EUR" },
         }),
       )!,
     );
-    const delta = extractAcpUsageDelta(
-      parseAcpUpdate(
-        JSON.stringify({
-          sessionUpdate: "usage_update",
-          contextWindow: { inputTokens: 50 },
-        }),
-      )!,
-    );
-    expect(delta?.inputTokens).toBe(0);
+    expect(snap?.costUsd).toBe(0);
   });
 
   test("non-usage events return null", () => {
     expect(
-      extractAcpUsageDelta(
+      extractAcpUsageSnapshot(
         parseAcpUpdate('{"sessionUpdate":"agent_message_chunk"}')!,
       ),
     ).toBeNull();
   });
 
-  test("resetAcpUsageBaseline lets the next usage_update return absolute again", () => {
-    extractAcpUsageDelta(
+  test("compaction shrinks `used` — extractor returns the smaller value", () => {
+    // When the agent compacts context, `used` drops back near 0.
+    // The extractor returns the wire value as-is; merging behaviour
+    // (clamp / latest-wins) is the caller's responsibility.
+    const snap = extractAcpUsageSnapshot(
       parseAcpUpdate(
-        JSON.stringify({
-          sessionUpdate: "usage_update",
-          contextWindow: { inputTokens: 999 },
-        }),
+        JSON.stringify({ sessionUpdate: "usage_update", used: 0, size: 200000 }),
       )!,
     );
-    resetAcpUsageBaseline();
-    const delta = extractAcpUsageDelta(
-      parseAcpUpdate(
-        JSON.stringify({
-          sessionUpdate: "usage_update",
-          contextWindow: { inputTokens: 10 },
-        }),
-      )!,
-    );
-    expect(delta?.inputTokens).toBe(10);
+    expect(snap?.contextUsed).toBe(0);
   });
 });
 

@@ -265,8 +265,10 @@ export const RunPanelHost = forwardRef<RunPanelHandle, RunPanelHostProps>(
     //   match wins. Multi-running gives an arbitrary representative;
     //   the StatusBar already shows running count, the skill label is
     //   just a hint.
-    // - `lastUsage`: sum of tokens + cost across all reporting tabs.
-    //   Surfaces the user's total spend, not just one conversation's.
+    // - `lastUsage.cost`: sum across all reporting tabs (total spend
+    //   right now, not just one conversation's). `contextUsed` /
+    //   `contextSize` come from one representative running tab — those
+    //   are per-conversation metrics, not aggregable across chats.
     // - `savedCount`: max of reported counts (each tab reports the
     //   same vault-wide list; max handles tabs that haven't fetched
     //   yet by ignoring their `null`).
@@ -275,9 +277,9 @@ export const RunPanelHost = forwardRef<RunPanelHandle, RunPanelHostProps>(
       let runningCount = 0;
       let runningSkill: string | null = null;
       let runningProject: string | null = null;
-      let sumIn = 0;
-      let sumOut = 0;
       let sumCost = 0;
+      let repContextUsed = 0;
+      let repContextSize = 0;
       let anyUsage = false;
       let maxSaved: number | null = null;
       for (const info of tabStatus.values()) {
@@ -286,12 +288,15 @@ export const RunPanelHost = forwardRef<RunPanelHandle, RunPanelHostProps>(
           runningCount += 1;
           if (runningSkill === null) runningSkill = info.runningSkill;
           if (runningProject === null) runningProject = info.runningProject;
+          // First running tab wins the representative context numbers.
+          if (repContextUsed === 0 && info.contextUsed > 0) {
+            repContextUsed = info.contextUsed;
+            repContextSize = info.contextSize;
+          }
         } else if (info.state === "exited" && state !== "running") {
           state = "exited";
         }
-        if (info.inputTokens || info.outputTokens || info.costUsd) {
-          sumIn += info.inputTokens;
-          sumOut += info.outputTokens;
+        if (info.contextUsed || info.costUsd) {
           sumCost += info.costUsd;
           anyUsage = true;
         }
@@ -305,7 +310,11 @@ export const RunPanelHost = forwardRef<RunPanelHandle, RunPanelHostProps>(
         runningSkill,
         runningProject,
         lastUsage: anyUsage
-          ? { in: sumIn, out: sumOut, cost: sumCost }
+          ? {
+              contextUsed: repContextUsed,
+              contextSize: repContextSize,
+              cost: sumCost,
+            }
           : null,
         savedCount: maxSaved,
       };
@@ -462,8 +471,8 @@ export const RunPanelHost = forwardRef<RunPanelHandle, RunPanelHostProps>(
           prev.hasPendingPermission === info.hasPendingPermission &&
           prev.runningSkill === info.runningSkill &&
           prev.runningProject === info.runningProject &&
-          prev.inputTokens === info.inputTokens &&
-          prev.outputTokens === info.outputTokens &&
+          prev.contextUsed === info.contextUsed &&
+          prev.contextSize === info.contextSize &&
           prev.costUsd === info.costUsd &&
           prev.savedCount === info.savedCount &&
           prev.collapsed === info.collapsed

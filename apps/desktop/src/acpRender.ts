@@ -7,11 +7,11 @@
  * direct surface to import; the React component now consumes these
  * via plain imports and stays focused on lifecycle wiring.
  *
- * Everything here is side-effect-free except `extractAcpUsageDelta`,
- * which maintains a module-local cumulative-usage baseline (codex /
- * claude send running totals, not deltas, so we subtract). The
- * baseline is explicitly resettable via `resetAcpUsageBaseline()` —
- * tests must reset between cases or the baseline carries over.
+ * Everything here is side-effect-free. `extractAcpUsageSnapshot`
+ * reads the latest absolute values out of an ACP `usage_update`
+ * notification — the wire already carries snapshots (current context
+ * window fill, cumulative cost so far), so callers just keep the
+ * most-recent values rather than accumulating deltas.
  */
 
 /** Visual kind of an output line — drives both styling and dedup
@@ -40,16 +40,37 @@ export interface RenderedLine {
   hidden?: boolean;
 }
 
-/** One stream-line's contribution to cumulative session usage.
- *  Tokens are deltas (already subtracted against the prior baseline);
- *  `costUsd` is also a delta (>= 0). `model` reports the model name
- *  when the agent identifies one, `null` otherwise. */
-export interface UsageDelta {
-  inputTokens: number;
-  outputTokens: number;
-  cacheCreationTokens: number;
-  cacheReadTokens: number;
+/** Snapshot of session usage extracted from one `usage_update`
+ *  notification.
+ *
+ *  Wire shape (claude-agent-acp ≥ 0.37):
+ *  ```
+ *  { sessionUpdate: "usage_update",
+ *    used: <tokens currently filling the context window>,
+ *    size: <total context window size for the model>,
+ *    cost: { amount: <cumulative USD spent in this session>,
+ *            currency: "USD" } }
+ *  ```
+ *
+ *  `cost` is only emitted on `result`-side updates; mid-stream
+ *  `message_delta`-side updates carry just `used` + `size`. Subscription
+ *  tiers (Claude Pro/Max, Codex on ChatGPT auth) never emit `cost`
+ *  at all. Callers should treat any missing value as 0 and merge
+ *  monotonically (cost can't go down). */
+export interface UsageSnapshot {
+  /** Tokens currently in the context window. `0` if the agent didn't
+   *  report it on this event. */
+  contextUsed: number;
+  /** Model's total context window size. `0` if not reported yet
+   *  (the agent learns this on the first `result` and back-fills). */
+  contextSize: number;
+  /** Cumulative session cost in USD. `0` when the event omitted
+   *  `cost` (mid-stream updates) or when the account is on a
+   *  flat-rate plan that doesn't report per-call cost. */
   costUsd: number;
+  /** Model id when the agent identifies one. The wire shape doesn't
+   *  carry this on usage_update events directly — left `null` here,
+   *  populated by the caller from other events when available. */
   model: string | null;
 }
 
@@ -85,51 +106,32 @@ export function acpUpdateKind(obj: Record<string, unknown>): string | null {
   return k.replace(/[A-Z]/g, (m) => "_" + m.toLowerCase());
 }
 
-// ---------- Usage delta extraction ----------
+// ---------- Usage snapshot extraction ----------
 
-/** Module-private baseline. Agents report cumulative-per-session
- *  totals via `usage_update`; we subtract the previous snapshot to
- *  produce a per-event delta. Cleared on every new session via
- *  [`resetAcpUsageBaseline`]. */
-let _lastAcpUsage: {
-  in: number;
-  out: number;
-  cacheCreate: number;
-  cacheRead: number;
-  cost: number;
-} | null = null;
-
-export function extractAcpUsageDelta(parsed: ParsedAcpUpdate): UsageDelta | null {
+/** Pull a usage snapshot out of one ACP `session/update` notification.
+ *  Returns `null` for non-`usage_update` events. The values are
+ *  absolute (not deltas) — the caller is expected to merge them
+ *  monotonically (cost) or as latest-wins (context window). */
+export function extractAcpUsageSnapshot(
+  parsed: ParsedAcpUpdate,
+): UsageSnapshot | null {
   if (parsed.obj === null) return null;
   if (acpUpdateKind(parsed.obj) !== "usage_update") return null;
-  const ctx = parsed.obj["contextWindow"];
-  const inputTokens = isRecord(ctx) ? readNumber(ctx, "inputTokens") ?? 0 : 0;
-  const outputTokens = isRecord(ctx) ? readNumber(ctx, "outputTokens") ?? 0 : 0;
-  const cacheCreation = isRecord(ctx) ? readNumber(ctx, "cacheCreationTokens") ?? 0 : 0;
-  const cacheRead = isRecord(ctx) ? readNumber(ctx, "cacheReadTokens") ?? 0 : 0;
-  const cost = readNumber(parsed.obj, "costUsd") ?? 0;
-
-  const prev = _lastAcpUsage ?? { in: 0, out: 0, cacheCreate: 0, cacheRead: 0, cost: 0 };
-  const delta: UsageDelta = {
-    inputTokens: Math.max(0, inputTokens - prev.in),
-    outputTokens: Math.max(0, outputTokens - prev.out),
-    cacheCreationTokens: Math.max(0, cacheCreation - prev.cacheCreate),
-    cacheReadTokens: Math.max(0, cacheRead - prev.cacheRead),
-    costUsd: Math.max(0, cost - prev.cost),
-    model: null,
-  };
-  _lastAcpUsage = {
-    in: inputTokens,
-    out: outputTokens,
-    cacheCreate: cacheCreation,
-    cacheRead: cacheRead,
-    cost,
-  };
-  return delta;
-}
-
-export function resetAcpUsageBaseline(): void {
-  _lastAcpUsage = null;
+  const obj = parsed.obj;
+  const contextUsed = readNumber(obj, "used") ?? 0;
+  const contextSize = readNumber(obj, "size") ?? 0;
+  // `cost` is a nested object `{ amount, currency }`. Treat anything
+  // other than USD as unknown — we don't carry currency through the
+  // UI, and silently summing across currencies would be misleading.
+  const costObj = obj["cost"];
+  let costUsd = 0;
+  if (isRecord(costObj)) {
+    const currency = readString(costObj, "currency");
+    if (currency === "USD" || currency === undefined) {
+      costUsd = readNumber(costObj, "amount") ?? 0;
+    }
+  }
+  return { contextUsed, contextSize, costUsd, model: null };
 }
 
 // ---------- Replay-anticipation visibility ----------

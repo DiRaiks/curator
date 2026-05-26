@@ -31,13 +31,12 @@ import {
 } from "../agents";
 import {
   classifyStreamingVisibility,
-  extractAcpUsageDelta,
+  extractAcpUsageSnapshot,
   parseAcpUpdate,
   PLAN_DEDUP_KEY,
   renderAcpUpdate,
-  resetAcpUsageBaseline,
   type LineKind,
-  type UsageDelta,
+  type UsageSnapshot,
 } from "../acpRender";
 import { usePopoverPosition } from "../hooks/usePopoverPosition";
 import type { Project, SessionFull, SessionSummary } from "../types";
@@ -101,29 +100,31 @@ type RunStatus =
   | { kind: "exited"; exit: RunExitEvent; started: RunStartedEvent | null };
 
 /**
- * Cumulative usage across all turns of the current Claude session.
- * Resets to `EMPTY_USAGE` on a fresh `start_run`, persists across
- * `resume_run` turns within the same `session_id`.
+ * Latest usage snapshot for the current Claude session. Reset to
+ * `EMPTY_USAGE` on a fresh `start_run`; survives `resume_run` turns
+ * within the same `session_id`.
  *
- * Tokens are summed live from `message.usage` on every `assistant`
- * event. `costUsd` is summed from each turn's `result` event — claude
- * only reports cost at the end of a turn, so the header cost lags the
- * token counters by one turn boundary.
+ * The shape mirrors ACP's `usage_update` notification:
+ * - `contextUsed` / `contextSize` describe the model's context window
+ *   fill at the moment the agent emitted the event. They're snapshots,
+ *   not deltas — `contextUsed` can drop back near zero after the agent
+ *   compacts context. We track latest-wins.
+ * - `costUsd` is cumulative spend across the whole session. The agent
+ *   only reports it on `result` events (end-of-turn), so this lags the
+ *   context counters by one turn boundary. We track monotonically
+ *   (`Math.max`) so a mid-stream update with no cost field doesn't
+ *   reset the running total to zero.
  */
 interface SessionUsage {
-  inputTokens: number;
-  outputTokens: number;
-  cacheCreationTokens: number;
-  cacheReadTokens: number;
+  contextUsed: number;
+  contextSize: number;
   costUsd: number;
   model: string | null;
 }
 
 const EMPTY_USAGE: SessionUsage = {
-  inputTokens: 0,
-  outputTokens: 0,
-  cacheCreationTokens: 0,
-  cacheReadTokens: 0,
+  contextUsed: 0,
+  contextSize: 0,
   costUsd: 0,
   model: null,
 };
@@ -216,11 +217,13 @@ export interface ChatTabStatusInfo {
   /** True when a `can_use_tool` request is currently pending. Drives
    *  the tab badge so the user can spot which tab is waiting on them. */
   hasPendingPermission: boolean;
-  /** Cumulative usage across this conversation (post-resume turns
-   *  included). Aggregated by the host into the vault-wide totals
-   *  shown in StatusBar / AI handle. */
-  inputTokens: number;
-  outputTokens: number;
+  /** Latest usage snapshot for this conversation (post-resume turns
+   *  included). `contextUsed` / `contextSize` are per-conversation
+   *  context-window state; `costUsd` is cumulative session spend.
+   *  Aggregated by the host into the vault-wide cost total shown in
+   *  StatusBar / AI handle. */
+  contextUsed: number;
+  contextSize: number;
   costUsd: number;
   /** Total saved sessions for the vault — vault-wide, not per-tab,
    *  but reported via the per-tab channel because each panel runs
@@ -256,9 +259,15 @@ export interface RunStatusInfo {
   /** Project slug of a running tab (e.g. `"subgraph"`). `null` for
    *  vault-scope freeform runs or when idle. */
   runningProject: string | null;
-  /** Cumulative usage summed across every reporting tab. `null`
-   *  before any usage event has arrived in any tab. */
-  lastUsage: { in: number; out: number; cost: number } | null;
+  /** Aggregated usage across every reporting tab. `cost` is summed
+   *  (total spend right now); context isn't aggregated — a single
+   *  representative running tab's context is exposed when one exists.
+   *  `null` before any usage event has arrived in any tab. */
+  lastUsage: {
+    contextUsed: number;
+    contextSize: number;
+    cost: number;
+  } | null;
   /** Total saved sessions for this vault. `null` before the first
    *  `listSessions` call resolves. Each tab reports the same
    *  vault-wide count; the host takes the max. */
@@ -633,13 +642,6 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
           // that path is gone.
           if (!isMine(ev.runId)) return;
           setSessionId(ev.sessionId);
-          // The ACP usage extractor tracks a cumulative-per-session
-          // baseline so each `usage_update` produces a proper delta
-          // (the wire shape carries running totals, not deltas).
-          // Reset the baseline whenever a fresh session id arrives
-          // so the first usage_update of the new session is its own
-          // absolute count, not a delta against the previous run.
-          resetAcpUsageBaseline();
         },
         onStarted: (ev) => {
           // Strict run-id match: only adopt this `run:started` if we
@@ -715,9 +717,9 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
             }
             return;
           }
-          const delta = extractAcpUsageDelta(update);
-          if (delta) {
-            setUsage((prev) => mergeUsage(prev, delta));
+          const snap = extractAcpUsageSnapshot(update);
+          if (snap) {
+            setUsage((prev) => mergeUsage(prev, snap));
           }
           for (const rendered of renderAcpUpdate(update)) {
             appendLine({
@@ -1201,11 +1203,17 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
         endedAtMs: Date.now(),
         exitCode: exit.code,
         exitSuccess: exit.success,
+        // The persistence wire format (SessionUsageSnapshot) still uses
+        // the legacy input/output/cache fields — we keep the schema
+        // unchanged and overload them: contextUsed → inputTokens,
+        // contextSize → outputTokens. Cache buckets are unused under
+        // the new ACP shape (the agent reports only used+size, not the
+        // breakdown). reopenSession reverses this mapping.
         usage: {
-          inputTokens: finalUsage.inputTokens,
-          outputTokens: finalUsage.outputTokens,
-          cacheCreationTokens: finalUsage.cacheCreationTokens,
-          cacheReadTokens: finalUsage.cacheReadTokens,
+          inputTokens: finalUsage.contextUsed,
+          outputTokens: finalUsage.contextSize,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
           costUsd: finalUsage.costUsd,
           model: finalUsage.model,
         },
@@ -1311,13 +1319,14 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     );
     setSessionId(session.summary.claudeSessionId);
     setUsage({
-      inputTokens: session.summary.inputTokens,
-      outputTokens: session.summary.outputTokens,
-      // Cache split isn't persisted separately on the summary row, so
-      // restore the visible total but leave the cache buckets at zero.
-      // Subsequent resume turns will re-accumulate them live.
-      cacheCreationTokens: 0,
-      cacheReadTokens: 0,
+      // Reverse the save-side mapping: legacy inputTokens/outputTokens
+      // columns hold contextUsed/contextSize for sessions written by
+      // the ACP-era code. Older rows (pre-ACP) stored true input/output
+      // token counts here — they'll restore as a contextUsed-like
+      // value with no meaningful size, displayed as "X ctx" with no
+      // denominator until the next live `usage_update` fixes it.
+      contextUsed: session.summary.inputTokens,
+      contextSize: session.summary.outputTokens,
       costUsd: session.summary.costUsd,
       model: session.summary.model,
     });
@@ -1425,8 +1434,8 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
       runningProject,
       title,
       hasPendingPermission: pendingPermission !== null,
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
+      contextUsed: usage.contextUsed,
+      contextSize: usage.contextSize,
       costUsd: usage.costUsd,
       savedCount: lastSessions?.length ?? null,
       collapsed,
@@ -1437,8 +1446,8 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     status,
     pendingPermission,
     pendingTitle,
-    usage.inputTokens,
-    usage.outputTokens,
+    usage.contextUsed,
+    usage.contextSize,
     usage.costUsd,
     lastSessions,
     collapsed,
@@ -2233,8 +2242,8 @@ function buildRunStatusInfo(
 ): RunStatusInfo {
   const lastUsage = hasUsage(usage)
     ? {
-        in: usage.inputTokens + usage.cacheCreationTokens + usage.cacheReadTokens,
-        out: usage.outputTokens,
+        contextUsed: usage.contextUsed,
+        contextSize: usage.contextSize,
         cost: usage.costUsd,
       }
     : null;
@@ -2303,25 +2312,30 @@ function renderLineWithCodeBlocks(text: string): React.ReactNode {
 }
 
 
-function mergeUsage(prev: SessionUsage, delta: UsageDelta): SessionUsage {
+function mergeUsage(prev: SessionUsage, snap: UsageSnapshot): SessionUsage {
   return {
-    inputTokens: prev.inputTokens + delta.inputTokens,
-    outputTokens: prev.outputTokens + delta.outputTokens,
-    cacheCreationTokens: prev.cacheCreationTokens + delta.cacheCreationTokens,
-    cacheReadTokens: prev.cacheReadTokens + delta.cacheReadTokens,
-    costUsd: prev.costUsd + delta.costUsd,
-    model: delta.model ?? prev.model,
+    // Context window: latest-wins. Compaction can shrink `used` back
+    // toward zero — we trust the agent's snapshot over the prior one.
+    contextUsed: snap.contextUsed,
+    // Size is only learned authoritatively on the first `result`;
+    // mid-stream updates carry it too but if a future variant ever
+    // omits it (size === 0), preserve the previously-learned value
+    // so the "X / Y" chip doesn't lose its denominator mid-stream.
+    contextSize: snap.contextSize > 0 ? snap.contextSize : prev.contextSize,
+    // Cost: monotonic. Cumulative session spend can only grow, and
+    // mid-stream updates omit `cost` (snap.costUsd === 0) — clamping
+    // to max avoids a flicker back to $0 between cost-bearing events.
+    costUsd: Math.max(prev.costUsd, snap.costUsd),
+    model: snap.model ?? prev.model,
   };
 }
 
 function hasUsage(u: SessionUsage): boolean {
-  return (
-    u.inputTokens > 0 ||
-    u.outputTokens > 0 ||
-    u.cacheReadTokens > 0 ||
-    u.cacheCreationTokens > 0 ||
-    u.costUsd > 0
-  );
+  // `contextSize` alone doesn't count — the agent learns it from the
+  // first `result` and emits it even before any real tokens flow.
+  // Wait for `contextUsed` (a true measurement) or `costUsd` (only
+  // reported once billing has accrued) before showing the chip.
+  return u.contextUsed > 0 || u.costUsd > 0;
 }
 
 function formatTokens(n: number): string {
@@ -2341,35 +2355,39 @@ function formatCost(usd: number): string {
 }
 
 function formatUsageSummary(u: SessionUsage): string {
-  const totalIn = u.inputTokens + u.cacheCreationTokens + u.cacheReadTokens;
   const parts: string[] = [];
-  if (totalIn > 0) parts.push(`${formatTokens(totalIn)} in`);
-  if (u.outputTokens > 0) parts.push(`${formatTokens(u.outputTokens)} out`);
+  if (u.contextUsed > 0) {
+    parts.push(
+      u.contextSize > 0
+        ? `${formatTokens(u.contextUsed)} / ${formatTokens(u.contextSize)}`
+        : `${formatTokens(u.contextUsed)} ctx`,
+    );
+  }
   if (u.costUsd > 0) parts.push(formatCost(u.costUsd));
   return parts.join(" · ");
 }
 
 function formatUsageTooltip(u: SessionUsage): string {
   const lines: string[] = [];
-  lines.push("Session usage (cumulative across resume turns)");
+  lines.push("Session usage (latest snapshot)");
   if (u.model) lines.push(`Model: ${u.model}`);
   lines.push("");
-  const totalIn = u.inputTokens + u.cacheCreationTokens + u.cacheReadTokens;
-  lines.push(`Input total: ${totalIn.toLocaleString()} tokens`);
-  if (u.inputTokens > 0)
-    lines.push(`  Fresh: ${u.inputTokens.toLocaleString()}`);
-  if (u.cacheCreationTokens > 0)
-    lines.push(`  Cache create: ${u.cacheCreationTokens.toLocaleString()}`);
-  if (u.cacheReadTokens > 0)
-    lines.push(`  Cache read: ${u.cacheReadTokens.toLocaleString()}`);
-  lines.push(`Output: ${u.outputTokens.toLocaleString()} tokens`);
+  if (u.contextSize > 0) {
+    const pct = (u.contextUsed / u.contextSize) * 100;
+    lines.push(
+      `Context: ${u.contextUsed.toLocaleString()} / ${u.contextSize.toLocaleString()} tokens (${pct.toFixed(1)}%)`,
+    );
+  } else {
+    lines.push(`Context used: ${u.contextUsed.toLocaleString()} tokens`);
+  }
   if (u.costUsd > 0) {
     lines.push(`Cost so far: ${formatCost(u.costUsd)}`);
   } else {
     // Subscription accounts (Claude Pro / Max / Team / Enterprise)
     // and Codex on ChatGPT auth don't get per-call billing. ACP's
-    // unstable `usage_update` may omit `costUsd` for those tiers.
-    lines.push("Cost: not reported (subscription plan)");
+    // `usage_update` omits `cost` for those tiers, and also on every
+    // mid-stream event regardless of tier.
+    lines.push("Cost: not reported (subscription plan or mid-turn)");
   }
   return lines.join("\n");
 }

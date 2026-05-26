@@ -248,7 +248,8 @@ The TitleBar AI handle (`● 2 live`) and StatusBar
 | `runningCount`     | Count of tabs in `running` or `stopping`        |
 | `runningSkill`     | First running tab's skill (representative)      |
 | `runningProject`   | First running tab's project (representative)    |
-| `lastUsage`        | **Sum** of tokens + cost across all tabs        |
+| `lastUsage.cost`   | **Sum** across all tabs (total spend right now) |
+| `lastUsage.contextUsed/Size` | First running tab (representative — context is per-conversation, not aggregable) |
 | `savedCount`       | **Max** of per-tab counts (each tab observes the same vault-wide DB; max ignores tabs that haven't fetched yet) |
 
 This means: starting a chat in a background tab still pulses the AI
