@@ -65,6 +65,11 @@ researchers, audit firms, internal sec teams, consultants.
   to destination + rewrites frontmatter) or Discard.
 - **Watch** — `notify`-based file watcher fires `vault:changed` and
   triggers automatic rescans.
+- **Commit** — a Source Control view for the vault git repo: review the
+  staged / unstaged diff, stage or unstage files, and commit — without
+  switching to another editor. Open any changed Markdown file straight
+  from its diff to fix it. Signing follows your git config; the IDE
+  never auto-commits.
 - **Track** — session history, recent vaults, CVE scan against project
   dependencies (OSV.dev), and a rule-based recommendations engine.
 
@@ -157,8 +162,10 @@ the bundled Curator icon set under `target/release/bundle/`.
 - Tool-use approval is interactive via the inline permission card
   driven by ACP's `session/request_permission` RPC. The vault is
   expected to be git-tracked, so you review agent writes via
-  `git diff` before committing. Persistent allow/deny rules per chat
-  are on the roadmap.
+  `git diff` before committing — now directly in the Source Control
+  view (diff, stage, commit) rather than only in an external editor.
+  The IDE never auto-commits; every commit is an explicit action.
+  Persistent allow/deny rules per chat are on the roadmap.
 - Workdir for spawned subprocesses is canonicalized and checked
   against a deny-list of sensitive paths (`/etc`, `/Library`,
   `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, etc.) so a

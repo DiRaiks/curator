@@ -6,7 +6,8 @@
 ┌──────────────────────────────────────────────────────────────────────┐
 │  React + TypeScript (apps/desktop/src)                               │
 │  - Welcome → picks a vault folder via @tauri-apps/plugin-dialog      │
-│  - Dashboard: Projects / AI Artifacts / Drafts / Zones / Diagnostics │
+│  - Dashboard: Projects / AI Artifacts / Drafts / Zones /             │
+│    Diagnostics / Security / Source Control                           │
 │  - EditorPanel (CodeMirror + react-markdown), FrontmatterForm        │
 │  - RunPanelHost + RunPanel × N (tabbed multi-chat drawer; each       │
 │    tab streams its own backend run; inline permission card per tab)  │
@@ -24,8 +25,10 @@
 │    start_run / resume_run / start_freeform_run /                     │
 │      resume_freeform_run — all return RunStartedPayload (incl. runId)│
 │    stop_run(run_id) / approve_tool_use(run_id, request_id, …) /      │
-│      deny_tool_use(run_id, request_id, …) — targeted by run id      │
+│      deny_tool_use(run_id, request_id, …) — targeted by run id       │
 │    get_runs() → Vec<RunStartedPayload> — snapshot of live runs       │
+│    git_status / git_diff / git_stage / git_stage_all /               │
+│      git_unstage / git_commit / git_log — vault SCM                  │
 │  State:                                                              │
 │    WatchState — active filesystem watcher token                      │
 │    RunState — HashMap<RunId, ActiveRun>; up to                       │
@@ -55,6 +58,8 @@
 │                  with path validation (deny-list of sensitive dirs)  │
 │  source_repo   — read-only git inspection (branch, dirty, commit,    │
 │                  detected files, shallow top-level listing)          │
+│  git          — vault-root SCM: status / diff / stage /              │
+│                 unstage / commit / log (write-capable)               │
 │  frontmatter.rs — YAML helpers                                       │
 │  types.rs      — serializable data types (ScanResult, Draft, etc.)   │
 └──────────────────────────────────────────────────────────────────────┘
@@ -264,6 +269,37 @@ Both operations go through the same path validation used by
 `read_markdown_file` / `write_markdown_file`, so a stray promote/discard
 can't escape the vault or touch `.git/` / `.ssh/` / etc.
 
+## Source Control (vault git)
+
+The **Source Control** sidebar view lets the user review and commit
+changes to the **vault itself** without leaving Curator — distinct from
+`source_repo` (read-only, project `local_path`). `SourceControlPanel`
+renders a VS Code-style SCM view: Staged / Changes file groups with
+per-file stage toggles, a syntax-coloured diff pane, a commit box, and a
+History tab listing recent commits. Editable (`.md`, non-deleted) files
+open straight into the editor from a diff so the user can fix and re-stage.
+
+It is backed by `vault-core/git.rs`, which shells out to the `git` CLI
+(no `git2`/`libgit2` dependency — `AGENTS.md` supply-chain policy):
+
+- `status` — `git status --porcelain=v1 --untracked-files=all -z`. The
+  `-uall` flag is load-bearing: without it git collapses an untracked
+  subtree to its top directory, so a new file in a new folder would show
+  as a directory path that can't be diffed/staged/opened.
+- `diff` — `git diff [--cached]`; untracked files fall back to
+  `git diff --no-index` against `/dev/null` to render as additions.
+- `stage` / `stage_all` / `unstage` — `git add` / `git add -A` /
+  `git restore --staged` (`git rm --cached` on an unborn branch).
+- `commit` — commits staged changes only; signing is the user's git
+  config. The IDE never *auto*-commits — every commit is an explicit
+  button press, preserving the human-in-the-loop safety model.
+- `log` — recent commits for the History tab.
+
+The Tauri layer (`git_status` / `git_diff` / `git_stage` /
+`git_stage_all` / `git_unstage` / `git_commit` / `git_log`) is
+`async` + `spawn_blocking` (git can exceed the main-thread budget) and
+applies the path-containment guard described under Security boundaries.
+
 ## Diagnostics
 
 Three severity levels (`info` / `warning` / `error`). Current emitters:
@@ -296,6 +332,13 @@ Three severity levels (`info` / `warning` / `error`). Current emitters:
   `node_modules/`, `target/`, `dist/`, `build/`, `.next/` at any
   depth; deny root `.claude/`; deny `.vault/cache/` and
   `.vault/tmp/`; deny `.bak` / `.pem` / `.key` suffixes.
+- **Vault git ops** — the `git_*` commands canonicalize the vault root,
+  and every caller-supplied file path is run through
+  `git::validate_repo_relative` (rejects absolute, `..`-traversal, and
+  flag-shaped `-…` paths) before reaching `git`. This contains
+  stage/diff to the vault and stops `git diff --no-index` from being
+  used to read files outside it. Commit signing is left to the user's
+  git config; the IDE never passes `-S` or `--no-gpg-sign`.
 - **Bounded concurrency** — `RunState` caps simultaneous claude
   subprocesses at `MAX_CONCURRENT_RUNS = 3`; the fourth `start_run`
   is rejected with a clear inline error. Each run is identified by a

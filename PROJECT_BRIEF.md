@@ -94,7 +94,13 @@ docs/                  # architecture notes
 6. **Source-repo inspection** — read-only snapshot (git branch /
    dirty / commit / detected files / top-level listing) for the
    project's declared `local_path`.
-7. **Vault format versioning** — `.vault/config.yml` declares
+7. **Vault Source Control** — a git panel for the vault itself
+   (distinct from the read-only project inspection above): review the
+   diff, stage / unstage files, and commit, with a recent-commits
+   History tab. Editable Markdown opens straight from a diff. Shells
+   out to the `git` CLI (no `git2` dep); signing follows the user's git
+   config; the IDE never auto-commits.
+8. **Vault format versioning** — `.vault/config.yml` declares
    `version:`; IDE warns when the vault is newer than it supports.
 
 ## Scan result shape (current; see `crates/vault-core/src/types.rs`)
@@ -154,8 +160,10 @@ Tracked separately, but the major pieces in flight:
 ## Design principles
 
 - **Vault is git-tracked source of truth** — IDE never auto-commits;
-  user reviews via `git diff`. This is the entire safety model for
-  agent writes.
+  the user reviews and commits explicitly. This is the entire safety
+  model for agent writes. Review/stage/commit can now happen in the
+  built-in Source Control view, but the commit is always a deliberate
+  user action — there is no automatic commit path.
 - **Curation, not auto-promote** — agents propose knowledge into
   `01_inbox/_drafts/`; promotion to permanent zones is always a
   human decision.

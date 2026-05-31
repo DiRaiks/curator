@@ -23,7 +23,8 @@ crates/vault-core/
   preview/       # run plan + runner-agnostic prompt builder
   runner/        # ACP-driven runner abstraction (Claude + Codex)
   markdown_io.rs # vault-rooted read / write / create / promote / discard
-  source_repo.rs # read-only repo inspection
+  source_repo.rs # read-only repo inspection (project local_path)
+  git.rs         # vault git: status / diff / stage / commit / log
   scope.rs       # privacy-zone classification
 examples/demo-vault/
 docs/
@@ -69,7 +70,9 @@ and supports resume by session id.
 ## Design principles
 
 - **The vault is the git-tracked source of truth.** The IDE never auto-commits;
-  you review every agent write with `git diff`.
+  you review every agent write with `git diff` — in the built-in Source Control
+  view (diff / stage / commit) or an external editor. Commits are always
+  explicit; there is no automatic commit path.
 - **Curation, not auto-promote.** Agents propose knowledge into an inbox;
   promotion to permanent zones is always a human decision.
 - **Skills are first-class**: versioned content in the vault, not hard-coded
