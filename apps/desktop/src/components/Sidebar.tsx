@@ -1,5 +1,6 @@
+import { useEffect, useState } from "react";
 import type { Diagnostic, Draft, Project } from "../types";
-import { FileTree } from "./FileTree";
+import { FileTree, dirAncestors } from "./FileTree";
 
 /**
  * Identifier for the currently-rendered main view. 1:1 with the old
@@ -90,6 +91,35 @@ export function Sidebar({
   const diagWarnings = diagnostics.filter((d) => d.level === "warning").length;
   const diagErrors = diagnostics.filter((d) => d.level === "error").length;
   const diagBad = diagWarnings + diagErrors > 0;
+
+  // Expanded directory paths for the FILES tree. Empty by default so the
+  // tree opens fully collapsed; the parent owns this so "collapse all"
+  // and auto-reveal (below) can both reach every row at once.
+  const [expandedDirs, setExpandedDirs] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+
+  const toggleDir = (path: string) =>
+    setExpandedDirs((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+
+  const collapseAll = () => setExpandedDirs(new Set());
+
+  // Reveal the open file by expanding its ancestor directories — keeps
+  // manually-opened folders untouched (only adds, never collapses).
+  useEffect(() => {
+    if (!activeFilePath) return;
+    const ancestors = dirAncestors(activeFilePath);
+    if (ancestors.length === 0) return;
+    setExpandedDirs((prev) => {
+      if (ancestors.every((p) => prev.has(p))) return prev;
+      return new Set([...prev, ...ancestors]);
+    });
+  }, [activeFilePath]);
 
   return (
     <aside className="sidebar" aria-label="Workspace navigation">
@@ -203,15 +233,27 @@ export function Sidebar({
       <SectionHeader
         label="Files"
         action={
-          <button
-            type="button"
-            className="sidebar__section-action"
-            onClick={onNewFile}
-            title="Create a new Markdown file in the vault"
-            aria-label="New file"
-          >
-            +
-          </button>
+          <>
+            <button
+              type="button"
+              className="sidebar__section-action"
+              onClick={collapseAll}
+              disabled={expandedDirs.size === 0}
+              title="Collapse all folders"
+              aria-label="Collapse all folders"
+            >
+              ⊟
+            </button>
+            <button
+              type="button"
+              className="sidebar__section-action"
+              onClick={onNewFile}
+              title="Create a new Markdown file in the vault"
+              aria-label="New file"
+            >
+              +
+            </button>
+          </>
         }
       />
       {openError && (
@@ -224,6 +266,8 @@ export function Sidebar({
           files={files}
           onSelectFile={onOpenFile}
           activePath={activeFilePath}
+          expanded={expandedDirs}
+          onToggleDir={toggleDir}
         />
       </div>
     </aside>

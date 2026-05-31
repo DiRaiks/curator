@@ -4831,8 +4831,13 @@ body.is-resizing-run-panel * {
   cursor: pointer;
 }
 
-.sidebar__section-action:hover {
+.sidebar__section-action:hover:not(:disabled) {
   color: var(--text);
+}
+
+.sidebar__section-action:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .sidebar__group {
