@@ -188,12 +188,14 @@ const home = withBase("/");
         }
       }
       .navlinks a {
+        display: inline-flex;
+        align-items: center;
+        min-height: 40px;
         font-family: var(--mono);
         font-size: 0.74rem;
         letter-spacing: 0.04em;
         color: var(--ink-2);
         text-decoration: none;
-        padding-block: 9px;
         transition: color 0.18s var(--ease);
       }
       .navlinks a:hover {
@@ -235,10 +237,13 @@ const home = withBase("/");
         gap: 2px;
       }
       .docs-nav a {
+        display: flex;
+        align-items: center;
+        min-height: 40px;
         font-size: 0.9rem;
         color: var(--ink-2);
         text-decoration: none;
-        padding: 7px 11px;
+        padding: 0 11px;
         border-radius: 8px;
         transition:
           color 0.18s var(--ease),
