@@ -1,344 +1,1797 @@
 ---
+import "@fontsource-variable/geist";
+import "@fontsource-variable/geist-mono";
+import "../styles/global.css";
 import { Icon } from "astro-icon/components";
-import Base from "../layouts/Base.astro";
-import Nav from "../components/Nav.astro";
-import Footer from "../components/Footer.astro";
-import HeroVisual from "../components/HeroVisual.astro";
 import { SITE, CAPABILITIES, STACK, PRIVACY, withBase } from "../consts";
 
-// Bento spans tuned for rhythm: two top tiles, a full-width flagship (Run),
-// then a three-up row. Index-aligned with CAPABILITIES.
-const bentoSpan = [
-  "md:col-span-3",
-  "md:col-span-3",
-  "md:col-span-6",
-  "md:col-span-2",
-  "md:col-span-2",
-  "md:col-span-2",
+const fullTitle = `${SITE.name} · ${SITE.tagline}`;
+const favicon = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/favicon.svg`;
+
+// Agent plan glyphs, verbatim from acpRender.ts: ✓ completed · • in_progress · ▢ pending
+const PLAN = [
+  ["✓", "done", "Map the auth flow in acme-audit"],
+  ["•", "now", "Check token-refresh validation"],
+  ["▢", "todo", "Write the finding into the vault inbox"],
 ];
 ---
 
-<Base>
-  <Nav />
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/svg+xml" href={favicon} />
+    <title>{fullTitle}</title>
+    <meta name="description" content={SITE.description} />
+    <meta name="theme-color" content="#f4f5f7" />
+  </head>
 
-  <main>
-    <!-- HERO -->
-    <section class="relative overflow-hidden">
-      <div class="grid-backdrop absolute inset-0 -z-10" aria-hidden="true"></div>
-      <div
-        class="mx-auto grid max-w-6xl items-center gap-12 px-5 pb-20 pt-20 sm:px-8 md:pt-24 lg:grid-cols-[1.05fr_0.95fr] lg:gap-8"
-      >
-        <div data-reveal>
-          <h1
-            class="max-w-[18ch] text-4xl font-semibold leading-[1.05] tracking-tight text-zinc-50 sm:text-5xl lg:text-6xl"
+  <body>
+    <!-- NAV -->
+    <header class="nav">
+      <div class="wrap row">
+        <a class="brand" href={withBase("/")}>
+          <span class="mk" aria-hidden="true">
+            <svg
+              viewBox="0 0 22 22"
+              fill="none"
+              stroke="#fff"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M3 7 L11 3 L19 7 L11 11 Z"></path>
+              <path d="M3 11 L11 15 L19 11"></path>
+              <path d="M3 15 L11 19 L19 15"></path>
+            </svg>
+          </span> curator
+        </a>
+        <nav class="navlinks">
+          <a href="#why">Why</a>
+          <a href="#ops">Operations</a>
+          <a href="#loop">Curation</a>
+          <a href="#security">Security</a>
+          <a href={withBase("/docs/quick-start")}>Docs</a>
+          <a href={SITE.repo} target="_blank" rel="noreferrer">GitHub ↗</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="top">
+      <!-- HERO -->
+      <section class="hero">
+        <div class="wrap">
+          <span class="hero-eyebrow"
+            ><span class="dot"></span> Memory-augmented agentic IDE · local-only</span
           >
-            Agents work.<br />The vault <span class="text-accent-500"
-              >remembers.</span
-            >
+          <h1 class="title">
+            Agents work.<br />The vault <span class="mut">remembers.</span>
           </h1>
-          <p class="mt-6 max-w-[54ch] text-lg leading-relaxed text-zinc-400">
-            A desktop memory-augmented agentic IDE for Markdown vaults. Run an
-            embedded AI runner on your projects and let accumulated knowledge
-            outlive every chat session.
+          <p class="hero-sub">
+            A desktop IDE that runs an embedded AI runner on your projects and
+            curates what it learns into a git-tracked Markdown vault, so every
+            task starts from more context than the last.
           </p>
-          <div class="mt-9 flex flex-wrap items-center gap-3">
-            <a
-              href="#quickstart"
-              class="press inline-flex items-center gap-2 rounded-lg bg-accent-500 px-5 py-3 text-sm font-semibold text-zinc-950 transition-colors duration-200 hover:bg-accent-400"
+          <div class="hero-actions">
+            <a class="btn btn-primary btn-lg" href="#deploy">Build from source</a>
+            <a class="btn btn-lg" href={SITE.repo} target="_blank" rel="noreferrer"
+              >View on GitHub ↗</a
             >
-              <Icon name="ph:terminal-window" class="h-4 w-4" />
-              Build from source
-            </a>
-            <a
-              href={SITE.repo}
-              target="_blank"
-              rel="noreferrer"
-              class="press inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-5 py-3 text-sm font-medium text-zinc-100 transition-colors duration-200 hover:border-zinc-600 hover:bg-zinc-900"
-            >
-              <Icon name="ph:github-logo" class="h-4 w-4" />
-              View on GitHub
-            </a>
           </div>
         </div>
 
-        <div data-reveal style="transition-delay:120ms" class="hidden lg:block">
-          <HeroVisual />
-        </div>
-      </div>
-    </section>
-
-    <!-- WHY -->
-    <section id="why" class="border-t border-zinc-800/70">
-      <div class="mx-auto max-w-3xl px-5 py-24 sm:px-8" data-reveal>
-        <h2
-          class="text-3xl font-semibold tracking-tight text-zinc-100 sm:text-4xl"
-        >
-          Most agentic tools forget.
-        </h2>
-        <div class="mt-6 space-y-5 text-lg leading-relaxed text-zinc-400">
-          <p>
-            Each new chat starts from zero, even when last week's session learned
-            exactly what this one needs to know. The value evaporates with the
-            conversation.
-          </p>
-          <p>
-            Curator inverts that. The <span class="text-zinc-200"
-              >vault</span
-            > — a plain git-tracked Markdown folder you already keep — is the
-            persistent memory. The IDE is the curation surface that makes
-            accumulated patterns, decisions, and findings navigable across
-            projects and sessions.
-          </p>
-          <p class="text-zinc-200">
-            Each task starts from more context than the last.
-          </p>
-        </div>
-      </div>
-    </section>
-
-    <!-- FEATURES (bento) -->
-    <section id="features" class="border-t border-zinc-800/70">
-      <div class="mx-auto max-w-6xl px-5 py-24 sm:px-8">
-        <div class="max-w-2xl" data-reveal>
-          <p
-            class="text-xs font-medium uppercase tracking-[0.18em] text-accent-500"
+        <!-- IDE MOCK -->
+        <div class="wrap ide-frame" data-reveal>
+          <div
+            class="ide"
+            role="img"
+            aria-label="Curator IDE: vault file tree, an open finding note, and an agent chat showing its plan and a permission request to write a draft."
           >
-            What you can do today
-          </p>
-          <h2
-            class="mt-3 text-3xl font-semibold tracking-tight text-zinc-100 sm:text-4xl"
-          >
-            A working IDE, not a roadmap.
-          </h2>
-        </div>
-
-        <div class="mt-12 grid grid-cols-1 gap-4 md:grid-cols-6">
-          {
-            CAPABILITIES.map((cap, i) => {
-              const flagship = i === 2;
-              return (
-                <article
-                  data-reveal
-                  style={`transition-delay:${Math.min(i, 4) * 60}ms`}
-                  class={`group rounded-xl border border-zinc-800 p-6 transition-colors duration-300 hover:border-zinc-700 ${bentoSpan[i]} ${
-                    flagship
-                      ? "bg-gradient-to-br from-accent-500/[0.08] to-zinc-900/40"
-                      : i === 0
-                        ? "bg-gradient-to-br from-zinc-900 to-zinc-900/30"
-                        : "bg-zinc-900/40"
-                  }`}
+            <div class="ide-titlebar">
+              <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+              <span class="tb-title"
+                ><b>Curator</b> &nbsp;·&nbsp; acme-audit &nbsp;·&nbsp;
+                <span class="br">main ✓</span></span
+              >
+              <div class="tb-right">
+                <span class="runner"><span class="d"></span> ✦ Claude · Sonnet</span
                 >
-                  <div
-                    class={`inline-flex h-10 w-10 items-center justify-center rounded-lg border ${
-                      flagship
-                        ? "border-accent-500/40 bg-accent-500/10 text-accent-400"
-                        : "border-zinc-700/70 bg-zinc-800/50 text-zinc-300"
-                    }`}
-                  >
-                    <Icon name={cap.icon} class="h-5 w-5" />
+              </div>
+            </div>
+            <div class="ide-body">
+              <!-- sidebar -->
+              <aside class="ide-sidebar">
+                <div class="sb-tabs">
+                  <button class="on">Files</button>
+                  <button>Drafts <span class="ct">2</span></button>
+                </div>
+                <div class="tree">
+                  <div class="node dir"><span class="ar">▸</span> 00_meta</div>
+                  <div class="node dir">
+                    <span class="ar">▾</span> 01_inbox/_drafts
                   </div>
-                  <h3
-                    class={`mt-4 font-semibold tracking-tight text-zinc-100 ${flagship ? "text-xl" : "text-lg"}`}
-                  >
-                    {cap.title}
-                  </h3>
-                  <p
-                    class={`mt-2 leading-relaxed text-zinc-400 ${flagship ? "max-w-[60ch] text-base" : "text-sm"}`}
-                  >
-                    {cap.body}
-                  </p>
-                </article>
-              );
-            })
-          }
-        </div>
-      </div>
-    </section>
-
-    <!-- STACK -->
-    <section class="border-t border-zinc-800/70">
-      <div
-        class="mx-auto grid max-w-6xl gap-10 px-5 py-24 sm:px-8 lg:grid-cols-[0.8fr_1.2fr]"
-      >
-        <div data-reveal>
-          <h2
-            class="text-3xl font-semibold tracking-tight text-zinc-100 sm:text-4xl"
-          >
-            Local-first by construction.
-          </h2>
-          <p class="mt-5 max-w-[42ch] text-lg leading-relaxed text-zinc-400">
-            No backend server. No cloud sync. A native desktop shell driving a
-            Rust core over your own filesystem.
-          </p>
-        </div>
-
-        <dl class="divide-y divide-zinc-800/80" data-reveal>
-          {
-            STACK.map((item, i) => (
-              <div class="flex items-baseline gap-5 py-5">
-                <span class="font-mono text-sm text-zinc-600">
-                  {String(i + 1).padStart(2, "0")}
-                </span>
-                <div>
-                  <dt class="text-lg font-medium text-zinc-100">{item.name}</dt>
-                  <dd class="mt-1 text-zinc-400">{item.role}</dd>
+                  <div class="node file sel indent">
+                    <span>auth-bypass.finding.md</span><span class="pill draft"
+                      >draft</span
+                    >
+                  </div>
+                  <div class="node file indent dimd">rate-limit.note.md</div>
+                  <div class="node dir"><span class="ar">▾</span> 02_projects</div>
+                  <div class="node dir indent">
+                    <span class="ar">▾</span> acme-audit
+                  </div>
+                  <div class="node file indent2 dimd">_index.md</div>
+                  <div class="node dir indent2">
+                    <span class="ar">▸</span> findings
+                  </div>
+                  <div class="node dir">
+                    <span class="ar">▸</span> .vault/skills
+                  </div>
+                  <div class="node file">
+                    <span>personal</span><span class="pill zone">zone 🔒</span>
+                  </div>
+                </div>
+              </aside>
+              <!-- main -->
+              <div class="ide-main">
+                <div class="main-tabs">
+                  <div class="mt">auth-bypass.finding.md <span class="x">×</span></div>
+                </div>
+                <div class="editor">
+                  <div class="fm">
+                    <div class="fmrow">
+                      <span class="k">status:</span><span class="v"
+                        ><span class="acc">draft-from-agent</span></span
+                      >
+                    </div>
+                    <div class="fmrow">
+                      <span class="k">proposed_destination:</span><span class="v"
+                        >02_projects/acme-audit/findings/</span
+                      >
+                    </div>
+                    <div class="fmrow">
+                      <span class="k">reason:</span><span class="v"
+                        >reusable auth-bypass pattern</span
+                      >
+                    </div>
+                    <div class="fmrow">
+                      <span class="k">tags:</span><span class="v tags"
+                        ><span class="tag">auth</span><span class="tag">bypass</span
+                        ><span class="tag">high</span></span
+                      >
+                    </div>
+                  </div>
+                  <div class="md">
+                    <h4>Auth bypass in token refresh</h4>
+                    <p>
+                      The refresh endpoint accepts an expired access token when
+                      the <span class="wl">[[session-fixation]]</span> guard is
+                      skipped. Related prior work:
+                      <span class="wl">[[acme-audit/jwt-notes]]</span>.
+                    </p>
+                    <p class="dimd">
+                      Repro: replay the refresh call with the stale token<span
+                        class="cur"
+                        aria-hidden="true"></span>
+                    </p>
+                  </div>
+                </div>
+                <!-- drawer -->
+                <div class="drawer">
+                  <div class="dr-tabs">
+                    <div class="dt on"><span class="d"></span> chat 1 · claude</div>
+                    <div class="dt idle">
+                      <span class="d"></span> chat 2 · codex
+                    </div>
+                    <span class="add">+</span>
+                  </div>
+                  <div class="chat">
+                    <div class="msg user">
+                      <span class="who">you</span><span class="body"
+                        >Audit the auth flow in <span class="em">acme-audit</span>
+                        and save anything reusable.</span
+                      >
+                    </div>
+                    <div class="msg">
+                      <span class="who">claude</span><span class="body"
+                        ><div class="plan">
+                          <div class="plan-h">▤ plan</div>
+                          {
+                            PLAN.map(([g, st, t]) => (
+                              <div class={`pl ${st}`}>
+                                <span class="g">{g}</span> {t}
+                              </div>
+                            ))
+                          }
+                        </div></span
+                      >
+                    </div>
+                    <div class="msg">
+                      <span class="who"></span><span class="body" style="width:100%"
+                        ><div class="permcard">
+                          <div class="ph">
+                            <span class="lock">⚠ Permission</span>
+                            <span class="risk">low</span>
+                            <span class="sub">Write</span>
+                          </div>
+                          <div class="pb">
+                            <div class="op">Claude wants to use <b>Write</b></div>
+                            <code class="arg"
+                              >01_inbox/_drafts/auth-bypass.finding.md</code
+                            >
+                            <div class="acts">
+                              <button class="deny">Deny</button>
+                              <button>Allow once</button>
+                              <button class="allow">Allow for session</button>
+                            </div>
+                          </div>
+                        </div></span
+                      >
+                    </div>
+                  </div>
                 </div>
               </div>
-            ))
-          }
-        </dl>
-      </div>
-    </section>
-
-    <!-- SECURITY -->
-    <section id="security" class="border-t border-zinc-800/70">
-      <div class="mx-auto max-w-6xl px-5 py-24 sm:px-8">
-        <div class="max-w-2xl" data-reveal>
-          <h2
-            class="text-3xl font-semibold tracking-tight text-zinc-100 sm:text-4xl"
-          >
-            Privacy is the default, not a setting.
-          </h2>
-          <p class="mt-4 text-lg leading-relaxed text-zinc-400">
-            Built for security researchers and audit teams who cannot send their
-            work to a third party.
-          </p>
-        </div>
-
-        <div class="mt-12 grid grid-cols-1 gap-4 md:grid-cols-2">
-          {
-            PRIVACY.map((item, i) => (
-              <article
-                data-reveal
-                style={`transition-delay:${(i % 2) * 60}ms`}
-                class="flex gap-4 rounded-xl border border-zinc-800 bg-zinc-900/40 p-6"
-              >
-                <div class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-700/70 bg-zinc-800/50 text-accent-400">
-                  <Icon name={item.icon} class="h-5 w-5" />
-                </div>
-                <div>
-                  <h3 class="font-semibold tracking-tight text-zinc-100">
-                    {item.title}
-                  </h3>
-                  <p class="mt-1.5 text-sm leading-relaxed text-zinc-400">
-                    {item.body}
-                  </p>
-                </div>
-              </article>
-            ))
-          }
-        </div>
-      </div>
-    </section>
-
-    <!-- QUICK START -->
-    <section id="quickstart" class="border-t border-zinc-800/70">
-      <div
-        class="mx-auto grid max-w-6xl items-start gap-10 px-5 py-24 sm:px-8 lg:grid-cols-2 lg:gap-16"
-      >
-        <div data-reveal>
-          <h2
-            class="text-3xl font-semibold tracking-tight text-zinc-100 sm:text-4xl"
-          >
-            Run it in three commands.
-          </h2>
-          <p class="mt-5 text-lg leading-relaxed text-zinc-400">
-            Curator is pre-release: there are no prebuilt binaries yet, so you
-            build from source. You will need Node 20+, Rust stable, and the
-            Claude Code CLI on your PATH.
-          </p>
-          <ol class="mt-8 space-y-5">
-            <li class="flex gap-4">
-              <span
-                class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-zinc-700 font-mono text-xs text-zinc-400"
-                >1</span
-              >
-              <p class="text-zinc-300">
-                <span class="font-medium text-zinc-100">Install dependencies</span
-                > with the repo-standard npm.
-              </p>
-            </li>
-            <li class="flex gap-4">
-              <span
-                class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-zinc-700 font-mono text-xs text-zinc-400"
-                >2</span
-              >
-              <p class="text-zinc-300">
-                <span class="font-medium text-zinc-100">Fetch the ACP runners</span
-                > — the pinned Codex binary lands in src-tauri.
-              </p>
-            </li>
-            <li class="flex gap-4">
-              <span
-                class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-zinc-700 font-mono text-xs text-zinc-400"
-                >3</span
-              >
-              <p class="text-zinc-300">
-                <span class="font-medium text-zinc-100">Launch the dev build</span
-                > and open a vault, or the bundled demo.
-              </p>
-            </li>
-          </ol>
-          <a
-            href={withBase("/docs/quick-start")}
-            class="press mt-8 inline-flex items-center gap-2 text-sm font-medium text-accent-400 transition-colors duration-200 hover:text-accent-500"
-          >
-            Full setup guide
-            <Icon name="ph:arrow-right" class="h-4 w-4" />
-          </a>
-        </div>
-
-        <div
-          data-reveal
-          style="transition-delay:120ms"
-          class="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/60"
-        >
-          <div
-            class="flex items-center gap-2 border-b border-zinc-800 px-4 py-2.5"
-          >
-            <Icon name="ph:terminal-window" class="h-4 w-4 text-zinc-500" />
-            <span class="font-mono text-xs text-zinc-500">bash</span>
+            </div>
           </div>
-          <pre class="overflow-x-auto p-5 font-mono text-sm leading-relaxed"><code><span class="text-zinc-600"># clone, then from the repo root</span>
-<span class="text-accent-400">npm</span> <span class="text-zinc-300">install</span>
-<span class="text-accent-400">./scripts/fetch-acp-binaries.sh</span>
-<span class="text-accent-400">npm</span> <span class="text-zinc-300">run tauri:dev</span></code></pre>
         </div>
-      </div>
-    </section>
+      </section>
 
-    <!-- CTA -->
-    <section class="border-t border-zinc-800/70">
-      <div class="mx-auto max-w-3xl px-5 py-24 text-center sm:px-8" data-reveal>
-        <h2
-          class="text-3xl font-semibold tracking-tight text-zinc-50 sm:text-4xl"
-        >
-          Start curating.
-        </h2>
-        <p class="mx-auto mt-4 max-w-[48ch] text-lg leading-relaxed text-zinc-400">
-          Open a vault, run a project, and watch the knowledge compound.
-        </p>
-        <div class="mt-9 flex flex-wrap items-center justify-center gap-3">
-          <a
-            href={withBase("/docs/quick-start")}
-            class="press inline-flex items-center gap-2 rounded-lg bg-accent-500 px-5 py-3 text-sm font-semibold text-zinc-950 transition-colors duration-200 hover:bg-accent-400"
-          >
-            <Icon name="ph:book-open" class="h-4 w-4" />
-            Read the docs
-          </a>
-          <a
+      <!-- WHY / COMPOUNDING -->
+      <section class="band" id="why">
+        <div class="wrap sec-pad">
+          <div class="sec-head" data-reveal>
+            <span class="kicker">Why it exists</span>
+            <h2>Most agentic tools forget. Curator compounds.</h2>
+            <p>
+              Each new chat normally starts from zero. Curator routes what the
+              agent learns into a vault you keep, so context accumulates instead
+              of resetting with the conversation.
+            </p>
+          </div>
+          <div class="compound">
+            <div class="ctask" data-reveal>
+              <div class="ch"><span>TASK 01</span><span>vault: new</span></div>
+              <div class="meter">
+                <i class="on"></i><i></i><i></i><i></i><i></i>
+              </div>
+              <p class="lab">
+                Agent starts cold. One finding gets <b>promoted</b> to the vault.
+              </p>
+            </div>
+            <div class="ctask" data-reveal style="transition-delay:80ms">
+              <div class="ch">
+                <span>TASK 02</span><span>vault: +3 notes</span>
+              </div>
+              <div class="meter">
+                <i class="on"></i><i class="on"></i><i class="on"></i><i></i><i
+                ></i>
+              </div>
+              <p class="lab">
+                It inherits prior findings, skills, and decisions <b>for free</b>.
+              </p>
+            </div>
+            <div class="ctask" data-reveal style="transition-delay:160ms">
+              <div class="ch">
+                <span>TASK 03</span><span>vault: +8 notes</span>
+              </div>
+              <div class="meter">
+                <i class="on"></i><i class="on"></i><i class="on"></i><i
+                  class="on"></i><i class="on"></i>
+              </div>
+              <p class="lab">
+                Each task starts from <b>more context than the last</b>.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- OPERATIONS -->
+      <section class="band" id="ops">
+        <div class="wrap sec-pad">
+          <div class="sec-head" data-reveal>
+            <h2>A working IDE, not a roadmap.</h2>
+            <p>Everything below ships today. None of it is a roadmap promise.</p>
+          </div>
+          <div class="ops">
+            {
+              CAPABILITIES.map((cap, i) => (
+                <div
+                  class={`op-c${i === 2 ? " flag" : ""}`}
+                  data-reveal
+                  style={`transition-delay:${Math.min(i, 4) * 50}ms`}
+                >
+                  <div class="top">
+                    <span class="gl">
+                      <Icon name={cap.icon} width={17} height={17} />
+                    </span>
+                    <span class="n">{String(i + 1).padStart(2, "0")}</span>
+                  </div>
+                  <h3>{cap.title}</h3>
+                  <p>{cap.body}</p>
+                  {i === 2 && (
+                    <span class="badge">
+                      <b>3</b> concurrent chats · Claude / Codex
+                    </span>
+                  )}
+                </div>
+              ))
+            }
+          </div>
+        </div>
+      </section>
+
+      <!-- CURATION LOOP -->
+      <section class="band" id="loop">
+        <div class="wrap sec-pad">
+          <div class="sec-head" data-reveal>
+            <span class="kicker">The curation loop · human-in-the-loop</span>
+            <h2>Nothing enters the vault without your call.</h2>
+            <p>
+              Agents propose; you decide. Promotion is a deliberate step, and
+              git is the safety net underneath it.
+            </p>
+          </div>
+          <div class="loop">
+            <div class="lcard" data-reveal>
+              <div class="lh"><span class="step">01</span> Agent proposes</div>
+              <div class="lb">
+                <div class="fname">auth-bypass.finding.md</div>
+                <div class="meta">
+                  <span class="acc">status: draft-from-agent</span><br />→
+                  01_inbox/_drafts/
+                </div>
+                <p class="desc">
+                  A runner writes a reusable note while it works, into the
+                  inbox, never straight into a permanent zone.
+                </p>
+              </div>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="lcard" data-reveal style="transition-delay:80ms">
+              <div class="lh"><span class="step">02</span> You review</div>
+              <div class="lb">
+                <div class="fname">auth-bypass.finding.md</div>
+                <div class="meta">proposed → acme-audit/findings/</div>
+                <div class="acts">
+                  <button class="promote">Promote</button><button>Discard</button>
+                </div>
+                <p class="desc">
+                  Read the draft in the Drafts tab, then Promote it to its home
+                  or Discard it.
+                </p>
+              </div>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="lcard" data-reveal style="transition-delay:160ms">
+              <div class="lh"><span class="step">03</span> Vault remembers</div>
+              <div class="lb">
+                <div class="fname">findings/auth-bypass.md</div>
+                <div class="meta">
+                  <span class="grn">status: promoted ✓</span><br />tracked ·
+                  review via git diff
+                </div>
+                <p class="desc">
+                  It becomes context the next task inherits, and you review
+                  every write with <span class="mono">git diff</span> before it
+                  lands.
+                </p>
+              </div>
+            </div>
+          </div>
+          <p class="loop-foot">
+            <span class="lp">↺</span> The loop repeats, and the vault gets
+            sharper every time.
+          </p>
+        </div>
+      </section>
+
+      <!-- COMPONENTS -->
+      <section class="band" id="components">
+        <div class="wrap sec-pad">
+          <div class="sec-head" data-reveal>
+            <h2>No server. No cloud. Just your filesystem.</h2>
+            <p>Local-first by construction: a native shell over a Rust core.</p>
+          </div>
+          <div class="stack">
+            {
+              STACK.map((item, i) => (
+                <div class="stk" data-reveal>
+                  <span class="n">{String(i + 1).padStart(2, "0")}</span>
+                  <span class="t">{item.name}</span>
+                  <span class="r">{item.role}</span>
+                </div>
+              ))
+            }
+          </div>
+        </div>
+      </section>
+
+      <!-- SECURITY -->
+      <section class="band" id="security">
+        <div class="wrap sec-pad">
+          <div class="sec-head" data-reveal>
+            <span class="kicker">Privacy is the default, not a setting</span>
+            <h2>Built for work that can't leave the machine.</h2>
+            <p>
+              For security researchers and audit teams who cannot send their
+              work to a third party.
+            </p>
+          </div>
+          <div class="sec-grid">
+            {
+              PRIVACY.map((item, i) => (
+                <div
+                  class="sitem"
+                  data-reveal
+                  style={`transition-delay:${(i % 2) * 70}ms`}
+                >
+                  <span class="gl">
+                    <Icon name={item.icon} width={18} height={18} />
+                  </span>
+                  <h3>{item.title}</h3>
+                  <p>{item.body}</p>
+                </div>
+              ))
+            }
+          </div>
+        </div>
+      </section>
+
+      <!-- DEPLOY -->
+      <section class="band" id="deploy">
+        <div class="wrap sec-pad">
+          <div class="deploy-grid">
+            <div class="deploy-copy" data-reveal>
+              <h2>Run it in three commands.</h2>
+              <p>Pre-release: no prebuilt binaries yet, so you build from source.</p>
+              <p class="req">
+                Requires Node 20+, Rust stable, and the Claude Code CLI on PATH.
+              </p>
+              <div class="hero-actions">
+                <a class="btn" href={withBase("/docs/quick-start")}
+                  >Full setup guide ↗</a
+                >
+              </div>
+            </div>
+            <div class="codeblock" data-reveal style="transition-delay:100ms">
+              <div class="cb-head">
+                <span class="f">~/curator / bash</span>
+                <button
+                  id="copyCmd"
+                  type="button"
+                  data-cmd={"npm install\n./scripts/fetch-acp-binaries.sh\nnpm run tauri:dev"}
+                  >Copy</button
+                >
+              </div>
+              <pre><code><span class="c"># from the repo root</span>
+<span class="p">$</span> npm install
+<span class="p">$</span> ./scripts/fetch-acp-binaries.sh
+<span class="p">$</span> npm run tauri:dev<span class="blink">_</span></code></pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- CLOSING -->
+      <section class="band closing">
+        <div class="wrap" data-reveal>
+          <h2>Open a vault.<br />Watch the knowledge <span class="mut">compound.</span></h2>
+          <div class="hero-actions">
+            <a class="btn btn-primary btn-lg" href={withBase("/docs/quick-start")}
+              >Read the docs</a
+            >
+            <a class="btn btn-lg" href={SITE.repo} target="_blank" rel="noreferrer"
+              >★ Star on GitHub</a
+            >
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="wrap foot">
+        <span>© 2026 Curator · MIT License</span>
+        <span class="lk">
+          <a href="#why">Why</a><a href="#ops">Operations</a><a href="#security"
+            >Security</a
+          ><a href={withBase("/docs/quick-start")}>Docs</a><a
             href={SITE.repo}
             target="_blank"
-            rel="noreferrer"
-            class="press inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-5 py-3 text-sm font-medium text-zinc-100 transition-colors duration-200 hover:border-zinc-600 hover:bg-zinc-900"
+            rel="noreferrer">GitHub</a
           >
-            <Icon name="ph:star" class="h-4 w-4" />
-            Star on GitHub
-          </a>
-        </div>
+        </span>
+        <span>Agents work. The vault remembers.</span>
       </div>
-    </section>
-  </main>
+    </footer>
 
-  <Footer />
-</Base>
+    <script>
+      // Copy quick-start commands.
+      const btn = document.getElementById("copyCmd");
+      btn?.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(btn.dataset.cmd ?? "");
+          const prev = btn.textContent;
+          btn.textContent = "Copied";
+          window.setTimeout(() => {
+            btn.textContent = prev;
+          }, 1500);
+        } catch {
+          /* clipboard unavailable */
+        }
+      });
+
+      // Scroll-reveal (reduced-motion safe).
+      const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const els = document.querySelectorAll("[data-reveal]");
+      if (reduce || !("IntersectionObserver" in window)) {
+        els.forEach((el) => el.classList.add("is-visible"));
+      } else {
+        const io = new IntersectionObserver(
+          (entries) => {
+            for (const e of entries) {
+              if (e.isIntersecting) {
+                e.target.classList.add("is-visible");
+                io.unobserve(e.target);
+              }
+            }
+          },
+          { threshold: 0.12, rootMargin: "0px 0px -8% 0px" },
+        );
+        els.forEach((el) => io.observe(el));
+      }
+    </script>
+
+    <style is:global>
+      html {
+        color-scheme: light;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      html body {
+        --bg: #f4f5f7;
+        --bg-2: #eceef1;
+        --surface: #ffffff;
+        --ink: #16181d;
+        --ink-2: #4c515b;
+        --ink-3: #767c87;
+        --ink-faint: #9aa0ab;
+        --line: #e2e5ea;
+        --line-2: #d6dae0;
+        --accent: #e8692b;
+        --accent-deep: #c7551e;
+        --accent-soft: rgba(232, 105, 43, 0.1);
+        --green: #2f9e6b;
+        --green-soft: rgba(47, 158, 107, 0.12);
+        --d-bg: #14161b;
+        --d-panel: #181b21;
+        --d-panel-2: #1d212a;
+        --d-elev: #20242c;
+        --d-line: rgba(255, 255, 255, 0.08);
+        --d-line-2: rgba(255, 255, 255, 0.13);
+        --d-text: #d7dbe2;
+        --d-mut: #8b919d;
+        --d-faint: #5f6671;
+        --sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+        --mono: "Geist Mono Variable", ui-monospace, Menlo, monospace;
+        --maxw: 1200px;
+        --ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: var(--sans);
+        font-size: 16px;
+        line-height: 1.6;
+        overflow-x: hidden;
+      }
+
+      .v3 a {
+        color: inherit;
+        text-decoration: none;
+      }
+      .wrap {
+        max-width: var(--maxw);
+        margin: 0 auto;
+        padding-inline: 28px;
+      }
+      @media (min-width: 900px) {
+        .wrap {
+          padding-inline: 40px;
+        }
+      }
+      .mono {
+        font-family: var(--mono);
+      }
+      .kicker {
+        font-family: var(--mono);
+        font-size: 0.7rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+      }
+
+      /* nav */
+      .nav {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: rgba(244, 245, 247, 0.86);
+        backdrop-filter: blur(10px);
+        border-bottom: 1px solid var(--line);
+      }
+      .nav .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 60px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-family: var(--mono);
+        font-weight: 600;
+        font-size: 0.92rem;
+        letter-spacing: -0.01em;
+      }
+      .brand .mk {
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        background: linear-gradient(150deg, var(--accent), var(--accent-deep));
+        display: grid;
+        place-items: center;
+      }
+      .brand .mk svg {
+        width: 14px;
+        height: 14px;
+      }
+      .navlinks {
+        display: none;
+        align-items: center;
+        gap: 24px;
+      }
+      @media (min-width: 760px) {
+        .navlinks {
+          display: flex;
+        }
+      }
+      .navlinks a {
+        font-family: var(--mono);
+        font-size: 0.74rem;
+        letter-spacing: 0.04em;
+        color: var(--ink-2);
+        padding-block: 9px;
+        transition: color 0.18s var(--ease);
+      }
+      .navlinks a:hover {
+        color: var(--ink);
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        white-space: nowrap;
+        font-family: var(--mono);
+        font-size: 0.78rem;
+        letter-spacing: 0.02em;
+        padding: 11px 16px;
+        min-height: 40px;
+        border-radius: 8px;
+        border: 1px solid var(--line-2);
+        background: var(--surface);
+        color: var(--ink);
+        transition:
+          border-color 0.18s var(--ease),
+          background 0.18s var(--ease),
+          transform 0.12s var(--ease);
+        cursor: pointer;
+      }
+      .btn:hover {
+        border-color: var(--ink-3);
+      }
+      .btn:active {
+        transform: scale(0.97);
+      }
+      .btn-primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #16181d;
+        font-weight: 600;
+      }
+      .btn-primary:hover {
+        background: var(--accent-deep);
+        border-color: var(--accent-deep);
+        color: #fff;
+      }
+      .btn-lg {
+        padding: 13px 22px;
+        font-size: 0.82rem;
+        border-radius: 10px;
+      }
+
+      /* hero */
+      .hero {
+        padding-top: 72px;
+      }
+      @media (max-width: 640px) {
+        .hero {
+          padding-top: 44px;
+        }
+      }
+      .hero-eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        white-space: nowrap;
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        letter-spacing: 0.04em;
+        color: var(--ink-2);
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 100px;
+        padding: 6px 13px 6px 10px;
+      }
+      .hero-eyebrow .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 0 3px var(--green-soft);
+      }
+      h1.title {
+        font-size: clamp(2.4rem, 5.6vw, 4.3rem);
+        font-weight: 700;
+        line-height: 1.04;
+        letter-spacing: -0.03em;
+        margin: 24px 0 0;
+        max-width: 18ch;
+        text-wrap: balance;
+      }
+      h1.title .mut {
+        color: var(--ink-3);
+      }
+      .hero-sub {
+        margin: 22px 0 0;
+        max-width: 56ch;
+        font-size: clamp(1.02rem, 1.5vw, 1.22rem);
+        line-height: 1.55;
+        color: var(--ink-2);
+        text-wrap: pretty;
+      }
+      .hero-actions {
+        margin-top: 30px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+      }
+
+      /* IDE mock */
+      .ide-frame {
+        margin-top: 52px;
+        position: relative;
+      }
+      .ide-frame::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        bottom: -34px;
+        transform: translateX(-50%);
+        width: 78%;
+        height: 60px;
+        background: radial-gradient(
+          ellipse at center,
+          rgba(22, 24, 29, 0.18),
+          transparent 70%
+        );
+        z-index: -1;
+        filter: blur(6px);
+      }
+      .ide {
+        border: 1px solid var(--d-line-2);
+        border-radius: 14px;
+        overflow: hidden;
+        background: var(--d-bg);
+        color: var(--d-text);
+        box-shadow:
+          0 40px 80px -36px rgba(22, 24, 29, 0.5),
+          0 8px 24px -12px rgba(22, 24, 29, 0.25);
+        font-family: var(--mono);
+        font-size: 12.5px;
+        line-height: 1.5;
+      }
+      .ide-titlebar {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 0 14px;
+        height: 40px;
+        background: var(--d-panel);
+        border-bottom: 1px solid var(--d-line);
+      }
+      .lights {
+        display: flex;
+        gap: 7px;
+      }
+      .lights i {
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        display: block;
+      }
+      .lights i:nth-child(1) {
+        background: #ef6a5e;
+      }
+      .lights i:nth-child(2) {
+        background: #f5bd4f;
+      }
+      .lights i:nth-child(3) {
+        background: #61c354;
+      }
+      .tb-title {
+        color: var(--d-mut);
+        font-size: 11.5px;
+        letter-spacing: 0.01em;
+      }
+      .tb-title b {
+        color: var(--d-text);
+        font-weight: 500;
+      }
+      .tb-title .br {
+        color: var(--green);
+      }
+      .tb-right {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--d-faint);
+        font-size: 10.5px;
+      }
+      .tb-right .runner {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        white-space: nowrap;
+        color: var(--d-mut);
+        border: 1px solid var(--d-line);
+        border-radius: 6px;
+        padding: 3px 8px;
+      }
+      .tb-right .runner .d {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-soft);
+      }
+      .ide-body {
+        display: grid;
+        grid-template-columns: 240px 1fr;
+        min-height: 520px;
+      }
+      @media (max-width: 760px) {
+        .ide-body {
+          grid-template-columns: 1fr;
+        }
+        .ide-sidebar {
+          display: none;
+        }
+      }
+      .ide-sidebar {
+        background: var(--d-panel);
+        border-right: 1px solid var(--d-line);
+        display: flex;
+        flex-direction: column;
+      }
+      .sb-tabs {
+        display: flex;
+        border-bottom: 1px solid var(--d-line);
+      }
+      .sb-tabs button {
+        flex: 1;
+        background: none;
+        border: 0;
+        color: var(--d-faint);
+        font-family: var(--mono);
+        font-size: 10.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        padding: 10px 0;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+      }
+      .sb-tabs button.on {
+        color: var(--d-text);
+        border-bottom-color: var(--accent);
+      }
+      .sb-tabs .ct {
+        color: var(--accent);
+      }
+      .tree {
+        padding: 10px 6px;
+        overflow: hidden;
+        flex: 1;
+      }
+      .tree .node {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 4px 8px;
+        border-radius: 5px;
+        color: var(--d-mut);
+        white-space: nowrap;
+        overflow: hidden;
+        font-size: 11.5px;
+      }
+      .tree .node span:not(.pill):not(.ar) {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 0;
+      }
+      .tree .node .ar {
+        color: var(--d-faint);
+        width: 9px;
+        display: inline-block;
+      }
+      .tree .node.dir {
+        color: var(--d-text);
+      }
+      .tree .node.sel {
+        background: var(--d-elev);
+        color: var(--d-text);
+      }
+      .tree .node.sel .pill {
+        margin-left: auto;
+      }
+      .tree .indent {
+        padding-left: 16px;
+      }
+      .tree .indent2 {
+        padding-left: 30px;
+      }
+      .pill {
+        font-size: 9px;
+        letter-spacing: 0.04em;
+        padding: 1.5px 6px;
+        border-radius: 100px;
+        text-transform: uppercase;
+      }
+      .pill.draft {
+        background: var(--accent-soft);
+        color: #f0925b;
+      }
+      .pill.zone {
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--d-faint);
+        margin-left: auto;
+      }
+      .dimd {
+        color: var(--d-faint);
+      }
+      .ide-main {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+      .main-tabs {
+        display: flex;
+        align-items: center;
+        border-bottom: 1px solid var(--d-line);
+        background: var(--d-bg);
+      }
+      .main-tabs .mt {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        white-space: nowrap;
+        padding: 9px 14px;
+        font-size: 11.5px;
+        color: var(--d-text);
+        border-right: 1px solid var(--d-line);
+        background: var(--d-panel);
+      }
+      .main-tabs .mt .x {
+        color: var(--d-faint);
+      }
+      .editor {
+        padding: 16px 18px;
+        flex: 1;
+        min-width: 0;
+      }
+      .fm {
+        border: 1px solid var(--d-line);
+        border-radius: 8px;
+        background: var(--d-panel);
+        padding: 11px 13px;
+      }
+      .fm .fmrow {
+        display: flex;
+        gap: 12px;
+        padding: 3px 0;
+        line-height: 1.45;
+        align-items: baseline;
+      }
+      .fm .fmrow .k {
+        color: var(--d-faint);
+        min-width: 150px;
+        flex-shrink: 0;
+      }
+      .fm .fmrow .v {
+        color: var(--d-text);
+      }
+      .fm .fmrow .v .acc {
+        color: #f0925b;
+      }
+      .fm .tags {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .fm .tag {
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--d-mut);
+        border-radius: 5px;
+        padding: 1px 7px;
+        font-size: 10.5px;
+      }
+      .md {
+        margin-top: 14px;
+        font-size: 12.5px;
+        line-height: 1.65;
+      }
+      .md h4 {
+        margin: 0 0 8px;
+        font-family: var(--sans);
+        font-size: 15px;
+        font-weight: 600;
+        color: var(--d-text);
+        letter-spacing: -0.01em;
+      }
+      .md p {
+        margin: 0 0 10px;
+        color: var(--d-mut);
+      }
+      .md .wl {
+        color: #6ea2f0;
+      }
+      .md .cur {
+        display: inline-block;
+        width: 7px;
+        height: 14px;
+        background: var(--accent);
+        vertical-align: -2px;
+        animation: blink 1.1s steps(1) infinite;
+      }
+      @keyframes blink {
+        0%,
+        50% {
+          opacity: 1;
+        }
+        50.01%,
+        100% {
+          opacity: 0;
+        }
+      }
+      /* drawer */
+      .drawer {
+        border-top: 1px solid var(--d-line);
+        background: var(--d-panel);
+      }
+      .dr-tabs {
+        display: flex;
+        align-items: center;
+        border-bottom: 1px solid var(--d-line);
+      }
+      .dr-tabs .dt {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        padding: 8px 13px;
+        font-size: 11px;
+        color: var(--d-mut);
+        border-right: 1px solid var(--d-line);
+      }
+      .dr-tabs .dt.on {
+        color: var(--d-text);
+        background: var(--d-bg);
+      }
+      .dr-tabs .dt .d {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--accent);
+      }
+      .dr-tabs .dt.idle .d {
+        background: var(--d-faint);
+      }
+      .dr-tabs .add {
+        color: var(--d-faint);
+        padding: 8px 12px;
+      }
+      .chat {
+        padding: 13px 15px;
+        display: flex;
+        flex-direction: column;
+        gap: 11px;
+      }
+      .msg {
+        display: flex;
+        gap: 10px;
+      }
+      .msg .who {
+        width: 46px;
+        flex-shrink: 0;
+        color: var(--d-faint);
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        padding-top: 2px;
+      }
+      .msg .body {
+        color: var(--d-mut);
+        min-width: 0;
+      }
+      .msg.user .body {
+        color: var(--d-text);
+      }
+      .msg .body .em {
+        color: var(--d-text);
+      }
+      /* agent plan block (▤ plan: ✓ • ▢) */
+      .plan {
+        border: 1px solid var(--d-line);
+        border-radius: 8px;
+        background: var(--d-bg);
+        padding: 9px 11px;
+        width: 100%;
+      }
+      .plan-h {
+        color: var(--d-mut);
+        font-size: 10.5px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        margin-bottom: 6px;
+      }
+      .plan .pl {
+        display: flex;
+        gap: 8px;
+        color: var(--d-faint);
+        padding: 2px 0;
+      }
+      .plan .pl .g {
+        width: 12px;
+        flex-shrink: 0;
+      }
+      .plan .pl.done {
+        color: var(--d-mut);
+      }
+      .plan .pl.done .g {
+        color: var(--green);
+      }
+      .plan .pl.now {
+        color: var(--d-text);
+      }
+      .plan .pl.now .g {
+        color: var(--accent);
+      }
+      .permcard {
+        margin-top: 3px;
+        border: 1px solid var(--d-line-2);
+        border-radius: 8px;
+        background: var(--d-elev);
+        overflow: hidden;
+        width: 100%;
+      }
+      .permcard .ph {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 9px 12px;
+        border-bottom: 1px solid var(--d-line);
+        font-size: 10.5px;
+      }
+      .permcard .ph .lock {
+        color: var(--accent);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .permcard .ph .risk {
+        color: var(--green);
+        border: 1px solid var(--green);
+        border-radius: 4px;
+        padding: 0 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        font-size: 9.5px;
+      }
+      .permcard .ph .sub {
+        margin-left: auto;
+        color: var(--d-faint);
+      }
+      .permcard .pb {
+        padding: 11px 12px;
+      }
+      .permcard .op {
+        color: var(--d-text);
+      }
+      .permcard .op b {
+        color: #f0925b;
+      }
+      .permcard .arg {
+        display: block;
+        margin-top: 7px;
+        color: #6ea2f0;
+        font-size: 11px;
+        word-break: break-all;
+      }
+      .permcard .acts {
+        display: flex;
+        gap: 8px;
+        margin-top: 12px;
+        flex-wrap: wrap;
+      }
+      .permcard .acts button {
+        font-family: var(--mono);
+        font-size: 11px;
+        padding: 7px 13px;
+        min-height: 32px;
+        border-radius: 6px;
+        border: 1px solid var(--d-line-2);
+        background: transparent;
+        color: var(--d-text);
+        cursor: pointer;
+        transition: transform 0.12s var(--ease);
+      }
+      .permcard .acts button:active {
+        transform: scale(0.97);
+      }
+      .permcard .acts .allow {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #16181d;
+        font-weight: 600;
+      }
+      .permcard .acts .deny:hover {
+        border-color: #ef6a5e;
+        color: #ef6a5e;
+      }
+
+      /* sections */
+      section {
+        scroll-margin-top: 72px;
+      }
+      .band {
+        border-top: 1px solid var(--line);
+      }
+      .sec-pad {
+        padding-block: 92px;
+      }
+      @media (max-width: 640px) {
+        .sec-pad {
+          padding-block: 60px;
+        }
+      }
+      .sec-head {
+        max-width: 60ch;
+        margin-bottom: 44px;
+      }
+      .sec-head .kicker {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+      }
+      .sec-head .kicker::before {
+        content: "";
+        width: 22px;
+        height: 1px;
+        background: var(--ink-faint);
+      }
+      .sec-head h2 {
+        margin: 16px 0 0;
+        font-size: clamp(1.7rem, 3.6vw, 2.7rem);
+        font-weight: 700;
+        letter-spacing: -0.025em;
+        line-height: 1.08;
+        text-wrap: balance;
+      }
+      .sec-head p {
+        margin: 14px 0 0;
+        font-size: 1.08rem;
+        color: var(--ink-2);
+        line-height: 1.55;
+        text-wrap: pretty;
+      }
+      /* compounding */
+      .compound {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 22px;
+      }
+      @media (min-width: 860px) {
+        .compound {
+          grid-template-columns: repeat(3, 1fr);
+        }
+      }
+      .ctask {
+        border: 1px solid var(--line);
+        background: var(--surface);
+        border-radius: 12px;
+        padding: 18px 18px 20px;
+      }
+      .ctask .ch {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        color: var(--ink-3);
+        letter-spacing: 0.04em;
+      }
+      .ctask .meter {
+        margin-top: 14px;
+        display: flex;
+        gap: 4px;
+      }
+      .ctask .meter i {
+        height: 8px;
+        flex: 1;
+        border-radius: 2px;
+        background: var(--bg-2);
+      }
+      .ctask .meter i.on {
+        background: var(--accent);
+      }
+      .ctask .lab {
+        margin-top: 12px;
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        color: var(--ink-2);
+        text-wrap: pretty;
+      }
+      .ctask .lab b {
+        color: var(--ink);
+        font-weight: 500;
+      }
+      /* ops */
+      .ops {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 1px;
+        background: var(--line);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        overflow: hidden;
+      }
+      @media (min-width: 620px) {
+        .ops {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+      @media (min-width: 940px) {
+        .ops {
+          grid-template-columns: 1fr 1fr 1fr;
+        }
+      }
+      .op-c {
+        background: var(--surface);
+        padding: 26px 24px 28px;
+        transition: background 0.18s var(--ease);
+        position: relative;
+      }
+      .op-c:hover {
+        background: #fcfcfd;
+      }
+      .op-c .top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .op-c .gl {
+        width: 34px;
+        height: 34px;
+        border-radius: 9px;
+        border: 1px solid var(--line-2);
+        display: grid;
+        place-items: center;
+        color: var(--ink-2);
+      }
+      .op-c .n {
+        font-family: var(--mono);
+        font-size: 0.7rem;
+        color: var(--ink-faint);
+        letter-spacing: 0.1em;
+      }
+      .op-c h3 {
+        margin: 18px 0 0;
+        font-size: 1.18rem;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .op-c p {
+        margin: 9px 0 0;
+        font-size: 0.94rem;
+        color: var(--ink-2);
+        line-height: 1.55;
+        text-wrap: pretty;
+      }
+      .op-c.flag {
+        background: linear-gradient(180deg, var(--accent-soft), transparent 60%);
+      }
+      .op-c .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        margin-top: 14px;
+        font-family: var(--mono);
+        font-size: 0.68rem;
+        letter-spacing: 0.04em;
+        color: var(--accent-deep);
+        background: var(--accent-soft);
+        border-radius: 100px;
+        padding: 4px 10px;
+      }
+      .op-c .badge b {
+        font-weight: 600;
+      }
+      /* loop */
+      .loop {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 16px;
+        align-items: stretch;
+      }
+      @media (min-width: 900px) {
+        .loop {
+          grid-template-columns: 1fr auto 1fr auto 1fr;
+          align-items: center;
+        }
+      }
+      .lcard {
+        border: 1px solid var(--line);
+        background: var(--surface);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      .lcard .lh {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 12px;
+        border-bottom: 1px solid var(--line);
+        font-family: var(--mono);
+        font-size: 0.68rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--ink-3);
+      }
+      .lcard .lh .step {
+        color: var(--accent);
+      }
+      .lcard .lb {
+        padding: 14px 14px 16px;
+      }
+      .lcard .fname {
+        font-family: var(--mono);
+        font-size: 0.78rem;
+        color: var(--ink);
+      }
+      .lcard .meta {
+        margin-top: 8px;
+        font-family: var(--mono);
+        font-size: 0.7rem;
+        color: var(--ink-3);
+        line-height: 1.7;
+      }
+      .lcard .meta .acc {
+        color: var(--accent-deep);
+      }
+      .lcard .meta .grn {
+        color: var(--green);
+      }
+      .lcard .acts {
+        margin-top: 13px;
+        display: flex;
+        gap: 8px;
+      }
+      .lcard .acts button {
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        padding: 9px 14px;
+        min-height: 38px;
+        border-radius: 6px;
+        border: 1px solid var(--line-2);
+        background: var(--surface);
+        color: var(--ink);
+        cursor: pointer;
+        transition: transform 0.12s var(--ease);
+      }
+      .lcard .acts button:active {
+        transform: scale(0.97);
+      }
+      .lcard .acts .promote {
+        background: var(--green);
+        border-color: var(--green);
+        color: #fff;
+      }
+      .lcard .desc {
+        margin-top: 11px;
+        font-size: 0.85rem;
+        color: var(--ink-2);
+        line-height: 1.5;
+        text-wrap: pretty;
+      }
+      .loop .arrow {
+        display: none;
+        color: var(--ink-faint);
+        font-family: var(--mono);
+        justify-self: center;
+      }
+      @media (min-width: 900px) {
+        .loop .arrow {
+          display: block;
+        }
+      }
+      .loop-foot {
+        margin-top: 26px;
+        font-family: var(--mono);
+        font-size: 0.78rem;
+        color: var(--ink-2);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .loop-foot .lp {
+        color: var(--accent);
+        font-size: 1rem;
+      }
+      /* stack */
+      .stack {
+        border-top: 1px solid var(--line);
+      }
+      .stk {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        gap: 22px;
+        align-items: baseline;
+        padding: 22px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .stk .n {
+        font-family: var(--mono);
+        font-size: 0.74rem;
+        color: var(--ink-faint);
+      }
+      .stk .t {
+        font-weight: 600;
+        font-size: 1.1rem;
+        letter-spacing: -0.01em;
+      }
+      .stk .r {
+        font-family: var(--mono);
+        font-size: 0.74rem;
+        color: var(--ink-3);
+        text-align: right;
+        max-width: 46ch;
+      }
+      @media (max-width: 600px) {
+        .stk {
+          grid-template-columns: auto 1fr;
+        }
+        .stk .r {
+          grid-column: 1 / -1;
+          text-align: left;
+        }
+      }
+      /* security */
+      .sec-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 14px;
+      }
+      @media (min-width: 720px) {
+        .sec-grid {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+      .sitem {
+        border: 1px solid var(--line);
+        background: var(--surface);
+        border-radius: 12px;
+        padding: 22px 22px 24px;
+      }
+      .sitem .gl {
+        display: inline-grid;
+        place-items: center;
+        width: 36px;
+        height: 36px;
+        border-radius: 9px;
+        border: 1px solid var(--line-2);
+        color: var(--accent-deep);
+      }
+      .sitem h3 {
+        margin: 14px 0 0;
+        font-size: 1.1rem;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .sitem p {
+        margin: 9px 0 0;
+        font-size: 0.94rem;
+        color: var(--ink-2);
+        line-height: 1.55;
+        text-wrap: pretty;
+      }
+      /* deploy */
+      .deploy-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 36px;
+        align-items: center;
+      }
+      @media (min-width: 920px) {
+        .deploy-grid {
+          grid-template-columns: 0.9fr 1.1fr;
+          gap: 56px;
+        }
+      }
+      .deploy-copy h2 {
+        font-size: clamp(1.7rem, 3.6vw, 2.5rem);
+        font-weight: 700;
+        letter-spacing: -0.025em;
+        margin: 0 0 16px;
+        text-wrap: balance;
+      }
+      .deploy-copy p {
+        margin: 0 0 12px;
+        color: var(--ink-2);
+        max-width: 46ch;
+      }
+      .deploy-copy .req {
+        font-family: var(--mono);
+        font-size: 0.78rem;
+        color: var(--ink-3);
+      }
+      .codeblock {
+        background: var(--d-bg);
+        border: 1px solid var(--d-line-2);
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 24px 50px -30px rgba(22, 24, 29, 0.45);
+      }
+      .cb-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 9px 15px;
+        border-bottom: 1px solid var(--d-line);
+      }
+      .cb-head .f {
+        font-family: var(--mono);
+        font-size: 0.7rem;
+        color: var(--d-faint);
+      }
+      .cb-head button {
+        background: none;
+        border: 1px solid var(--d-line-2);
+        border-radius: 6px;
+        color: var(--d-mut);
+        font-family: var(--mono);
+        font-size: 0.66rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        padding: 7px 12px;
+        min-height: 34px;
+        cursor: pointer;
+        transition:
+          color 0.18s var(--ease),
+          border-color 0.18s var(--ease),
+          transform 0.12s var(--ease);
+      }
+      .cb-head button:hover {
+        color: var(--d-text);
+        border-color: var(--d-mut);
+      }
+      .cb-head button:active {
+        transform: scale(0.97);
+      }
+      .codeblock pre {
+        margin: 0;
+        padding: 20px;
+        overflow-x: auto;
+      }
+      .codeblock code {
+        font-family: var(--mono);
+        font-size: 0.84rem;
+        line-height: 2;
+        color: var(--d-text);
+      }
+      .codeblock code .c {
+        color: var(--d-faint);
+      }
+      .codeblock code .p {
+        color: var(--accent);
+      }
+      .codeblock code .blink {
+        animation: blink 1.1s steps(1) infinite;
+      }
+      /* closing */
+      .closing {
+        text-align: center;
+        padding-block: 100px;
+      }
+      @media (max-width: 640px) {
+        .closing {
+          padding-block: 68px;
+        }
+      }
+      .closing h2 {
+        font-size: clamp(2.2rem, 6vw, 4rem);
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        margin: 0;
+        line-height: 1.05;
+        text-wrap: balance;
+      }
+      .closing h2 .mut {
+        color: var(--ink-3);
+      }
+      .closing .hero-actions {
+        justify-content: center;
+        margin-top: 32px;
+      }
+      /* footer */
+      footer {
+        border-top: 1px solid var(--line);
+      }
+      .foot {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding-block: 30px 40px;
+        font-family: var(--mono);
+        font-size: 0.7rem;
+        color: var(--ink-faint);
+        letter-spacing: 0.02em;
+      }
+      @media (min-width: 720px) {
+        .foot {
+          flex-direction: row;
+          align-items: center;
+          justify-content: space-between;
+        }
+      }
+      .foot .lk {
+        display: flex;
+        gap: 18px;
+        flex-wrap: wrap;
+      }
+      .foot .lk a {
+        color: inherit;
+      }
+      .foot .lk a:hover {
+        color: var(--ink-2);
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+        .blink,
+        .md .cur {
+          animation: none;
+        }
+        .btn:active,
+        .permcard .acts button:active,
+        .lcard .acts button:active,
+        .cb-head button:active {
+          transform: none;
+        }
+      }
+    </style>
+  </body>
+</html>

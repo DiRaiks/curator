@@ -24,8 +24,8 @@ rules per chat are on the roadmap.
 ## Sandboxed working directory
 
 The working directory for spawned subprocesses is canonicalized and checked
-against a deny-list of sensitive paths — `/etc`, `/Library`, `~/.ssh`,
-`~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, and others — so a vault-declared
+against a deny-list of sensitive paths (`/etc`, `/Library`, `~/.ssh`,
+`~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, and others), so a vault-declared
 `local_path` can't redirect the agent into credential locations.
 
 ## Vault-rooted write validation

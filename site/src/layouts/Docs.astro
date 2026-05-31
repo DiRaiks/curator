@@ -1,9 +1,9 @@
 ---
+import "@fontsource-variable/geist";
+import "@fontsource-variable/geist-mono";
+import "../styles/global.css";
 import type { CollectionEntry } from "astro:content";
-import Base from "./Base.astro";
-import Nav from "../components/Nav.astro";
-import Footer from "../components/Footer.astro";
-import { withBase } from "../consts";
+import { SITE, withBase } from "../consts";
 
 interface Props {
   title: string;
@@ -13,54 +13,360 @@ interface Props {
 }
 
 const { title, description, docs, current } = Astro.props;
+const fullTitle = `${title} · ${SITE.name}`;
+const favicon = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/favicon.svg`;
+const home = withBase("/");
 ---
 
-<Base title={title} description={description}>
-  <Nav />
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/svg+xml" href={favicon} />
+    <title>{fullTitle}</title>
+    {description && <meta name="description" content={description} />}
+    <meta name="theme-color" content="#f4f5f7" />
+  </head>
 
-  <div class="mx-auto max-w-6xl px-5 sm:px-8">
-    <div class="flex flex-col gap-12 py-12 lg:flex-row lg:gap-16 lg:py-16">
-      <!-- sidebar -->
-      <aside class="lg:w-56 lg:shrink-0">
-        <div class="lg:sticky lg:top-24">
-          <p
-            class="mb-3 text-xs font-medium uppercase tracking-[0.18em] text-zinc-500"
-          >
-            Documentation
-          </p>
-          <nav class="flex flex-col gap-0.5">
+  <body>
+    <header class="nav">
+      <div class="wrap row">
+        <a class="brand" href={home}>
+          <span class="mk" aria-hidden="true">
+            <svg
+              viewBox="0 0 22 22"
+              fill="none"
+              stroke="#fff"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M3 7 L11 3 L19 7 L11 11 Z"></path>
+              <path d="M3 11 L11 15 L19 11"></path>
+              <path d="M3 15 L11 19 L19 15"></path>
+            </svg>
+          </span> curator
+        </a>
+        <nav class="navlinks">
+          <a href={`${home}#why`}>Why</a>
+          <a href={`${home}#ops`}>Operations</a>
+          <a href={`${home}#security`}>Security</a>
+          <a href={withBase("/docs/quick-start")} class="on">Docs</a>
+          <a href={SITE.repo} target="_blank" rel="noreferrer">GitHub ↗</a>
+        </nav>
+      </div>
+    </header>
+
+    <div class="wrap docs">
+      <aside class="docs-side">
+        <div class="docs-side-sticky">
+          <p class="docs-side-h">Documentation</p>
+          <nav class="docs-nav">
             {
-              docs.map((doc) => {
-                const active = doc.id === current;
-                return (
-                  <a
-                    href={withBase(`/docs/${doc.id}`)}
-                    aria-current={active ? "page" : undefined}
-                    class={`rounded-lg px-3 py-2 text-sm transition-colors duration-200 ${
-                      active
-                        ? "bg-accent-500/10 font-medium text-accent-400"
-                        : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100"
-                    }`}
-                  >
-                    {doc.data.title}
-                  </a>
-                );
-              })
+              docs.map((doc) => (
+                <a
+                  href={withBase(`/docs/${doc.id}`)}
+                  aria-current={doc.id === current ? "page" : undefined}
+                  class={doc.id === current ? "on" : ""}
+                >
+                  {doc.data.title}
+                </a>
+              ))
             }
           </nav>
+          <a class="docs-back" href={home}>← Back to site</a>
         </div>
       </aside>
 
-      <!-- content -->
-      <main class="min-w-0 flex-1">
-        <article
-          class="prose prose-invert max-w-none prose-headings:font-semibold prose-headings:tracking-tight prose-h1:text-3xl prose-h1:sm:text-4xl prose-a:text-accent-400 prose-a:no-underline hover:prose-a:text-accent-500 prose-code:rounded prose-code:bg-zinc-800/70 prose-code:px-1.5 prose-code:py-0.5 prose-code:font-normal prose-code:text-zinc-200 prose-code:before:content-[''] prose-code:after:content-[''] prose-pre:border prose-pre:border-zinc-800 prose-pre:bg-zinc-900/60 prose-strong:text-zinc-100 prose-li:marker:text-zinc-600"
-        >
-          <slot />
-        </article>
+      <main class="docs-main">
+        <article class="prose"><slot /></article>
       </main>
     </div>
-  </div>
 
-  <Footer />
-</Base>
+    <footer>
+      <div class="wrap foot">
+        <span>© 2026 Curator · MIT License</span>
+        <span class="lk">
+          <a href={home}>Home</a>
+          <a href={SITE.repo} target="_blank" rel="noreferrer">GitHub</a>
+        </span>
+        <span>Agents work. The vault remembers.</span>
+      </div>
+    </footer>
+
+    <style is:global>
+      html {
+        color-scheme: light;
+        scroll-behavior: smooth;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      html body {
+        --bg: #f4f5f7;
+        --surface: #ffffff;
+        --ink: #16181d;
+        --ink-2: #4c515b;
+        --ink-3: #767c87;
+        --ink-faint: #9aa0ab;
+        --line: #e2e5ea;
+        --line-2: #d6dae0;
+        --accent: #e8692b;
+        --accent-deep: #c7551e;
+        --accent-soft: rgba(232, 105, 43, 0.1);
+        --d-bg: #14161b;
+        --d-text: #d7dbe2;
+        --sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+        --mono: "Geist Mono Variable", ui-monospace, Menlo, monospace;
+        --maxw: 1100px;
+        --ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: var(--sans);
+        line-height: 1.6;
+      }
+
+      .wrap {
+        max-width: var(--maxw);
+        margin: 0 auto;
+        padding-inline: 28px;
+      }
+      @media (min-width: 900px) {
+        .wrap {
+          padding-inline: 40px;
+        }
+      }
+
+      /* nav (shared look with the landing) */
+      .nav {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: rgba(244, 245, 247, 0.86);
+        backdrop-filter: blur(10px);
+        border-bottom: 1px solid var(--line);
+      }
+      .nav .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 60px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-family: var(--mono);
+        font-weight: 600;
+        font-size: 0.92rem;
+        letter-spacing: -0.01em;
+        color: var(--ink);
+        text-decoration: none;
+      }
+      .brand .mk {
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        background: linear-gradient(150deg, var(--accent), var(--accent-deep));
+        display: grid;
+        place-items: center;
+      }
+      .brand .mk svg {
+        width: 14px;
+        height: 14px;
+      }
+      .navlinks {
+        display: none;
+        align-items: center;
+        gap: 24px;
+      }
+      @media (min-width: 760px) {
+        .navlinks {
+          display: flex;
+        }
+      }
+      .navlinks a {
+        font-family: var(--mono);
+        font-size: 0.74rem;
+        letter-spacing: 0.04em;
+        color: var(--ink-2);
+        text-decoration: none;
+        padding-block: 9px;
+        transition: color 0.18s var(--ease);
+      }
+      .navlinks a:hover {
+        color: var(--ink);
+      }
+      .navlinks a.on {
+        color: var(--accent-deep);
+      }
+
+      /* docs layout */
+      .docs {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 32px;
+        padding-block: 40px 64px;
+      }
+      @media (min-width: 880px) {
+        .docs {
+          grid-template-columns: 220px 1fr;
+          gap: 56px;
+          padding-block: 56px 80px;
+        }
+      }
+      .docs-side-sticky {
+        position: sticky;
+        top: 92px;
+      }
+      .docs-side-h {
+        font-family: var(--mono);
+        font-size: 0.66rem;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        color: var(--ink-faint);
+        margin: 0 0 12px;
+      }
+      .docs-nav {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .docs-nav a {
+        font-size: 0.9rem;
+        color: var(--ink-2);
+        text-decoration: none;
+        padding: 7px 11px;
+        border-radius: 8px;
+        transition:
+          color 0.18s var(--ease),
+          background 0.18s var(--ease);
+      }
+      .docs-nav a:hover {
+        color: var(--ink);
+        background: var(--surface);
+      }
+      .docs-nav a.on {
+        color: var(--accent-deep);
+        background: var(--accent-soft);
+        font-weight: 500;
+      }
+      .docs-back {
+        display: inline-block;
+        margin-top: 22px;
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        color: var(--ink-3);
+        text-decoration: none;
+        transition: color 0.18s var(--ease);
+      }
+      .docs-back:hover {
+        color: var(--ink);
+      }
+      .docs-main {
+        min-width: 0;
+      }
+
+      /* prose — light, with dark code blocks to match the landing */
+      .prose {
+        max-width: 72ch;
+        --tw-prose-body: #4c515b;
+        --tw-prose-headings: #16181d;
+        --tw-prose-links: #c7551e;
+        --tw-prose-bold: #16181d;
+        --tw-prose-counters: #767c87;
+        --tw-prose-bullets: #c0c5cd;
+        --tw-prose-hr: #e2e5ea;
+        --tw-prose-quotes: #4c515b;
+        --tw-prose-quote-borders: #e2e5ea;
+        --tw-prose-code: #16181d;
+        --tw-prose-pre-code: #d7dbe2;
+        --tw-prose-pre-bg: #14161b;
+        --tw-prose-th-borders: #d6dae0;
+        --tw-prose-td-borders: #e2e5ea;
+        font-family: var(--sans);
+      }
+      .prose :is(h1, h2, h3) {
+        letter-spacing: -0.02em;
+        text-wrap: balance;
+      }
+      .prose h1 {
+        font-size: clamp(1.9rem, 4vw, 2.6rem);
+      }
+      .prose a {
+        font-weight: 500;
+        text-decoration: none;
+      }
+      .prose a:hover {
+        text-decoration: underline;
+      }
+      .prose code {
+        font-family: var(--mono);
+        font-size: 0.86em;
+        background: #eceef1;
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        padding: 0.1em 0.4em;
+        font-weight: 400;
+      }
+      .prose code::before,
+      .prose code::after {
+        content: "";
+      }
+      .prose pre {
+        border: 1px solid var(--line-2);
+        border-radius: 12px;
+      }
+      .prose pre code {
+        background: none;
+        border: 0;
+        padding: 0;
+        font-size: 0.84rem;
+      }
+      .prose :is(table) {
+        font-size: 0.92rem;
+      }
+
+      /* footer */
+      footer {
+        border-top: 1px solid var(--line);
+      }
+      .foot {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding-block: 30px 40px;
+        font-family: var(--mono);
+        font-size: 0.7rem;
+        color: var(--ink-faint);
+        letter-spacing: 0.02em;
+      }
+      @media (min-width: 720px) {
+        .foot {
+          flex-direction: row;
+          align-items: center;
+          justify-content: space-between;
+        }
+      }
+      .foot .lk {
+        display: flex;
+        gap: 18px;
+      }
+      .foot .lk a {
+        color: inherit;
+        text-decoration: none;
+      }
+      .foot .lk a:hover {
+        color: var(--ink-2);
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+      }
+    </style>
+  </body>
+</html>

@@ -31,11 +31,11 @@ docs/
 
 ## The three layers
 
-- **Tauri shell** — desktop window, native dialogs, and the command bridge that
+- **Tauri shell**: desktop window, native dialogs, and the command bridge that
   exposes `vault-core` functions to the frontend. No backend server.
-- **React frontend** — the curation surface: tree browser, CodeMirror editor,
+- **React frontend**: the curation surface: tree browser, CodeMirror editor,
   the tabbed chat drawer, drafts review, and tracking dashboards.
-- **vault-core (Rust)** — scanning, the `notify`-based watcher, the runner
+- **vault-core (Rust)**: scanning, the `notify`-based watcher, the runner
   abstraction, and all vault-rooted file IO. Every write goes through path
   validation here.
 
@@ -72,5 +72,5 @@ and supports resume by session id.
   you review every agent write with `git diff`.
 - **Curation, not auto-promote.** Agents propose knowledge into an inbox;
   promotion to permanent zones is always a human decision.
-- **Skills are first-class** — versioned content in the vault, not hard-coded
+- **Skills are first-class**: versioned content in the vault, not hard-coded
   behaviour. Fork, customize, and share via git.

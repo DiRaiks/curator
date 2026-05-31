@@ -25,7 +25,22 @@
         <stop offset="0" stop-color="#f59247" />
         <stop offset="1" stop-color="#c7551e" />
       </linearGradient>
+      <filter id="topGlow" x="-40%" y="-40%" width="180%" height="180%">
+        <feDropShadow
+          dx="0"
+          dy="10"
+          stdDeviation="16"
+          flood-color="#e8692b"
+          flood-opacity="0.35"></feDropShadow>
+      </filter>
+      <radialGradient id="ground" cx="50%" cy="50%" r="50%">
+        <stop offset="0" stop-color="#000" stop-opacity="0.55" />
+        <stop offset="1" stop-color="#000" stop-opacity="0" />
+      </radialGradient>
     </defs>
+
+    <!-- soft ground shadow anchoring the stack -->
+    <ellipse cx="230" cy="350" rx="150" ry="34" fill="url(#ground)"></ellipse>
 
     <!-- four accumulating layers, bottom (faint, settled) to top (accent, new) -->
     <g stroke-linejoin="round">
@@ -56,6 +71,7 @@
         fill="url(#layerTop)"
         stroke="#f59247"
         stroke-width="2"
+        filter="url(#topGlow)"
         class="motion-float"
       ></path>
     </g>

@@ -32,6 +32,7 @@ const ogUrl = new URL(Astro.url.pathname, SITE.url).href;
     <meta name="generator" content={Astro.generator} />
   </head>
   <body class="min-h-[100dvh] selection:bg-accent-500/30 selection:text-zinc-50">
+    <div class="grain" aria-hidden="true"></div>
     <slot />
 
     <script is:inline>

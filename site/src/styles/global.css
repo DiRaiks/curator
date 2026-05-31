@@ -11,6 +11,11 @@
   --color-accent-400: #f59247;
   --color-accent-500: #e8692b;
   --color-accent-600: #c7551e;
+
+  /* Brutalist (v2) substrate: paper / carbon ink / hazard red */
+  --color-paper: #f4f4f0;
+  --color-ink: #0a0a0a;
+  --color-hazard: #e61919;
 }
 
 :root {
@@ -73,4 +78,89 @@ body {
     linear-gradient(to bottom, rgb(255 255 255 / 0.03) 1px, transparent 1px);
   background-size: 56px 56px;
   mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 30%, transparent 75%);
+}
+
+/* Film grain — fixed, pointer-events-none, never on a scrolling container */
+.grain {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.045;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Cursor-following spotlight over the hero grid. --mx/--my set from JS. */
+.hero-spotlight {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(
+    480px circle at var(--mx, 50%) var(--my, 28%),
+    rgba(232, 105, 43, 0.12),
+    transparent 68%
+  );
+}
+
+/* 3D tilt target for the hero visual; transform driven by JS (rAF + lerp). */
+.hero-tilt {
+  transform: perspective(900px);
+  transform-style: preserve-3d;
+}
+
+/* Tinted radial glow used to anchor key sections (hero, closing CTA) */
+.glow-accent {
+  background: radial-gradient(
+    ellipse 60% 50% at 50% 0%,
+    rgba(232, 105, 43, 0.1),
+    transparent 70%
+  );
+}
+
+/* Surface cards: hover lift + a cursor-following highlight. --sx/--sy from JS. */
+.card {
+  position: relative;
+  transition:
+    transform 300ms var(--ease-out),
+    border-color 300ms var(--ease-out),
+    background-color 300ms var(--ease-out);
+}
+
+.card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 250ms var(--ease-out);
+  background: radial-gradient(
+    260px circle at var(--sx, 50%) var(--sy, 50%),
+    rgba(232, 105, 43, 0.1),
+    transparent 60%
+  );
+}
+
+@media (hover: hover) {
+  .card:hover::before {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) and (hover: hover) {
+  .card:hover {
+    transform: translateY(-3px);
+  }
+}
+
+/* Arrow link: nudge the glyph on hover (emil micro-interaction) */
+.link-arrow svg {
+  transition: transform 200ms var(--ease-out);
+}
+
+@media (prefers-reduced-motion: no-preference) and (hover: hover) {
+  .link-arrow:hover svg {
+    transform: translateX(3px);
+  }
 }
