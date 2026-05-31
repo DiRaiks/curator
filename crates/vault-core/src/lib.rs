@@ -40,6 +40,8 @@ pub use preview::{preview_context, PreviewError};
 mod source_repo;
 pub use source_repo::{inspect_source_repo, SourceRepoInspection, TopLevelEntry};
 
+pub mod git;
+
 mod markdown_io;
 pub use markdown_io::{
     create_markdown_file, discard_draft, promote_draft, read_markdown_file, write_markdown_file,

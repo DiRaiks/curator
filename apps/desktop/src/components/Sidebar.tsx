@@ -12,6 +12,7 @@ export type ViewId =
   | "artifacts"
   | "drafts"
   | "security"
+  | "source-control"
   | "history"
   | "zones"
   | "diagnostics"
@@ -26,6 +27,10 @@ interface SidebarProps {
   /** Saved chat sessions for this vault — drives the "history" row
    *  count. Pass 0 if not loaded yet; the row stays clickable. */
   sessionCount: number;
+  /** Number of changed files in the vault git repo — drives the
+   *  "source control" row badge. `null` when the vault isn't a git repo
+   *  (the row then shows a muted "—"); 0 means a clean tree. */
+  changedCount: number | null;
   /** Vault-relative paths for the file tree. */
   files: string[];
   activeView: ViewId;
@@ -70,6 +75,7 @@ export function Sidebar({
   zoneCount,
   diagnostics,
   sessionCount,
+  changedCount,
   files,
   activeView,
   activeProject,
@@ -157,6 +163,14 @@ export function Sidebar({
           onClick={() => onSwitchView("security")}
           rightTone={projects.length > 0 ? "muted" : "muted"}
           right="scan"
+        />
+        <BrowseRow
+          view="source-control"
+          activeView={activeView}
+          label="source control"
+          onClick={() => onSwitchView("source-control")}
+          right={changedCount === null ? "—" : String(changedCount)}
+          rightTone={changedCount && changedCount > 0 ? "warn" : "muted"}
         />
         <BrowseRow
           view="history"

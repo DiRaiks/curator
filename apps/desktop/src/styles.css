@@ -497,6 +497,20 @@ button {
   padding: 12px 14px;
 }
 
+/* A panel that fills the remaining height of `.dashboard__main` instead of
+ * growing with its content. Required so a panel with its own internal
+ * scroll regions (e.g. Source Control's diff pane / file lists) confines
+ * scrolling to those regions rather than scrolling the whole main column.
+ * `min-height: 0` lets the flex child shrink below its content height so the
+ * inner `overflow:auto` actually engages. */
+.panel--fill {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .panel__title {
   margin: 0 0 10px;
   font-size: 12px;
@@ -5355,4 +5369,495 @@ body.is-resizing-run-panel * {
   color: var(--muted);
   font-size: 10px;
   flex: 1;
+}
+
+/* ============================================================
+ * Source Control panel (vault git)
+ * ============================================================ */
+
+.scm-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  /* Fills `.panel--fill`; `min-height: 0` so descendant scroll panes
+   * (`.scm-diff__body`, `.scm-changes__lists`) can shrink and scroll
+   * instead of pushing the panel taller. */
+  flex: 1;
+  min-height: 0;
+}
+
+.scm-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.scm-panel__hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  text-wrap: pretty;
+}
+
+.scm-panel__branch {
+  font-family: var(--font-mono);
+  color: var(--accent);
+}
+
+.scm-panel__tabs {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  align-self: flex-start;
+}
+
+.scm-panel__tab {
+  padding: 0 14px;
+  height: 28px;
+  background: transparent;
+  color: var(--muted);
+  border: 0;
+  border-left: 1px solid var(--border-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+  transition-property: background-color, color;
+  transition-duration: 120ms;
+  transition-timing-function: ease-out;
+}
+
+.scm-panel__tab:first-child {
+  border-left: 0;
+}
+
+.scm-panel__tab:hover:not(.scm-panel__tab--active) {
+  background: color-mix(in srgb, var(--panel) 80%, var(--accent) 20%);
+  color: var(--text);
+}
+
+.scm-panel__tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.scm-panel__tab--active {
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+
+.scm-panel__error {
+  padding: 8px 12px;
+  border-radius: 4px;
+  background: var(--err-bg);
+  color: var(--err);
+  font-size: 12px;
+  margin: 0;
+}
+
+/* Two columns: file lists on the left, diff pane on the right. Collapses
+ * to a single column on narrow windows. */
+.scm-changes {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) 1fr;
+  gap: 16px;
+  min-height: 0;
+  flex: 1;
+}
+
+@media (max-width: 720px) {
+  .scm-changes {
+    grid-template-columns: 1fr;
+  }
+}
+
+.scm-changes__lists {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Commit box */
+.scm-commit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.scm-commit__input {
+  width: 100%;
+  resize: vertical;
+  background: var(--bg-sub);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+  font-family: var(--font);
+  font-size: 13px;
+  box-sizing: border-box;
+}
+
+.scm-commit__input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.scm-commit__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.scm-commit__notice {
+  font-size: 12px;
+  color: var(--ok);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  animation: scm-notice-in 200ms ease-out;
+}
+
+@keyframes scm-notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scm-commit__notice {
+    animation: none;
+  }
+}
+
+/* File group (Staged / Changes) */
+.scm-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.scm-group__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 0;
+}
+
+.scm-group__title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.scm-group__count {
+  background: color-mix(in srgb, var(--panel) 70%, var(--border) 30%);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 10px;
+  min-width: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.scm-group__action {
+  background: transparent;
+  border: 0;
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+  /* Vertical padding lifts the text control toward a usable hit area
+   * without disturbing the row's baseline layout. */
+  padding: 4px 2px;
+  border-radius: var(--radius);
+  transition-property: color, background-color;
+  transition-duration: 120ms;
+  transition-timing-function: ease-out;
+}
+
+.scm-group__action:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.scm-group__action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.scm-group__action:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.scm-group__empty {
+  margin: 2px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.scm-file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.scm-file {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius);
+  transition: background-color 120ms ease-out;
+}
+
+.scm-file:hover {
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel) 93%);
+}
+
+.scm-file--selected,
+.scm-file--selected:hover {
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel) 88%);
+}
+
+.scm-file__main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  /* 28px min row height keeps the primary (view-diff) hit target usable
+   * in a dense list without inflating it to a full 44px. */
+  padding: 6px;
+  min-width: 0;
+  min-height: 28px;
+  font-size: 13px;
+  border-radius: var(--radius);
+}
+
+.scm-file__main:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.scm-file__badge {
+  flex: none;
+  width: 16px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.scm-file__badge--add { color: var(--ok); }
+.scm-file__badge--del { color: var(--err); }
+.scm-file__badge--mod { color: var(--warn); }
+.scm-file__badge--ren { color: var(--info); }
+
+.scm-file__name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scm-file__dir {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.scm-file__act {
+  flex: none;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  font-size: 15px;
+  line-height: 1;
+  border-radius: var(--radius);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition-property: background-color, color, transform;
+  transition-duration: 120ms;
+  transition-timing-function: ease-out;
+}
+
+.scm-file__act:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--panel) 70%, var(--accent) 30%);
+  color: var(--text);
+}
+
+.scm-file__act:active:not(:disabled) {
+  transform: scale(0.9);
+}
+
+.scm-file__act:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.scm-file__act:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scm-file__act:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+/* Diff pane */
+.scm-diff {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sub);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.scm-diff--empty {
+  align-items: center;
+  justify-content: center;
+}
+
+.scm-diff__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.scm-diff__path {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scm-diff__head-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
+.scm-diff__side {
+  flex: none;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.scm-diff__body {
+  margin: 0;
+  padding: 8px 0;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  tab-size: 4;
+}
+
+.scm-diff__line {
+  display: block;
+  padding: 0 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.scm-diff__line--add {
+  background: color-mix(in srgb, var(--ok) 16%, transparent);
+  color: var(--ok);
+}
+
+.scm-diff__line--del {
+  background: color-mix(in srgb, var(--err) 16%, transparent);
+  color: var(--err);
+}
+
+.scm-diff__line--hunk {
+  color: var(--info);
+}
+
+.scm-diff__line--meta {
+  color: var(--muted);
+}
+
+/* History tab */
+.scm-history {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.scm-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.scm-log__row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 13px;
+}
+
+.scm-log__hash {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.scm-log__subject {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.scm-log__meta {
+  flex: none;
+  font-size: 11px;
+  color: var(--muted);
 }

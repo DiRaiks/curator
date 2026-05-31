@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createMarkdownFile,
+  gitStatus,
   initVault,
   readMarkdownFile,
   writeMarkdownFile,
@@ -43,6 +44,7 @@ import { RecommendationsBell } from "./RecommendationsBell";
 import { type RunPanelHandle, type RunStatusInfo } from "./RunPanel";
 import { RunPanelHost } from "./RunPanelHost";
 import { SecurityPanel } from "./SecurityPanel";
+import { SourceControlPanel } from "./SourceControlPanel";
 import { ZoneList } from "./ZoneList";
 
 interface DashboardProps {
@@ -469,6 +471,27 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
   // (manual Refresh, file-watcher fires, draft promotions, agent runs)
   // surface fresh hints.
   const recs = useRecommendations(result.vaultRoot, refreshTick);
+
+  // Changed-file count for the sidebar "source control" badge. `null` =
+  // not a git repo (or not loaded yet) → the row shows a muted "—".
+  // Recomputed on every rescan so the badge tracks edits made via the
+  // editor, agent runs, or external tools. The SourceControlPanel keeps
+  // its own (full) status; this is just the cheap count for the rail.
+  const [changedCount, setChangedCount] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void gitStatus(result.vaultRoot)
+      .then((s) => {
+        if (cancelled) return;
+        setChangedCount(s.isGitRepo ? s.files.length : null);
+      })
+      .catch(() => {
+        if (!cancelled) setChangedCount(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [result.vaultRoot, refreshTick]);
 
   // Navigate to a project's detail view from the bell. Reuses the
   // same flow as a TitleBar tab click / sidebar PROJECTS row click so
@@ -1014,6 +1037,7 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
           zoneCount={result.zones.length}
           diagnostics={result.diagnostics}
           sessionCount={savedSessionCount}
+          changedCount={changedCount}
           files={filePaths}
           activeView={effectiveView}
           activeProject={activeProject}
@@ -1094,6 +1118,18 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
               className="panel"
             >
               <SecurityPanel projects={result.projects} />
+            </section>
+          )}
+          {effectiveView === "source-control" && (
+            <section
+              id="panel-source-control"
+              className="panel panel--fill"
+            >
+              <SourceControlPanel
+                vaultRoot={result.vaultRoot}
+                refreshTick={refreshTick}
+                onOpenFile={attemptOpenFile}
+              />
             </section>
           )}
           {effectiveView === "history" && (

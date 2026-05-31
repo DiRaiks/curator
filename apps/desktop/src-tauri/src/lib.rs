@@ -133,6 +133,95 @@ async fn scan_project_vulnerabilities(
     .map_err(|e| format!("scan task failed: {e}"))?
 }
 
+// ---------- Vault git (Source Control panel) ----------
+//
+// These act on the *vault root itself*, not on a project's `local_path`
+// (that's `inspect_source_repo`, read-only). The vault is the already-open,
+// already-trusted workspace, so we canonicalize it (closing symlink escapes)
+// the same way every other vault command does, rather than running it
+// through the project deny-list in `runner::validate_workdir`.
+//
+// All five are `async` + `spawn_blocking`: each shells out to `git`, which
+// can take longer than the 100 ms main-thread budget on a large vault, and
+// Tauri 2 runs synchronous commands on the UI thread. See
+// `scan_project_vulnerabilities` for the same rationale.
+
+#[tauri::command]
+async fn git_status(vault_root: String) -> Result<vault_core::git::GitStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let safe = canonicalize_vault_root(&vault_root)?;
+        vault_core::git::status(&safe).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("git_status task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn git_diff(vault_root: String, path: String, staged: bool) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let safe = canonicalize_vault_root(&vault_root)?;
+        vault_core::git::diff(&safe, &path, staged).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("git_diff task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn git_stage(vault_root: String, paths: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let safe = canonicalize_vault_root(&vault_root)?;
+        vault_core::git::stage(&safe, &paths).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("git_stage task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn git_stage_all(vault_root: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let safe = canonicalize_vault_root(&vault_root)?;
+        vault_core::git::stage_all(&safe).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("git_stage_all task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn git_unstage(vault_root: String, paths: Vec<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let safe = canonicalize_vault_root(&vault_root)?;
+        vault_core::git::unstage(&safe, &paths).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("git_unstage task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn git_commit(
+    vault_root: String,
+    message: String,
+) -> Result<vault_core::git::CommitOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let safe = canonicalize_vault_root(&vault_root)?;
+        vault_core::git::commit(&safe, &message).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("git_commit task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn git_log(
+    vault_root: String,
+    limit: usize,
+) -> Result<Vec<vault_core::git::CommitInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let safe = canonicalize_vault_root(&vault_root)?;
+        vault_core::git::log(&safe, limit).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("git_log task failed: {e}"))?
+}
+
 #[tauri::command]
 fn read_markdown_file(vault_root: String, relative_path: String) -> Result<String, String> {
     vault_core::read_markdown_file(&PathBuf::from(vault_root), &relative_path)
@@ -1591,6 +1680,13 @@ pub fn run() {
             preview_context,
             inspect_source_repo,
             scan_project_vulnerabilities,
+            git_status,
+            git_diff,
+            git_stage,
+            git_stage_all,
+            git_unstage,
+            git_commit,
+            git_log,
             read_markdown_file,
             write_markdown_file,
             create_markdown_file,

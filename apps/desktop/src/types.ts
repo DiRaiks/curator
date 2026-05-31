@@ -174,6 +174,50 @@ export interface SourceRepoInspection {
   topLevel: TopLevelEntry[];
 }
 
+// ---------- Vault git (Source Control panel) ----------
+
+/** One changed path from `git status --porcelain`, with the raw two-letter
+ *  code pre-decoded into staged/unstaged/untracked booleans. Mirrors
+ *  `vault_core::git::GitFileStatus`. */
+export interface GitFileStatus {
+  /** Work-tree path (rename destination), repo-relative, slash-separated. */
+  path: string;
+  /** Original path for a rename/copy; `null` otherwise. */
+  origPath: string | null;
+  /** Index column (`X`) status char, or `" "` when unmodified in the index. */
+  index: string;
+  /** Work-tree column (`Y`) status char, or `" "` when unmodified there. */
+  worktree: string;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+}
+
+/** Working-tree snapshot of the vault repo. Mirrors
+ *  `vault_core::git::GitStatus`. */
+export interface GitStatus {
+  isGitRepo: boolean;
+  branch: string | null;
+  /** False on an unborn branch (fresh repo, no commits yet). */
+  hasCommits: boolean;
+  clean: boolean;
+  files: GitFileStatus[];
+}
+
+/** One `git log` entry. Mirrors `vault_core::git::CommitInfo`. */
+export interface CommitInfo {
+  shortHash: string;
+  subject: string;
+  author: string;
+  /** Relative committer date, e.g. "3 days ago". */
+  relativeDate: string;
+  unixSecs: number;
+}
+
+export interface CommitOutcome {
+  shortHash: string;
+}
+
 // ---------- CVE / Vulnerability scanning ----------
 
 export interface DependencyPackage {

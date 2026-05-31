@@ -2,7 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type {
+  CommitInfo,
+  CommitOutcome,
   ContextPreview,
+  GitStatus,
   ProjectVulnerabilityScan,
   RecentVault,
   Recommendation,
@@ -160,6 +163,67 @@ export async function inspectSourceRepo(
   localPath: string,
 ): Promise<SourceRepoInspection> {
   return invoke<SourceRepoInspection>("inspect_source_repo", { localPath });
+}
+
+// ---------- Vault git (Source Control panel) ----------
+//
+// All operate on the vault root itself (the open workspace), not on a
+// project's local_path. The backend canonicalizes `vaultRoot` before
+// touching git.
+
+/** Working-tree status of the vault repo: branch, changed files, clean flag.
+ *  Returns `isGitRepo: false` (not an error) when the vault isn't a git repo. */
+export async function gitStatus(vaultRoot: string): Promise<GitStatus> {
+  return invoke<GitStatus>("git_status", { vaultRoot });
+}
+
+/** Unified diff for one path. `staged` selects index-vs-HEAD (`true`) or
+ *  worktree-vs-index (`false`); untracked files render as all-additions. */
+export async function gitDiff(
+  vaultRoot: string,
+  path: string,
+  staged: boolean,
+): Promise<string> {
+  return invoke<string>("git_diff", { vaultRoot, path, staged });
+}
+
+/** Stage the given repo-relative paths (`git add`). */
+export async function gitStage(
+  vaultRoot: string,
+  paths: string[],
+): Promise<void> {
+  await invoke<void>("git_stage", { vaultRoot, paths });
+}
+
+/** Stage every change including deletions and untracked files (`git add -A`). */
+export async function gitStageAll(vaultRoot: string): Promise<void> {
+  await invoke<void>("git_stage_all", { vaultRoot });
+}
+
+/** Unstage paths, keeping working-tree edits (`git restore --staged`). */
+export async function gitUnstage(
+  vaultRoot: string,
+  paths: string[],
+): Promise<void> {
+  await invoke<void>("git_unstage", { vaultRoot, paths });
+}
+
+/** Commit whatever is currently staged. Does not stage anything itself;
+ *  signing is left to the user's git config. Rejects with git's own message
+ *  (e.g. "nothing to commit") on failure. */
+export async function gitCommit(
+  vaultRoot: string,
+  message: string,
+): Promise<CommitOutcome> {
+  return invoke<CommitOutcome>("git_commit", { vaultRoot, message });
+}
+
+/** Recent commits on the current branch, newest first. */
+export async function gitLog(
+  vaultRoot: string,
+  limit: number,
+): Promise<CommitInfo[]> {
+  return invoke<CommitInfo[]>("git_log", { vaultRoot, limit });
 }
 
 /**
