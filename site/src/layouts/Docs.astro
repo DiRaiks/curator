@@ -1,0 +1,66 @@
+---
+import type { CollectionEntry } from "astro:content";
+import Base from "./Base.astro";
+import Nav from "../components/Nav.astro";
+import Footer from "../components/Footer.astro";
+import { withBase } from "../consts";
+
+interface Props {
+  title: string;
+  description?: string;
+  docs: CollectionEntry<"docs">[];
+  current: string;
+}
+
+const { title, description, docs, current } = Astro.props;
+---
+
+<Base title={title} description={description}>
+  <Nav />
+
+  <div class="mx-auto max-w-6xl px-5 sm:px-8">
+    <div class="flex flex-col gap-12 py-12 lg:flex-row lg:gap-16 lg:py-16">
+      <!-- sidebar -->
+      <aside class="lg:w-56 lg:shrink-0">
+        <div class="lg:sticky lg:top-24">
+          <p
+            class="mb-3 text-xs font-medium uppercase tracking-[0.18em] text-zinc-500"
+          >
+            Documentation
+          </p>
+          <nav class="flex flex-col gap-0.5">
+            {
+              docs.map((doc) => {
+                const active = doc.id === current;
+                return (
+                  <a
+                    href={withBase(`/docs/${doc.id}`)}
+                    aria-current={active ? "page" : undefined}
+                    class={`rounded-lg px-3 py-2 text-sm transition-colors duration-200 ${
+                      active
+                        ? "bg-accent-500/10 font-medium text-accent-400"
+                        : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100"
+                    }`}
+                  >
+                    {doc.data.title}
+                  </a>
+                );
+              })
+            }
+          </nav>
+        </div>
+      </aside>
+
+      <!-- content -->
+      <main class="min-w-0 flex-1">
+        <article
+          class="prose prose-invert max-w-none prose-headings:font-semibold prose-headings:tracking-tight prose-h1:text-3xl prose-h1:sm:text-4xl prose-a:text-accent-400 prose-a:no-underline hover:prose-a:text-accent-500 prose-code:rounded prose-code:bg-zinc-800/70 prose-code:px-1.5 prose-code:py-0.5 prose-code:font-normal prose-code:text-zinc-200 prose-code:before:content-[''] prose-code:after:content-[''] prose-pre:border prose-pre:border-zinc-800 prose-pre:bg-zinc-900/60 prose-strong:text-zinc-100 prose-li:marker:text-zinc-600"
+        >
+          <slot />
+        </article>
+      </main>
+    </div>
+  </div>
+
+  <Footer />
+</Base>

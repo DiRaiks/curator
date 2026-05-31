@@ -1,0 +1,36 @@
+---
+import { Icon } from "astro-icon/components";
+import BrandMark from "./BrandMark.astro";
+import { SITE, withBase } from "../consts";
+---
+
+<footer class="border-t border-zinc-800/70">
+  <div
+    class="mx-auto flex max-w-6xl flex-col gap-8 px-5 py-12 sm:flex-row sm:items-center sm:justify-between sm:px-8"
+  >
+    <div class="flex items-center gap-2.5 text-zinc-300">
+      <BrandMark class="h-5 w-5 text-accent-500" />
+      <span class="text-sm font-medium text-zinc-200">{SITE.name}</span>
+      <span class="text-sm text-zinc-600">·</span>
+      <span class="text-sm text-zinc-500">{SITE.tagline}</span>
+    </div>
+
+    <div class="flex items-center gap-5 text-sm">
+      <a
+        href={withBase("/docs/quick-start")}
+        class="text-zinc-400 transition-colors duration-200 hover:text-zinc-100"
+        >Docs</a
+      >
+      <a
+        href={SITE.repo}
+        target="_blank"
+        rel="noreferrer"
+        class="inline-flex items-center gap-1.5 text-zinc-400 transition-colors duration-200 hover:text-zinc-100"
+      >
+        <Icon name="ph:github-logo" class="h-4 w-4" />
+        GitHub
+      </a>
+      <span class="text-zinc-600">MIT</span>
+    </div>
+  </div>
+</footer>

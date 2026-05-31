@@ -1,0 +1,23 @@
+---
+// The Curator vault glyph — stacked layers of accumulated knowledge.
+// This is the app's own logo mark, reused directly.
+interface Props {
+  class?: string;
+}
+const { class: className = "h-6 w-6" } = Astro.props;
+---
+
+<svg
+  class={className}
+  viewBox="0 0 22 22"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="1.6"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+  aria-hidden="true"
+>
+  <path d="M3 7 L11 3 L19 7 L11 11 Z" />
+  <path d="M3 11 L11 15 L19 11" />
+  <path d="M3 15 L11 19 L19 15" />
+</svg>

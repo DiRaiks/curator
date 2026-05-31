@@ -1,0 +1,81 @@
+---
+// On-brand hero visual: an isometric stack of layers, echoing the Curator
+// glyph and the idea of a vault accumulating knowledge over time. Geometric,
+// not a fake product screenshot.
+---
+
+<div class="relative mx-auto aspect-square w-full max-w-[460px]">
+  <!-- tinted radial glow, not neon -->
+  <div
+    class="absolute inset-0 -z-10"
+    style="background: radial-gradient(circle at 50% 42%, rgba(232,105,43,0.18), transparent 62%);"
+    aria-hidden="true"
+  >
+  </div>
+
+  <svg
+    viewBox="0 0 460 460"
+    fill="none"
+    class="h-full w-full"
+    role="img"
+    aria-label="A stack of layers accumulating in the vault"
+  >
+    <defs>
+      <linearGradient id="layerTop" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#f59247" />
+        <stop offset="1" stop-color="#c7551e" />
+      </linearGradient>
+    </defs>
+
+    <!-- four accumulating layers, bottom (faint, settled) to top (accent, new) -->
+    <g stroke-linejoin="round">
+      <!-- layer 1 (bottom) -->
+      <path
+        d="M230 330 L370 250 L230 170 L90 250 Z"
+        fill="#18181b"
+        stroke="#27272a"
+        stroke-width="2"
+      ></path>
+      <!-- layer 2 -->
+      <path
+        d="M230 282 L370 202 L230 122 L90 202 Z"
+        fill="#1c1c1f"
+        stroke="#3f3f46"
+        stroke-width="2"
+      ></path>
+      <!-- layer 3 -->
+      <path
+        d="M230 234 L370 154 L230 74 L90 154 Z"
+        fill="#212124"
+        stroke="#52525b"
+        stroke-width="2"
+      ></path>
+      <!-- layer 4 (top, newest, accent) -->
+      <path
+        d="M230 186 L370 106 L230 26 L90 106 Z"
+        fill="url(#layerTop)"
+        stroke="#f59247"
+        stroke-width="2"
+        class="motion-float"
+      ></path>
+    </g>
+  </svg>
+</div>
+
+<style>
+  @media (prefers-reduced-motion: no-preference) {
+    .motion-float {
+      animation: float 6s var(--ease-in-out) infinite;
+      transform-origin: center;
+    }
+    @keyframes float {
+      0%,
+      100% {
+        transform: translateY(0);
+      }
+      50% {
+        transform: translateY(-7px);
+      }
+    }
+  }
+</style>

@@ -1,0 +1,344 @@
+---
+import { Icon } from "astro-icon/components";
+import Base from "../layouts/Base.astro";
+import Nav from "../components/Nav.astro";
+import Footer from "../components/Footer.astro";
+import HeroVisual from "../components/HeroVisual.astro";
+import { SITE, CAPABILITIES, STACK, PRIVACY, withBase } from "../consts";
+
+// Bento spans tuned for rhythm: two top tiles, a full-width flagship (Run),
+// then a three-up row. Index-aligned with CAPABILITIES.
+const bentoSpan = [
+  "md:col-span-3",
+  "md:col-span-3",
+  "md:col-span-6",
+  "md:col-span-2",
+  "md:col-span-2",
+  "md:col-span-2",
+];
+---
+
+<Base>
+  <Nav />
+
+  <main>
+    <!-- HERO -->
+    <section class="relative overflow-hidden">
+      <div class="grid-backdrop absolute inset-0 -z-10" aria-hidden="true"></div>
+      <div
+        class="mx-auto grid max-w-6xl items-center gap-12 px-5 pb-20 pt-20 sm:px-8 md:pt-24 lg:grid-cols-[1.05fr_0.95fr] lg:gap-8"
+      >
+        <div data-reveal>
+          <h1
+            class="max-w-[18ch] text-4xl font-semibold leading-[1.05] tracking-tight text-zinc-50 sm:text-5xl lg:text-6xl"
+          >
+            Agents work.<br />The vault <span class="text-accent-500"
+              >remembers.</span
+            >
+          </h1>
+          <p class="mt-6 max-w-[54ch] text-lg leading-relaxed text-zinc-400">
+            A desktop memory-augmented agentic IDE for Markdown vaults. Run an
+            embedded AI runner on your projects and let accumulated knowledge
+            outlive every chat session.
+          </p>
+          <div class="mt-9 flex flex-wrap items-center gap-3">
+            <a
+              href="#quickstart"
+              class="press inline-flex items-center gap-2 rounded-lg bg-accent-500 px-5 py-3 text-sm font-semibold text-zinc-950 transition-colors duration-200 hover:bg-accent-400"
+            >
+              <Icon name="ph:terminal-window" class="h-4 w-4" />
+              Build from source
+            </a>
+            <a
+              href={SITE.repo}
+              target="_blank"
+              rel="noreferrer"
+              class="press inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-5 py-3 text-sm font-medium text-zinc-100 transition-colors duration-200 hover:border-zinc-600 hover:bg-zinc-900"
+            >
+              <Icon name="ph:github-logo" class="h-4 w-4" />
+              View on GitHub
+            </a>
+          </div>
+        </div>
+
+        <div data-reveal style="transition-delay:120ms" class="hidden lg:block">
+          <HeroVisual />
+        </div>
+      </div>
+    </section>
+
+    <!-- WHY -->
+    <section id="why" class="border-t border-zinc-800/70">
+      <div class="mx-auto max-w-3xl px-5 py-24 sm:px-8" data-reveal>
+        <h2
+          class="text-3xl font-semibold tracking-tight text-zinc-100 sm:text-4xl"
+        >
+          Most agentic tools forget.
+        </h2>
+        <div class="mt-6 space-y-5 text-lg leading-relaxed text-zinc-400">
+          <p>
+            Each new chat starts from zero, even when last week's session learned
+            exactly what this one needs to know. The value evaporates with the
+            conversation.
+          </p>
+          <p>
+            Curator inverts that. The <span class="text-zinc-200"
+              >vault</span
+            > — a plain git-tracked Markdown folder you already keep — is the
+            persistent memory. The IDE is the curation surface that makes
+            accumulated patterns, decisions, and findings navigable across
+            projects and sessions.
+          </p>
+          <p class="text-zinc-200">
+            Each task starts from more context than the last.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- FEATURES (bento) -->
+    <section id="features" class="border-t border-zinc-800/70">
+      <div class="mx-auto max-w-6xl px-5 py-24 sm:px-8">
+        <div class="max-w-2xl" data-reveal>
+          <p
+            class="text-xs font-medium uppercase tracking-[0.18em] text-accent-500"
+          >
+            What you can do today
+          </p>
+          <h2
+            class="mt-3 text-3xl font-semibold tracking-tight text-zinc-100 sm:text-4xl"
+          >
+            A working IDE, not a roadmap.
+          </h2>
+        </div>
+
+        <div class="mt-12 grid grid-cols-1 gap-4 md:grid-cols-6">
+          {
+            CAPABILITIES.map((cap, i) => {
+              const flagship = i === 2;
+              return (
+                <article
+                  data-reveal
+                  style={`transition-delay:${Math.min(i, 4) * 60}ms`}
+                  class={`group rounded-xl border border-zinc-800 p-6 transition-colors duration-300 hover:border-zinc-700 ${bentoSpan[i]} ${
+                    flagship
+                      ? "bg-gradient-to-br from-accent-500/[0.08] to-zinc-900/40"
+                      : i === 0
+                        ? "bg-gradient-to-br from-zinc-900 to-zinc-900/30"
+                        : "bg-zinc-900/40"
+                  }`}
+                >
+                  <div
+                    class={`inline-flex h-10 w-10 items-center justify-center rounded-lg border ${
+                      flagship
+                        ? "border-accent-500/40 bg-accent-500/10 text-accent-400"
+                        : "border-zinc-700/70 bg-zinc-800/50 text-zinc-300"
+                    }`}
+                  >
+                    <Icon name={cap.icon} class="h-5 w-5" />
+                  </div>
+                  <h3
+                    class={`mt-4 font-semibold tracking-tight text-zinc-100 ${flagship ? "text-xl" : "text-lg"}`}
+                  >
+                    {cap.title}
+                  </h3>
+                  <p
+                    class={`mt-2 leading-relaxed text-zinc-400 ${flagship ? "max-w-[60ch] text-base" : "text-sm"}`}
+                  >
+                    {cap.body}
+                  </p>
+                </article>
+              );
+            })
+          }
+        </div>
+      </div>
+    </section>
+
+    <!-- STACK -->
+    <section class="border-t border-zinc-800/70">
+      <div
+        class="mx-auto grid max-w-6xl gap-10 px-5 py-24 sm:px-8 lg:grid-cols-[0.8fr_1.2fr]"
+      >
+        <div data-reveal>
+          <h2
+            class="text-3xl font-semibold tracking-tight text-zinc-100 sm:text-4xl"
+          >
+            Local-first by construction.
+          </h2>
+          <p class="mt-5 max-w-[42ch] text-lg leading-relaxed text-zinc-400">
+            No backend server. No cloud sync. A native desktop shell driving a
+            Rust core over your own filesystem.
+          </p>
+        </div>
+
+        <dl class="divide-y divide-zinc-800/80" data-reveal>
+          {
+            STACK.map((item, i) => (
+              <div class="flex items-baseline gap-5 py-5">
+                <span class="font-mono text-sm text-zinc-600">
+                  {String(i + 1).padStart(2, "0")}
+                </span>
+                <div>
+                  <dt class="text-lg font-medium text-zinc-100">{item.name}</dt>
+                  <dd class="mt-1 text-zinc-400">{item.role}</dd>
+                </div>
+              </div>
+            ))
+          }
+        </dl>
+      </div>
+    </section>
+
+    <!-- SECURITY -->
+    <section id="security" class="border-t border-zinc-800/70">
+      <div class="mx-auto max-w-6xl px-5 py-24 sm:px-8">
+        <div class="max-w-2xl" data-reveal>
+          <h2
+            class="text-3xl font-semibold tracking-tight text-zinc-100 sm:text-4xl"
+          >
+            Privacy is the default, not a setting.
+          </h2>
+          <p class="mt-4 text-lg leading-relaxed text-zinc-400">
+            Built for security researchers and audit teams who cannot send their
+            work to a third party.
+          </p>
+        </div>
+
+        <div class="mt-12 grid grid-cols-1 gap-4 md:grid-cols-2">
+          {
+            PRIVACY.map((item, i) => (
+              <article
+                data-reveal
+                style={`transition-delay:${(i % 2) * 60}ms`}
+                class="flex gap-4 rounded-xl border border-zinc-800 bg-zinc-900/40 p-6"
+              >
+                <div class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-700/70 bg-zinc-800/50 text-accent-400">
+                  <Icon name={item.icon} class="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 class="font-semibold tracking-tight text-zinc-100">
+                    {item.title}
+                  </h3>
+                  <p class="mt-1.5 text-sm leading-relaxed text-zinc-400">
+                    {item.body}
+                  </p>
+                </div>
+              </article>
+            ))
+          }
+        </div>
+      </div>
+    </section>
+
+    <!-- QUICK START -->
+    <section id="quickstart" class="border-t border-zinc-800/70">
+      <div
+        class="mx-auto grid max-w-6xl items-start gap-10 px-5 py-24 sm:px-8 lg:grid-cols-2 lg:gap-16"
+      >
+        <div data-reveal>
+          <h2
+            class="text-3xl font-semibold tracking-tight text-zinc-100 sm:text-4xl"
+          >
+            Run it in three commands.
+          </h2>
+          <p class="mt-5 text-lg leading-relaxed text-zinc-400">
+            Curator is pre-release: there are no prebuilt binaries yet, so you
+            build from source. You will need Node 20+, Rust stable, and the
+            Claude Code CLI on your PATH.
+          </p>
+          <ol class="mt-8 space-y-5">
+            <li class="flex gap-4">
+              <span
+                class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-zinc-700 font-mono text-xs text-zinc-400"
+                >1</span
+              >
+              <p class="text-zinc-300">
+                <span class="font-medium text-zinc-100">Install dependencies</span
+                > with the repo-standard npm.
+              </p>
+            </li>
+            <li class="flex gap-4">
+              <span
+                class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-zinc-700 font-mono text-xs text-zinc-400"
+                >2</span
+              >
+              <p class="text-zinc-300">
+                <span class="font-medium text-zinc-100">Fetch the ACP runners</span
+                > — the pinned Codex binary lands in src-tauri.
+              </p>
+            </li>
+            <li class="flex gap-4">
+              <span
+                class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-zinc-700 font-mono text-xs text-zinc-400"
+                >3</span
+              >
+              <p class="text-zinc-300">
+                <span class="font-medium text-zinc-100">Launch the dev build</span
+                > and open a vault, or the bundled demo.
+              </p>
+            </li>
+          </ol>
+          <a
+            href={withBase("/docs/quick-start")}
+            class="press mt-8 inline-flex items-center gap-2 text-sm font-medium text-accent-400 transition-colors duration-200 hover:text-accent-500"
+          >
+            Full setup guide
+            <Icon name="ph:arrow-right" class="h-4 w-4" />
+          </a>
+        </div>
+
+        <div
+          data-reveal
+          style="transition-delay:120ms"
+          class="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/60"
+        >
+          <div
+            class="flex items-center gap-2 border-b border-zinc-800 px-4 py-2.5"
+          >
+            <Icon name="ph:terminal-window" class="h-4 w-4 text-zinc-500" />
+            <span class="font-mono text-xs text-zinc-500">bash</span>
+          </div>
+          <pre class="overflow-x-auto p-5 font-mono text-sm leading-relaxed"><code><span class="text-zinc-600"># clone, then from the repo root</span>
+<span class="text-accent-400">npm</span> <span class="text-zinc-300">install</span>
+<span class="text-accent-400">./scripts/fetch-acp-binaries.sh</span>
+<span class="text-accent-400">npm</span> <span class="text-zinc-300">run tauri:dev</span></code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- CTA -->
+    <section class="border-t border-zinc-800/70">
+      <div class="mx-auto max-w-3xl px-5 py-24 text-center sm:px-8" data-reveal>
+        <h2
+          class="text-3xl font-semibold tracking-tight text-zinc-50 sm:text-4xl"
+        >
+          Start curating.
+        </h2>
+        <p class="mx-auto mt-4 max-w-[48ch] text-lg leading-relaxed text-zinc-400">
+          Open a vault, run a project, and watch the knowledge compound.
+        </p>
+        <div class="mt-9 flex flex-wrap items-center justify-center gap-3">
+          <a
+            href={withBase("/docs/quick-start")}
+            class="press inline-flex items-center gap-2 rounded-lg bg-accent-500 px-5 py-3 text-sm font-semibold text-zinc-950 transition-colors duration-200 hover:bg-accent-400"
+          >
+            <Icon name="ph:book-open" class="h-4 w-4" />
+            Read the docs
+          </a>
+          <a
+            href={SITE.repo}
+            target="_blank"
+            rel="noreferrer"
+            class="press inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-5 py-3 text-sm font-medium text-zinc-100 transition-colors duration-200 hover:border-zinc-600 hover:bg-zinc-900"
+          >
+            <Icon name="ph:star" class="h-4 w-4" />
+            Star on GitHub
+          </a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <Footer />
+</Base>
