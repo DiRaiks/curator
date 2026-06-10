@@ -153,7 +153,7 @@ pub struct RunRequest {
 }
 
 pub enum RunEvent {
-    Stdout(String),               // ACP `session/update` JSON, one per line
+    Stdout(String),               // one ACP `session/update` JSON per line (agent- or watcher-emitted)
     Stderr(String),
     Truncated { dropped_bytes: usize },
     PermissionRequest(PermissionRequest), // from ACP `session/request_permission`
@@ -242,6 +242,28 @@ forward the user's choice through the typed
 runner's pump task. This is what the pre-ACP `claude -p` integration
 couldn't do — the legacy Claude CLI didn't activate `canUseTool`
 from a non-SDK host, so the permission card was dead code.
+
+### Subagent visibility
+
+Subagent activity renders nested under its parent tool call, but reaches
+the host two different ways:
+
+- **`Task` / `Agent` subagents** stream on the wire: claude-agent-acp
+  tags their `session/update`s with `_meta.claudeCode.parentToolUseId`.
+  The frontend renderer (`acpRender.ts`) reads it and indents those
+  lines under the spawning call.
+- **`Workflow`-tool subagents** never emit `session/update`s — the CLI
+  orchestrates them in-process and persists them only to
+  `~/.claude/projects/<proj>/<session-id>/subagents/workflows/<run>/journal.jsonl`.
+  A dedicated-thread watcher (`runner/acp/workflow_watch.rs`) tails that
+  journal and *synthesises* ACP `tool_call` / `tool_call_update`
+  notifications — tagged with the same `parentToolUseId` — onto the
+  `events` channel, so they render through the identical nesting path.
+  This is the one place a `RunEvent::Stdout` line originates from the
+  host rather than the agent. The watcher runs on its own OS thread (so
+  blocking journal I/O can't stall the single-threaded runtime's
+  notification pipe) and baselines pre-existing runs, so a resumed
+  session doesn't re-surface workflows from earlier turns.
 
 ## Drafts workflow (inbox-to-review)
 

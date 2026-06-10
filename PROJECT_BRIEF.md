@@ -80,7 +80,10 @@ docs/                  # architecture notes
    tabbed bottom drawer runs up to 3 chats concurrently; each
    streams `session/update` events, surfaces an inline permission
    card on `session/request_permission`, and supports resume by
-   session id.
+   session id. Subagent activity renders nested under its parent —
+   `Task` subagents from their on-wire `parentToolUseId`, and
+   `Workflow`-tool subagents (which never hit the wire) via a
+   journal-tailing watcher that synthesises the same notifications.
 4. **All artifact kinds runnable** — skills, commands, agents,
    vault-skills, and agent-prompts are all invokable. Only
    `claude-rule` is read-only (rules are policy fragments, not
