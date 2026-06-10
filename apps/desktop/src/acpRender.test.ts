@@ -9,6 +9,7 @@ import {
   MAX_TOOL_OUTPUT_CHARS,
   parseAcpUpdate,
   readContentText,
+  readParentToolUseId,
   renderAcpToolCall,
   renderAcpToolCallUpdate,
   renderAcpUpdate,
@@ -334,6 +335,82 @@ describe("renderAcpUpdate", () => {
     );
     expect(r).toHaveLength(1);
     expect(r[0].kind).toBe("stdout");
+  });
+
+  test("subagent tool_call is stamped with parentToolUseId from _meta", () => {
+    const r = renderAcpUpdate(
+      parseAcpUpdate(
+        JSON.stringify({
+          sessionUpdate: "tool_call",
+          toolCallId: "tc-child",
+          title: "echo",
+          kind: "execute",
+          _meta: { claudeCode: { parentToolUseId: "toolu_parent" } },
+        }),
+      )!,
+    );
+    expect(r).toHaveLength(1);
+    expect(r[0].parentToolUseId).toBe("toolu_parent");
+  });
+
+  test("subagent attribution is stamped on every produced line", () => {
+    const r = renderAcpUpdate(
+      parseAcpUpdate(
+        JSON.stringify({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "from the subagent" },
+          _meta: { claudeCode: { parentToolUseId: "toolu_parent" } },
+        }),
+      )!,
+    );
+    expect(r).toEqual([
+      {
+        kind: "stdout",
+        text: "from the subagent",
+        streaming: true,
+        parentToolUseId: "toolu_parent",
+      },
+    ]);
+  });
+
+  test("main-thread updates carry no parentToolUseId", () => {
+    const r = renderAcpUpdate(
+      parseAcpUpdate(
+        JSON.stringify({
+          sessionUpdate: "tool_call",
+          toolCallId: "tc-main",
+          title: "ls",
+          kind: "execute",
+        }),
+      )!,
+    );
+    expect(r).toHaveLength(1);
+    expect(r[0].parentToolUseId).toBeUndefined();
+  });
+});
+
+describe("readParentToolUseId", () => {
+  test("reads _meta.claudeCode.parentToolUseId", () => {
+    expect(
+      readParentToolUseId({
+        _meta: { claudeCode: { parentToolUseId: "toolu_abc" } },
+      }),
+    ).toBe("toolu_abc");
+  });
+
+  test("returns undefined when _meta / claudeCode / field is absent", () => {
+    expect(readParentToolUseId({})).toBeUndefined();
+    expect(readParentToolUseId({ _meta: {} })).toBeUndefined();
+    expect(readParentToolUseId({ _meta: { claudeCode: {} } })).toBeUndefined();
+  });
+
+  test("returns undefined when the field is the wrong type", () => {
+    expect(
+      readParentToolUseId({ _meta: { claudeCode: { parentToolUseId: 42 } } }),
+    ).toBeUndefined();
+    expect(
+      readParentToolUseId({ _meta: "not-an-object" }),
+    ).toBeUndefined();
   });
 });
 

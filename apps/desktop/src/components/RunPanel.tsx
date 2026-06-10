@@ -82,6 +82,11 @@ interface OutputLine {
    *  those rows in `lines` from when the original turn streamed, so
    *  appending again would show duplicates above each resume reply. */
   toolCallId?: string;
+  /** Set when the line came from a subagent (ACP
+   *  `_meta.claudeCode.parentToolUseId`). Rendered with an indent so
+   *  subagent activity is visually attributed to its parent tool call
+   *  rather than interleaved flat with the main thread. */
+  parentToolUseId?: string;
   /** When true, the line is hidden from the DOM (CSS `display: none`).
    *  Set on streaming lines whose accumulated text matches the start
    *  of an earlier line — likely a replay being rebuilt by the agent
@@ -487,6 +492,10 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
         last &&
         last.streaming &&
         last.kind === line.kind &&
+        // Never coalesce streaming chunks from different sources — two
+        // concurrent subagents' text must not merge into one attributed
+        // line.
+        last.parentToolUseId === line.parentToolUseId &&
         (!line.toolCallId || last.toolCallId === line.toolCallId);
       if (isContinuation) {
         let mergedText: string;
@@ -727,6 +736,7 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
               text: rendered.text,
               streaming: rendered.streaming,
               toolCallId: rendered.toolCallId,
+              parentToolUseId: rendered.parentToolUseId,
             });
           }
         },
@@ -1812,7 +1822,8 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
               className={
                 "run-panel__line run-panel__line--" +
                 l.kind +
-                (l.hidden ? " run-panel__line--hidden" : "")
+                (l.hidden ? " run-panel__line--hidden" : "") +
+                (l.parentToolUseId ? " run-panel__line--subagent" : "")
               }
             >
               {renderLineWithCodeBlocks(l.text)}

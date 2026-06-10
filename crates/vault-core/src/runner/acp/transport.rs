@@ -30,6 +30,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
@@ -227,6 +228,16 @@ async fn run_session(
 
     let events_for_notifications = events_tx.clone();
     let events_for_permissions = events_tx.clone();
+
+    // Workflow-progress watch. `Workflow`-tool subagents are
+    // orchestrated inside the CLI and never emit `session/update`s, so
+    // a poll loop tails their on-disk journals and forwards synthetic
+    // notifications (see `workflow_watch`). The flag stops that loop
+    // the instant the parent turn finishes; `watch_home` resolves the
+    // journal directory — when it's unavailable the watch never starts.
+    let watch_shutdown = Arc::new(AtomicBool::new(false));
+    let watch_shutdown_for_session = Arc::clone(&watch_shutdown);
+    let watch_home = crate::util::detect_home_dir();
     let pending_for_handler = Arc::clone(&pending);
 
     // The closure passed to `connect_with` is the entire session
@@ -397,6 +408,22 @@ async fn run_session(
                 session_id: format!("{}", session_id.0),
             });
 
+            // Start tailing this session's workflow journals (if we
+            // resolved a home dir). Runs on its own OS thread so its
+            // blocking journal reads never stall this single-threaded
+            // runtime's ACP notification pipe. Detached: it
+            // self-terminates when `watch_shutdown` flips after the turn
+            // completes, or when the event consumer disconnects. Costs
+            // nothing until a workflow run actually writes a journal.
+            if let Some(home) = watch_home {
+                let events = events_tx.clone();
+                let sid = format!("{}", session_id.0);
+                let shutdown = Arc::clone(&watch_shutdown_for_session);
+                thread::spawn(move || {
+                    super::workflow_watch::watch_workflows(home, sid, events, shutdown);
+                });
+            }
+
             // Optional model override. Send only if the host actually
             // picked a non-default model — issuing `session/set_model`
             // on agents that don't advertise the capability (codex-acp
@@ -443,6 +470,11 @@ async fn run_session(
             Ok(())
         })
         .await;
+
+    // Stop the workflow-progress watch. It does one final sweep on the
+    // next tick to catch journal writes that landed as the turn
+    // finished, then exits.
+    watch_shutdown.store(true, Ordering::Relaxed);
 
     // Drop the pump task — its inner blocking recv exits when the
     // sender side (Killer / RunHandle) is dropped, which happens

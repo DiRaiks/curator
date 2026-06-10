@@ -38,6 +38,13 @@ export interface RenderedLine {
   streaming?: boolean;
   toolCallId?: string;
   hidden?: boolean;
+  /** Set when the line was produced by a subagent rather than the main
+   *  thread. Carries the id of the `Task`/`Agent` tool call that
+   *  spawned the subagent (ACP `_meta.claudeCode.parentToolUseId`). The
+   *  consumer indents these lines so subagent activity is attributed to
+   *  its parent rather than interleaved flat with the top-level stream.
+   *  `undefined` for ordinary main-thread lines. */
+  parentToolUseId?: string;
 }
 
 /** Snapshot of session usage extracted from one `usage_update`
@@ -187,7 +194,37 @@ export function classifyStreamingVisibility(
 
 // ---------- Update → RenderedLine[] dispatcher ----------
 
+/** Read the parent tool-use id a subagent message is tagged with.
+ *  claude-agent-acp stamps every subagent `session/update` with
+ *  `_meta.claudeCode.parentToolUseId` pointing at the `Task`/`Agent`
+ *  tool call that spawned it; top-level (main-thread) updates omit it
+ *  entirely. Returns `undefined` when the field is absent or malformed.
+ *
+ *  NOTE: this only surfaces `Task`-style subagents, whose turns stream
+ *  on the wire. `Workflow`-tool subagents run inside the CLI and never
+ *  emit `session/update`s — their activity lives only in on-disk
+ *  `subagents/workflows/<run>/` transcripts and is surfaced separately. */
+export function readParentToolUseId(
+  obj: Record<string, unknown>,
+): string | undefined {
+  const meta = obj["_meta"];
+  if (!isRecord(meta)) return undefined;
+  const claudeCode = meta["claudeCode"];
+  if (!isRecord(claudeCode)) return undefined;
+  return readString(claudeCode, "parentToolUseId");
+}
+
 export function renderAcpUpdate(parsed: ParsedAcpUpdate): RenderedLine[] {
+  const lines = renderAcpUpdateLines(parsed);
+  if (parsed.obj === null) return lines;
+  // Stamp subagent attribution onto every line this update produced, so
+  // the consumer can indent them under their parent tool call.
+  const parentToolUseId = readParentToolUseId(parsed.obj);
+  if (!parentToolUseId) return lines;
+  return lines.map((l) => ({ ...l, parentToolUseId }));
+}
+
+function renderAcpUpdateLines(parsed: ParsedAcpUpdate): RenderedLine[] {
   const { obj, raw } = parsed;
   if (obj === null) {
     if (raw.trim() === "") return [];

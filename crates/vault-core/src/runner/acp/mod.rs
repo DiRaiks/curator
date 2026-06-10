@@ -45,6 +45,7 @@ pub(crate) mod transport;
 
 mod claude;
 mod codex;
+mod workflow_watch;
 
 pub use claude::AcpClaudeRunner;
 pub use codex::AcpCodexRunner;
