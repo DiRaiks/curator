@@ -60,6 +60,7 @@ export const AGENT_CATALOG: readonly AgentSpec[] = [
     description: "Anthropic Claude Code CLI — with inline permission card for Bash/network.",
     models: [
       { value: null, label: "default", hint: "Use your ~/.claude/settings.json default" },
+      { value: "fable", label: "Fable", hint: "Latest flagship — Fable 5" },
       { value: "sonnet", label: "Sonnet", hint: "Latest stable Sonnet — best general coding" },
       { value: "opus", label: "Opus", hint: "Deepest reasoning — slower + more expensive" },
       { value: "haiku", label: "Haiku", hint: "Fastest + cheapest — light tasks" },
