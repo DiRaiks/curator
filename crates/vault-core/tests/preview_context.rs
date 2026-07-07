@@ -52,7 +52,7 @@ fn preview_for_threat_model_on_sample_project() {
         included_paths.contains(&"02_projects/sample-project/_index.md"),
         "must include the project _index.md"
     );
-    // Plus all safe Project + Meta scope files inside the project folder.
+    // Plus every markdown file inside the project folder.
     assert!(
         included_paths.contains(&"02_projects/sample-project/01_intake.md"),
         "must include 01_intake.md"
@@ -62,14 +62,15 @@ fn preview_for_threat_model_on_sample_project() {
         "must include 02_plan.md"
     );
 
-    // Must NOT include personal-work files.
+    // Zones were removed from the product: project-local journal /
+    // scope-overridden files are ordinary project documents now.
     assert!(
-        !included_paths.contains(&"02_projects/sample-project/journal/2026-05-17.md"),
-        "must not include journal/"
+        included_paths.contains(&"02_projects/sample-project/journal/2026-05-17.md"),
+        "journal/ files are project documents"
     );
     assert!(
-        !included_paths.contains(&"02_projects/sample-project/private-decision-2026-05-17.md"),
-        "fm scope override must keep private-decision out"
+        included_paths.contains(&"02_projects/sample-project/private-decision-2026-05-17.md"),
+        "fm scope overrides are ignored (zones removed)"
     );
 
     // Reasons are tagged correctly.
@@ -93,12 +94,6 @@ fn preview_for_threat_model_on_sample_project() {
         vec!["02_projects/sample-project/_index.md"]
     );
     assert!(by_reason(IncludeReason::ExistingOutputFile).is_empty());
-
-    // Excluded counts — demo has 2 personal-work files + 1 .bak.
-    assert_eq!(r.excluded_counts.personal_work, 2);
-    assert_eq!(r.excluded_counts.bak, 1);
-    assert_eq!(r.excluded_counts.team_management, 0);
-    assert_eq!(r.excluded_counts.inbox, 0);
 
     // Source-repo snapshot. Real connectivity (path exists, git, branch…)
     // is reported separately by `inspect_source_repo` — the snapshot here

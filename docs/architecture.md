@@ -6,11 +6,15 @@
 ┌──────────────────────────────────────────────────────────────────────┐
 │  React + TypeScript (apps/desktop/src)                               │
 │  - Welcome → picks a vault folder via @tauri-apps/plugin-dialog      │
-│  - Dashboard: Projects / AI Artifacts / Drafts / Zones /             │
-│    Diagnostics / Security / Source Control                           │
+│  - Dashboard: shell v2 — activity rail (components/shell/) with one  │
+│    swappable left panel (Projects / Search / Source Control / AI     │
+│    Artifacts / Drafts / CVE Scan / Diagnostics), markdown editor in  │
+│    the center, always-visible Files tree on the right, app header    │
+│    strip below the native titlebar + statusbar                       │
 │  - EditorPanel (CodeMirror + react-markdown), FrontmatterForm        │
-│  - RunPanelHost + RunPanel × N (tabbed multi-chat drawer; each       │
-│    tab streams its own backend run; inline permission card per tab)  │
+│  - RunPanelHost + RunPanel × N (agent left panel, Zed-style; up to   │
+│    3 concurrent chats stream their own backend runs; session-history │
+│    pane; inline permission card per chat)                            │
 │  - ContextPreview / ExternalRunnerPromptCard (run plan + Run button) │
 └──────────────────────┬───────────────────────────────────────────────┘
                        │ Tauri commands (invoke + listen)
@@ -18,7 +22,7 @@
 ┌──────────────────────────────────────────────────────────────────────┐
 │  Tauri shell (apps/desktop/src-tauri/src/lib.rs)                     │
 │  Commands:                                                           │
-│    scan_vault, preview_context, inspect_source_repo                  │
+│    scan_vault, search_vault, preview_context, inspect_source_repo    │
 │    read_markdown_file, write_markdown_file, create_markdown_file     │
 │    promote_draft, discard_draft                                      │
 │    start_vault_watch / stop_vault_watch                              │
@@ -47,7 +51,6 @@
 │  scan.rs       — walkdir scan; produces ScanResult                   │
 │  watch.rs      — notify + notify-debouncer-full; coalesced events    │
 │  config.rs     — .vault/config.yml + format-version policy           │
-│  scope.rs      — privacy-zone classification                         │
 │  artifacts/    — discovery + parsing of agent-prompts / claude-      │
 │                  skills / agents / commands / rules / vault-skills   │
 │  preview/      — `preview_context` + runner-agnostic prompt builder  │
@@ -94,26 +97,13 @@ Pruned during scan: `node_modules/`, `target/`, `dist/`, `build/`,
 `.next/`, `.git/`, `.obsidian/`, `.claude/`, plus `._*` and
 `.DS_Store`.
 
-## Privacy zones
+## Run-plan file selection
 
-Each markdown file gets a `scope` derived from path segments + optional
-frontmatter overrides. Used to filter what AI workflows include by
-default:
-
-| Scope             | Default treatment                                          |
-| ----------------- | ---------------------------------------------------------- |
-| `project`         | Included in project workflows                              |
-| `meta`            | Included (vault conventions, AGENTS.md, etc.)              |
-| `personal-work`   | Excluded by default                                        |
-| `team-management` | Excluded by default                                        |
-| `inbox`           | Excluded by default                                        |
-| `resource`        | Excluded by default                                        |
-| `archive`         | Excluded by default                                        |
-| `unknown`         | Excluded by default                                        |
-
-Explicit `scope:` in frontmatter overrides path classification.
-`include_in_ai_context: false` demotes to `personal-work` unless the
-path already classifies as `team-management`.
+Privacy zones were removed from the product (shell v2). `preview_context`
+includes `00_meta/AGENTS.md`, the selected prompt, and every markdown
+file under the project directory — no scope classification, no
+per-file `scope:` frontmatter handling. The agent reads the vault via
+`--add-dir` regardless; the run plan is a map, not a sandbox.
 
 ## Artifact kinds and runnability
 
@@ -330,7 +320,6 @@ Three severity levels (`info` / `warning` / `error`). Current emitters:
 | --------- | ---------------------------------------------------------------- |
 | `info`    | `.bak` file detected (not indexed)                               |
 | `info`    | Markdown file with no YAML frontmatter (capped to 50)            |
-| `info`    | Private zone summary (`personal-work` / `team-management` / …)   |
 | `warning` | `.vault/config.yml` missing                                      |
 | `warning` | `.vault/config.yml` has no `version:` field                      |
 | `warning` | Vault format major version exceeds IDE-supported major           |

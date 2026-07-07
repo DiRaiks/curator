@@ -25,6 +25,33 @@ export async function scanVault(path: string): Promise<ScanResult> {
   return invoke<ScanResult>("scan_vault", { path });
 }
 
+/** One content-search match. Mirrors `vault_core::SearchHit`. */
+export interface SearchHit {
+  /** Vault-relative path, slash-separated. */
+  path: string;
+  /** 1-based line number of the match. */
+  line: number;
+  /** Matched line, trimmed and clipped for display. */
+  snippet: string;
+}
+
+/** Mirrors `vault_core::SearchResult`. */
+export interface SearchResult {
+  hits: SearchHit[];
+  filesMatched: number;
+  filesScanned: number;
+  /** True when the hit cap stopped the walk early. */
+  truncated: boolean;
+}
+
+/** Case-insensitive content search across the vault's Markdown files. */
+export async function searchVault(
+  vaultRoot: string,
+  query: string,
+): Promise<SearchResult> {
+  return invoke<SearchResult>("search_vault", { vaultRoot, query });
+}
+
 /**
  * Seed a plain folder as a vault: writes `.vault/config.yml`, the
  * canonical zone directories, and `00_meta/AGENTS.md`. Caller is

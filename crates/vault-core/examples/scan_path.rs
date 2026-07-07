@@ -61,13 +61,6 @@ fn main() {
             p.slug, p.status, p.repo, p.local_path
         );
     }
-    println!("--- zones (sensitive / private) ---");
-    for z in r.zones.iter().take(20) {
-        println!("  [{:?}] {}  ({} files)", z.scope, z.path, z.file_count);
-    }
-    if r.zones.len() > 20 {
-        println!("  ... and {} more", r.zones.len() - 20);
-    }
     println!("--- diagnostics by level ---");
     let mut info = 0;
     let mut warn = 0;

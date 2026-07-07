@@ -10,7 +10,6 @@ This file documents how AI agents should work inside this vault.
 ## Scope
 
 - AI runs read from `02_projects/<slug>/` and `00_meta/` by default.
-- Personal-work and team-management zones are excluded automatically.
 - Drafts proposed by agents land in `01_inbox/_drafts/` for review.
 
 ## Write rules

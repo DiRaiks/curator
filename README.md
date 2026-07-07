@@ -46,19 +46,25 @@ researchers, audit firms, internal sec teams, consultants.
 
 ## What you can do today
 
-- **Browse** — projects, artifacts (skills / commands / agents /
-  prompts), drafts, and privacy zones. Tree + frontmatter pills give
-  vault state at a glance.
+- **Navigate** — a VSCode-style shell: an activity rail swaps a single
+  left panel (Projects / content Search / Source Control / AI
+  Artifacts / Drafts / CVE Scan / Diagnostics / Agent / Settings),
+  the vault file tree stays pinned on the right, and a ⌘K palette
+  jumps to any file or command. Graphite (dark) and porcelain (light)
+  themes; panel widths and theme persist.
 - **Edit** — Markdown notes in CodeMirror with rendered preview,
   frontmatter form, and wikilink navigation (`[[target]]` /
   `[[target|alias]]`).
-- **Run** — any artifact (except `claude-rule`) against a project. The
-  IDE drives a vendored ACP server (`claude-agent-acp` for Claude,
+- **Run** — any artifact (except `claude-rule`) against a project:
+  expand its card, review the run plan, and `▶ run…` stages the
+  materialized prompt into the agent composer for review before Send.
+  The IDE drives a vendored ACP server (`claude-agent-acp` for Claude,
   `codex-acp` for Codex) over JSON-RPC, with the vault forwarded as
   ACP `additional_directories` and cwd set to the project repo.
-  Up to 3 chats run concurrently in a tabbed bottom drawer; each tab
-  can Stop, Reply (resume by session id), or approve / deny tool calls
-  inline.
+  Up to 3 chats run concurrently in the Zed-style agent panel
+  (⌘J) — conversations render as turns with tool-call bubbles; each
+  chat can Stop, Reply (resume by session id), or approve / deny tool
+  calls inline, and keeps streaming while the panel is closed.
 - **Curate drafts** — agents drop proposed knowledge notes into
   `01_inbox/_drafts/` with `status: draft-from-agent` and
   `proposed_destination`. Review in the Drafts tab and Promote (moves
@@ -171,8 +177,6 @@ the bundled Curator icon set under `target/release/bundle/`.
   `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, etc.) so a
   vault-declared `local_path` can't redirect the agent into
   credential locations.
-- Personal-work / team-management zones are excluded from default AI
-  context. A per-zone opt-in toggle is on the roadmap.
 - Promoting drafts and writing files always goes through vault-rooted
   path validation — symlink escape, `..` traversal, and writes into
   `.git/` / `node_modules/` / `target/` / `.next/` / `dist/` /

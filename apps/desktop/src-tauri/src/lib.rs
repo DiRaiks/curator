@@ -22,8 +22,22 @@ async fn scan_vault(path: String) -> Result<vault_core::ScanResult, String> {
     .map_err(|e| format!("scan_vault task failed: {e}"))?
 }
 
+/// Case-insensitive content search across the vault's Markdown files.
+/// Reads the full tree — same spawn_blocking rationale as `scan_vault`.
+#[tauri::command]
+async fn search_vault(
+    vault_root: String,
+    query: String,
+) -> Result<vault_core::SearchResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(vault_core::search_vault(&PathBuf::from(vault_root), &query))
+    })
+    .await
+    .map_err(|e| format!("search_vault task failed: {e}"))?
+}
+
 /// Turn a plain folder into a vault — writes `.vault/config.yml`, the
-/// canonical zone dirs, and a seed `00_meta/AGENTS.md`. Caller is
+/// canonical top-level dirs, and a seed `00_meta/AGENTS.md`. Caller is
 /// expected to re-scan after.
 ///
 /// `async` + `spawn_blocking` mirrors `scan_project_vulnerabilities`:
@@ -1674,6 +1688,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             scan_vault,
+            search_vault,
             init_vault,
             init_project,
             demo_vault_path,

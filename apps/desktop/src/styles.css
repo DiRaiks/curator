@@ -86,20 +86,23 @@ button {
   width: 100%;
   max-width: 460px;
   background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 32px;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.04);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 26px 28px;
+  box-shadow: 0 12px 40px color-mix(in srgb, var(--bg-sub) 55%, transparent);
 }
 
 .welcome__title {
-  margin: 0 0 8px;
-  font-size: 22px;
+  margin: 0 0 6px;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 .welcome__subtitle {
-  margin: 0 0 24px;
+  margin: 0 0 22px;
   color: var(--muted);
+  font-size: 12.5px;
   line-height: 1.5;
 }
 
@@ -118,11 +121,12 @@ button {
 }
 
 .welcome__section-title {
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-  margin: 0 0 8px;
+  letter-spacing: 0.09em;
+  color: var(--fg-2);
+  margin: 0 0 6px;
   font-weight: 700;
 }
 
@@ -141,15 +145,13 @@ button {
   display: flex;
   align-items: stretch;
   gap: 4px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--panel) 96%, var(--bg) 4%);
-  transition: background 100ms ease, border-color 100ms ease;
+  border-radius: 3px;
+  background: transparent;
+  transition: background 100ms ease;
 }
 
 .recent-row:hover {
-  background: color-mix(in srgb, var(--accent) 10%, var(--panel) 90%);
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--border) 70%);
+  background: var(--panel-2);
 }
 
 .recent-row__main {
@@ -176,8 +178,8 @@ button {
 }
 
 .recent-row__name {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12.5px;
+  font-weight: 500;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -193,7 +195,7 @@ button {
 }
 
 .recent-row__path {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
   color: var(--muted);
   grid-column: 1;
@@ -205,7 +207,7 @@ button {
 
 .recent-row__time {
   font-size: 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   color: var(--muted);
   grid-column: 2;
   grid-row: 1 / span 2;
@@ -277,7 +279,7 @@ button {
   background: var(--err-bg);
   color: var(--err);
   border-radius: 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   word-break: break-all;
 }
@@ -288,18 +290,21 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 8px 14px;
+  gap: 5px;
+  height: 24px;
+  padding: 0 11px;
   border: 1px solid var(--border);
-  background: var(--panel);
-  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--fg-2);
+  font-size: 11.5px;
+  border-radius: 3px;
+  white-space: nowrap;
   cursor: pointer;
-  transition-property: background-color, transform, box-shadow;
-  transition-duration: 90ms;
-  transition-timing-function: ease-out;
 }
 
 .btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--panel) 85%, var(--accent) 15%);
+  background: var(--panel-3);
+  color: var(--text);
 }
 
 .btn:active:not(:disabled) {
@@ -320,63 +325,22 @@ button {
   background: var(--accent);
   color: var(--accent-fg);
   border-color: var(--accent);
+  font-weight: 600;
 }
 
 .btn--primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 90%, black 10%);
+  background: var(--accent);
+  color: var(--accent-fg);
+  filter: brightness(1.08);
 }
 
 .btn--small {
-  padding: 4px 10px;
-  font-size: 12px;
+  height: 22px;
+  padding: 0 9px;
+  font-size: 11px;
 }
 
 /* ---------- Dashboard ---------- */
-
-.dashboard {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-
-.dashboard__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
-}
-
-.dashboard__title {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.dashboard__label {
-  font-size: 11px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.dashboard__path {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.dashboard__meta {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  flex-shrink: 0;
-}
 
 .privacy-status {
   font-weight: 600;
@@ -404,7 +368,7 @@ button {
   min-width: 200px;
   max-width: 360px;
   padding: 8px 10px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.5;
   color: var(--text);
@@ -464,37 +428,19 @@ button {
   color: var(--warn);
 }
 
-.dashboard__body {
-  display: grid;
-  /* Slice 8 PR A: the left track now holds the grouped Sidebar (was
-   * the 280px tree aside). 220px matches the v0.5 spec (B-prototype
-   * density). */
-  grid-template-columns: 220px 1fr;
-  gap: 0;
-  flex: 1;
-  min-height: 0;
-}
-
 /* Legacy `.dashboard__tree` rules removed in slice 8 PR A — the aside
  * was replaced by `<Sidebar>`. The header helpers below
  * (`dashboard__tree-header`) are kept for now: not rendered anywhere,
  * but harmless until the next styles cleanup pass. */
 
-.dashboard__main {
-  padding: 16px;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
 /* ---------- Panels ---------- */
 
 .panel {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px 14px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 16px 20px;
+  min-width: 0;
 }
 
 /* A panel that fills the remaining height of `.dashboard__main` instead of
@@ -512,11 +458,13 @@ button {
 }
 
 .panel__title {
-  margin: 0 0 10px;
-  font-size: 12px;
+  margin: 0 0 12px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
+  letter-spacing: 0.09em;
+  color: var(--fg-2);
 }
 
 /* ---------- Pills / tags ---------- */
@@ -524,17 +472,20 @@ button {
 .pill {
   display: inline-flex;
   align-items: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--panel) 70%, var(--border) 30%);
-  font-size: 11px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 3px;
+  background: var(--panel-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
   color: var(--muted);
   white-space: nowrap;
 }
 
 .pill--ok {
-  background: var(--info-bg);
-  color: var(--info);
+  background: var(--ok-bg);
+  color: var(--ok);
 }
 
 .pill--warn {
@@ -586,11 +537,17 @@ button {
 }
 
 .tag {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--panel) 75%, var(--border) 25%);
-  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--muted) 22%, transparent);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   color: var(--muted);
   margin-right: 6px;
 }
@@ -599,7 +556,7 @@ button {
 .tag--warning { background: var(--warn-bg); color: var(--warn); }
 .tag--error { background: var(--err-bg); color: var(--err); }
 .tag--output {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   max-width: 320px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -767,34 +724,6 @@ button {
 
 /* ---------- Zone summary card ---------- */
 
-.zone-summary {
-  list-style: none;
-  margin: 0 0 12px;
-  padding: 12px;
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 6px;
-  background: color-mix(in srgb, var(--panel) 92%, var(--border) 8%);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
-.zone-summary__item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 13px;
-}
-
-.zone-summary__count {
-  font-weight: 600;
-}
-
-.zone-summary__zones {
-  color: var(--muted);
-  font-size: 12px;
-}
-
 /* ---------- Filter chips (AI Artifacts) ---------- */
 
 .filter-chips {
@@ -809,15 +738,16 @@ button {
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--panel);
+  gap: 5px;
+  height: 20px;
+  padding: 0 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  background: var(--panel-2);
   cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg-2);
   transition: background 80ms, color 80ms, border-color 80ms;
 }
 
@@ -827,22 +757,22 @@ button {
 }
 
 .chip--active {
-  background: var(--accent);
-  color: var(--accent-fg);
-  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: transparent;
 }
 
 .chip__count {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 18px;
-  padding: 0 5px;
-  background: color-mix(in srgb, var(--panel) 70%, var(--border) 30%);
+  min-width: 15px;
+  padding: 0 4px;
+  background: var(--panel-3);
   color: var(--muted);
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 700;
 }
 
 .chip--active .chip__count {
@@ -865,8 +795,12 @@ button {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
-  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-2);
 }
 
 .kind-group__count {
@@ -1236,7 +1170,7 @@ button {
 }
 
 .drafts__path {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text);
   word-break: break-all;
@@ -1274,14 +1208,14 @@ button {
 .tag--tool {
   background: color-mix(in srgb, var(--err) 12%, transparent);
   color: var(--err);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-weight: 500;
 }
 
 .tag--glob {
   background: color-mix(in srgb, var(--info) 12%, transparent);
   color: var(--info);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
 }
 
 /* ---------- Stacked secondary content ---------- */
@@ -1680,17 +1614,6 @@ button {
   font-style: italic;
 }
 
-
-.zones__hint {
-  margin: 0 0 8px;
-  padding: 8px 10px;
-  background: var(--warn-bg);
-  color: var(--warn);
-  border-radius: 6px;
-  font-size: 12px;
-  line-height: 1.4;
-}
-
 /* ---------- Field rows (project metadata) ---------- */
 
 .fields {
@@ -1719,7 +1642,7 @@ button {
 }
 
 .field__value--mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
 }
 
 /* ---------- Tree ---------- */
@@ -1782,10 +1705,10 @@ button {
 }
 
 .list__item {
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--panel) 96%, var(--border) 4%);
+  padding: 9px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  background: var(--panel);
 }
 
 .list__primary {
@@ -1796,12 +1719,12 @@ button {
 }
 
 .list__id {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
   padding: 1px 6px;
   background: var(--info-bg);
   color: var(--info);
-  border-radius: 4px;
+  border-radius: 3px;
 }
 
 .list__title {
@@ -1818,7 +1741,7 @@ button {
 }
 
 .list__path {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
 }
 
@@ -1955,14 +1878,6 @@ button {
 
 /* ---------- File tree active row + New button ---------- */
 
-.dashboard__tree-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 4px;
-}
-
 .tree__file-btn {
   display: flex;
   align-items: center;
@@ -1995,108 +1910,9 @@ button {
 
 /* ---------- Editor (full-height when its tab is active) ---------- */
 
-.dashboard__main--editor {
-  overflow: hidden;
-}
-
-.panel--editor {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  padding: 0;
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  overflow: hidden;
-  min-height: 0;
-}
-
-.editor {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  flex: 1;
-  min-height: 0;
-}
-
-.editor__header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.editor__meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
-}
-
-.editor__path {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  color: var(--text);
-  word-break: break-all;
-}
-
-.editor__size {
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.editor__actions {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-  align-items: center;
-}
-
 /* Source / split / preview view-mode toggle. Lives in the editor header
  * actions row. Each button carries a Cmd/Ctrl+N hint kbd so the user
  * sees the shortcut next to the control they'd otherwise click. */
-.editor-mode-toggle {
-  display: flex;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-
-.editor-mode-toggle__btn {
-  padding: 0 10px;
-  height: 24px;
-  background: transparent;
-  color: var(--muted);
-  border: 0;
-  border-left: 1px solid var(--border-soft);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 500;
-}
-
-.editor-mode-toggle__btn:first-child {
-  border-left: 0;
-}
-
-.editor-mode-toggle__btn--active {
-  background: var(--accent);
-  color: var(--accent-fg);
-  font-weight: 700;
-}
-
-.editor-mode-toggle__kbd {
-  color: color-mix(in srgb, currentColor 60%, transparent);
-  opacity: 0.7;
-}
 
 /* Two-pane editor body. The wrapper takes the remaining height in the
  * editor flex column and lays out CodeMirror + preview via grid. Mode
@@ -2104,74 +1920,13 @@ button {
  * 50/50 split. Both children are always mounted; the hidden one uses
  * `display: none` so CodeMirror keeps its internal scroll + selection
  * across mode switches. */
-.editor__body {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  gap: 10px;
-}
-
-.editor__body > * {
-  min-width: 0;
-  min-height: 0;
-}
-
-.editor__body--src {
-  grid-template-columns: 1fr;
-}
-
-.editor__body--src .editor__preview {
-  display: none;
-}
-
-.editor__body--split {
-  grid-template-columns: 1fr 1fr;
-}
-
-.editor__body--prev {
-  grid-template-columns: 1fr;
-}
-
-.editor__body--prev .editor__cm {
-  display: none;
-}
-
-.editor__textarea {
-  flex: 1;
-  width: 100%;
-  min-height: 240px;
-  resize: none;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 13px;
-  line-height: 1.5;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--text);
-  white-space: pre-wrap;
-  overflow: auto;
-}
-
-.editor__textarea:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
 
 /* CodeMirror 6 wrapper: fill the editor body height. The CM instance
  * paints its own border/background; we just position it. */
-.editor__cm {
-  flex: 1;
-  min-height: 0;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-  background: var(--panel);
-}
 
 .editor__cm .cm-editor {
   height: 100%;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
   background: transparent;
 }
@@ -2187,90 +1942,6 @@ button {
 
 /* Markdown preview pane. Inherits typography from the app so it reads
  * like the rest of the dashboard rather than a foreign rendered surface. */
-.editor__preview {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 16px 18px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel);
-  color: var(--text);
-  font-size: 14px;
-  line-height: 1.55;
-}
-
-.editor__preview > :first-child {
-  margin-top: 0;
-}
-
-.editor__preview > :last-child {
-  margin-bottom: 0;
-}
-
-.editor__preview h1,
-.editor__preview h2,
-.editor__preview h3,
-.editor__preview h4,
-.editor__preview h5,
-.editor__preview h6 {
-  margin: 1.2em 0 0.5em;
-  line-height: 1.25;
-}
-
-.editor__preview h1 { font-size: 1.6em; }
-.editor__preview h2 { font-size: 1.35em; }
-.editor__preview h3 { font-size: 1.15em; }
-
-.editor__preview p,
-.editor__preview ul,
-.editor__preview ol,
-.editor__preview blockquote,
-.editor__preview pre {
-  margin: 0.6em 0;
-}
-
-.editor__preview code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.9em;
-  padding: 1px 4px;
-  background: color-mix(in srgb, var(--muted) 12%, transparent);
-  border-radius: 3px;
-}
-
-.editor__preview pre {
-  padding: 10px 12px;
-  background: color-mix(in srgb, var(--muted) 12%, transparent);
-  border-radius: 6px;
-  overflow: auto;
-}
-
-.editor__preview pre code {
-  padding: 0;
-  background: transparent;
-}
-
-.editor__preview blockquote {
-  padding: 4px 12px;
-  border-left: 3px solid var(--accent);
-  color: var(--muted);
-}
-
-.editor__preview table {
-  border-collapse: collapse;
-  margin: 0.8em 0;
-}
-
-.editor__preview th,
-.editor__preview td {
-  border: 1px solid var(--border);
-  padding: 4px 10px;
-  text-align: left;
-}
-
-.editor__preview a {
-  color: var(--accent);
-}
 
 /* Wikilink button rendered inside preview text. Visually closer to a link
  * than a button to match Obsidian-like expectations. */
@@ -2345,7 +2016,7 @@ button {
 }
 
 .fm-form__label {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--muted);
   text-align: right;
@@ -2354,7 +2025,7 @@ button {
 
 .fm-form__input {
   width: 100%;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   padding: 4px 8px;
   border: 1px solid var(--border);
@@ -2377,7 +2048,7 @@ button {
 }
 
 .fm-form__value {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text);
   padding: 4px 0;
@@ -2424,7 +2095,7 @@ button {
 }
 
 .fm-form__add-type {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   padding: 3px 6px;
   border: 1px solid var(--border);
@@ -2475,79 +2146,29 @@ button {
 
 /* ---------- Run panel (bottom drawer) ---------- */
 
-.run-panel {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  border-top: 1px solid var(--border);
-  background: var(--panel);
-  /* When the drawer is dragged smaller than the panel's natural content
-   * (header + form + output), clip the overflow inside the panel
-   * instead of letting it push the global layout taller than the
-   * viewport. The user sees a chat that's too short to type into,
-   * which is the right cue to drag the drawer up — no scrollbar
-   * appears on the window itself. */
-  overflow: hidden;
-}
-
 /* When a chat is collapsed it shrinks back to its header — the host
  * wrapper's height stays at the user's set value, but the panel inside
  * doesn't fight to fill it. */
-.run-panel--collapsed {
-  flex: 0 0 auto;
-  max-height: 36px;
-}
 
 /* ---------- Multi-chat host wrapper (RunPanelHost) ---------- */
 
 /* Bottom drawer container. Owns the user-adjustable height shared by
  * every chat tab (only one is visible at a time). Tabs row sits on
  * top, then the active RunPanel fills the rest. */
-.run-panel-host {
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  /* `height` is set inline by JS from persisted localStorage when the
-   * active chat is expanded. We give a fallback here in case JS hasn't
-   * measured yet. */
-  height: 360px;
-}
 
 /* When the active chat is collapsed the drawer drops back to its
  * content-driven height (tabs row + collapsed header). Overrides the
  * inline height that JS would otherwise apply — we don't even set the
  * inline style in this state, but the class also wins by specificity
  * if a stale style attribute lingers. */
-.run-panel-host--collapsed {
-  height: auto;
-}
 
 /* 4px hit area at the top edge of the drawer. Cursor: row-resize so
  * the user discovers the affordance on hover. */
-.run-panel-host__resize-handle {
-  flex-shrink: 0;
-  height: 4px;
-  margin-bottom: -1px;
-  background: transparent;
-  cursor: row-resize;
-  border-top: 1px solid var(--border);
-  transition: background 80ms ease-out;
-}
-.run-panel-host__resize-handle:hover {
-  background: color-mix(in srgb, var(--accent) 30%, transparent);
-}
 
 /* During an active drag, freeze the body cursor + suppress text
  * selection across the whole app. Without this, dragging fast past a
  * `<pre>` triggered the text-selection cursor mid-drag and aborted
  * the resize on accidental click. */
-body.is-resizing-run-panel,
-body.is-resizing-run-panel * {
-  cursor: row-resize !important;
-  user-select: none !important;
-}
 
 /* ---------- Multi-chat tab bar (RunPanelHost) ---------- */
 
@@ -2555,243 +2176,16 @@ body.is-resizing-run-panel * {
  * Drives state via clicks on individual tab buttons; the panels
  * themselves remain mounted (display: none for inactive) so their
  * event listeners and output buffers survive switches. */
-.run-panel-host__tabs {
-  flex-shrink: 0;
-  display: flex;
-  align-items: stretch;
-  gap: 2px;
-  padding: 4px 8px 0;
-  background: var(--panel-2);
-  border-top: 1px solid var(--border);
-  overflow-x: auto;
-}
-
-.run-panel-host__tab {
-  display: flex;
-  align-items: stretch;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-bottom: none;
-  border-radius: 6px 6px 0 0;
-  max-width: 220px;
-  min-width: 0;
-}
-
-.run-panel-host__tab--active {
-  background: var(--panel);
-  border-color: var(--accent);
-  /* Visually fuse the active tab with the panel below by extending
-   * its bottom edge over the panel's top border. */
-  position: relative;
-  z-index: 1;
-  box-shadow: 0 1px 0 0 var(--panel);
-}
-
-.run-panel-host__tab--pending {
-  /* Soft warn highlight so a tab waiting on the user is hard to miss
-   * even when inactive. */
-  border-color: var(--warn);
-}
-
-.run-panel-host__tab-button {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  background: transparent;
-  border: none;
-  color: var(--text);
-  font-size: 12px;
-  cursor: pointer;
-  min-width: 0;
-  flex: 1;
-}
-
-.run-panel-host__tab-button:hover {
-  background: var(--panel-2);
-}
-
-.run-panel-host__tab-label {
-  text-overflow: ellipsis;
-  overflow: hidden;
-  white-space: nowrap;
-  min-width: 0;
-  flex: 1;
-}
-
-.run-panel-host__tab-dot {
-  flex-shrink: 0;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--muted);
-}
-
-.run-panel-host__tab-dot--running {
-  background: var(--ok);
-  /* Soft pulse so the user spots an actively-streaming tab without
-   * having to glance at output. */
-  animation: run-panel-host-pulse 1.4s ease-in-out infinite;
-}
-
-.run-panel-host__tab-dot--stopping {
-  background: var(--warn);
-}
-
-.run-panel-host__tab-dot--exited {
-  background: var(--muted);
-}
 
 @keyframes run-panel-host-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
 
-.run-panel-host__tab-badge {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--warn);
-  color: var(--panel);
-  font-size: 9px;
-  font-weight: 700;
-}
-
-.run-panel-host__tab-close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  background: transparent;
-  border: none;
-  color: var(--muted);
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.run-panel-host__tab-close:hover {
-  color: var(--text);
-}
-
-.run-panel-host__tab-add {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  background: transparent;
-  border: 1px dashed var(--border);
-  border-bottom: none;
-  border-radius: 6px 6px 0 0;
-  color: var(--muted);
-  font-size: 14px;
-  cursor: pointer;
-}
-
-.run-panel-host__tab-add:hover {
-  color: var(--text);
-  border-color: var(--accent);
-}
-
-.run-panel__header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 12px;
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.run-panel__title {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.run-panel__status {
-  font-size: 12px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: var(--muted);
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.run-panel__status--running {
-  color: var(--accent);
-}
-
-.run-panel__status--stopping {
-  color: var(--warn);
-}
-
-.run-panel__status--exited {
-  color: var(--muted);
-}
-
 /* Collapsed-mode compact header. One mono line: dot + status word +
  * trailing meta (scope, tokens, cost, last-run age). Replaces the
  * title + status + usage chip when the drawer is collapsed so the
  * idle/running/exited state is glanceable at a glance. */
-.run-panel__compact {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: 1;
-  min-width: 0;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--fg-2);
-  overflow: hidden;
-  white-space: nowrap;
-}
-
-.run-panel__compact-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--muted-2);
-  flex-shrink: 0;
-}
-
-.run-panel__compact-dot--running {
-  background: var(--accent);
-  animation: run-panel-compact-pulse 1.2s ease-in-out infinite;
-}
-
-.run-panel__compact-dot--stopping {
-  background: var(--warn);
-}
-
-.run-panel__compact-dot--ok {
-  background: var(--ok);
-}
-
-.run-panel__compact-dot--muted {
-  background: var(--muted-2);
-}
-
-.run-panel__compact-label {
-  color: var(--text);
-  font-weight: 600;
-  flex-shrink: 0;
-}
-
-.run-panel__compact-meta {
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
 
 @keyframes run-panel-compact-pulse {
   0%,
@@ -2810,225 +2204,22 @@ body.is-resizing-run-panel * {
 /* History dropdown in the chat panel header. The button toggles a small
  * floating menu of recent sessions; clicking outside (the scrim) closes
  * it without losing focus. */
-.run-panel__history {
-  position: relative;
-}
-
-.run-panel__history-toggle {
-  white-space: nowrap;
-}
-
-.run-panel__history-scrim {
-  position: fixed;
-  inset: 0;
-  z-index: 9;
-  background: transparent;
-}
 
 /* Position is computed by SessionMenuButton at open-time and applied
  * as inline `top` / `left` / `right` so the popup stays anchored to
  * the toggle button but never overflows the viewport. CSS here owns
  * size and visual chrome only. */
-.run-panel__history-menu {
-  position: fixed;
-  z-index: 10;
-  width: min(420px, calc(100vw - 24px));
-  max-height: min(360px, calc(100vh - 120px));
-  overflow-y: auto;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
-  padding: 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.run-panel__history-empty {
-  padding: 10px 12px;
-  font-size: 12px;
-  color: var(--muted);
-  font-style: italic;
-}
-
-.run-panel__history-empty--err {
-  color: var(--err);
-  font-style: normal;
-}
-
-.run-panel__history-item {
-  display: flex;
-  align-items: stretch;
-  gap: 2px;
-  border-radius: 4px;
-}
-
-.run-panel__history-item:hover {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-}
-
-.run-panel__history-item--active {
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-}
-
-.run-panel__history-item-main {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  padding: 6px 10px;
-  border: none;
-  background: transparent;
-  text-align: left;
-  font: inherit;
-  color: var(--text);
-  border-radius: 4px 0 0 4px;
-  cursor: pointer;
-  min-width: 0;
-}
-
-.run-panel__history-item-title {
-  font-size: 12px;
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 100%;
-}
-
-.run-panel__history-item-meta {
-  font-size: 10px;
-  color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-.run-panel__history-item-actions {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 2px;
-  padding: 4px;
-  /* Show actions whenever the row is hovered OR keyboard-focused, so
-   * delete is reachable both with mouse and Tab navigation. Without
-   * this the icons would be invisible until hover, hiding the
-   * destructive action from anyone who searches via keyboard. */
-  opacity: 0;
-  transition: opacity 100ms ease;
-}
-
-.run-panel__history-item:hover .run-panel__history-item-actions,
-.run-panel__history-item:focus-within .run-panel__history-item-actions {
-  opacity: 1;
-}
-
-.run-panel__history-item-action {
-  font-size: 11px;
-  width: 22px;
-  height: 22px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  border-radius: 4px;
-}
-
-.run-panel__history-item-action:hover {
-  background: color-mix(in srgb, var(--accent) 20%, transparent);
-  color: var(--text);
-}
-
-.run-panel__history-item-action--danger:hover {
-  background: var(--err-bg);
-  color: var(--err);
-}
-
-.run-panel__usage {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: color-mix(in srgb, var(--accent) 80%, var(--text));
-  white-space: nowrap;
-}
-
-.run-panel__output {
-  flex: 1;
-  min-height: 0;
-  margin: 0;
-  padding: 8px 12px;
-  overflow: auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-word;
-  background: transparent;
-  color: var(--text);
-}
 
 /* Sticky plan widget. Sits between the chat header and the scrolling
  * output so the latest agent plan / todo list stays visible no matter
  * how far the user scrolls through the conversation. Constrained to a
  * fraction of the drawer's height and scrolls internally when the
  * agent emits a particularly long plan. */
-.run-panel__plan {
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  max-height: 30%;
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--accent) 6%, var(--panel));
-  padding: 6px 12px;
-}
-
-.run-panel__plan-body {
-  margin: 0;
-  overflow: auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11.5px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--text);
-}
-
-.run-panel__empty {
-  color: var(--muted);
-  font-style: italic;
-}
-
-.run-panel__line {
-  display: inline;
-}
-
-.run-panel__line--stderr {
-  color: var(--warn);
-}
-
-.run-panel__line--user {
-  color: var(--accent);
-  font-weight: 500;
-}
 
 /* Marker so a multi-line user message still reads as "this is what
  * the user said" without forcing the renderer to bake a prefix into
  * the stored text (which would leak into save_session payloads and
  * complicate copy/paste). */
-.run-panel__line--user::before {
-  content: "▸ you · ";
-  opacity: 0.75;
-}
-
-.run-panel__line--system {
-  color: var(--muted);
-  font-style: italic;
-}
 
 /* Lines tagged as tentative streaming (text matches start of an
  * earlier line — likely a replay being re-typed by the agent on
@@ -3036,9 +2227,6 @@ body.is-resizing-run-panel * {
  * match or the line gets spliced at finalisation. Without this,
  * every resume reply briefly flashed a duplicate of the previous
  * turn's text before dedup kicked in. */
-.run-panel__line--hidden {
-  display: none;
-}
 
 /* Lines produced by a subagent (ACP `_meta.claudeCode.parentToolUseId`
  * — e.g. the turns of a `Task`/`Agent` subagent). Prefix with an indent
@@ -3046,169 +2234,16 @@ body.is-resizing-run-panel * {
  * tool call instead of flat in the main thread. Uses ::before rather
  * than padding because lines render as inline spans inside a <pre>,
  * where a hanging indent wouldn't hold across the trailing newline. */
-.run-panel__line--subagent::before {
-  content: "    ↳ ";
-  opacity: 0.55;
-}
 
 /* Fenced code block (`\`\`\`lang … \`\`\``) inside a chat line.
  * Renders inline within the parent <pre>, so we lean on the parent's
  * whitespace preservation and just add a subtle background +
  * left-border accent so the code segment reads as visually
  * distinct from the surrounding agent prose. */
-.run-panel__codeblock {
-  display: inline-block;
-  background: rgba(127, 127, 127, 0.08);
-  border-left: 2px solid var(--accent, #5b8def);
-  padding: 1px 8px;
-  margin: 2px 0;
-  font-style: normal;
-  color: var(--text);
-  border-radius: 0 3px 3px 0;
-}
-
-.run-panel__codeblock-lang {
-  display: inline-block;
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-  font-weight: 600;
-  font-style: normal;
-}
 
 /* Chat input area at the bottom of the run panel. Hosts the scope
  * dropdown, the message textarea, and the Send/Reply button. Visible
  * whenever the panel is expanded and not actively running. */
-.run-panel__chat {
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 12px;
-  border-top: 1px solid var(--border);
-  background: color-mix(in srgb, var(--panel) 90%, var(--accent) 10%);
-}
-
-.run-panel__chat-scope {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.run-panel__chat-scope-label {
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-weight: 600;
-}
-
-.run-panel__chat-scope-select {
-  font: inherit;
-  font-size: 11px;
-  padding: 2px 6px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--panel);
-  color: var(--text);
-  cursor: pointer;
-}
-
-.run-panel__chat-scope-select:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.run-panel__chat-privacy {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  color: var(--muted);
-  cursor: pointer;
-  user-select: none;
-  margin-left: 6px;
-}
-
-.run-panel__chat-privacy input[type="checkbox"] {
-  margin: 0;
-  cursor: pointer;
-}
-
-.run-panel__chat-privacy:has(input:checked) {
-  color: var(--text);
-  font-weight: 500;
-}
-
-.run-panel__chat-privacy:has(input:disabled) {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.run-panel__chat-input {
-  width: 100%;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  line-height: 1.45;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--panel);
-  color: var(--text);
-  resize: vertical;
-  min-height: 48px;
-  max-height: 160px;
-}
-
-.run-panel__staged {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  margin-bottom: 6px;
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
-  border-radius: 4px;
-  font-size: 11px;
-  color: var(--text);
-}
-
-.run-panel__staged-label {
-  flex: 1;
-  line-height: 1.4;
-}
-
-.run-panel__staged code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10.5px;
-  padding: 1px 4px;
-  background: var(--panel);
-  border-radius: 3px;
-}
-
-.run-panel__chat-input:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-.run-panel__chat-input:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.run-panel__chat-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  justify-content: flex-end;
-}
-
-.run-panel__chat-error {
-  font-size: 11px;
-  color: var(--warn);
-  margin-right: auto;
-}
 
 .btn--danger {
   background: var(--warn);
@@ -3239,7 +2274,7 @@ body.is-resizing-run-panel * {
   flex: 1;
   min-width: 0;
   padding: 4px 8px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -3257,24 +2292,12 @@ body.is-resizing-run-panel * {
   cursor: not-allowed;
 }
 
-.editor__missing {
-  margin: 0;
-  padding: 8px 10px;
-  background: var(--warn-bg);
-  color: var(--warn);
-  border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--border) 65%);
-  border-radius: 6px;
-  font-size: 12px;
-  line-height: 1.4;
-  flex-shrink: 0;
-}
-
 /* ---------- Modal (confirm dirty) ---------- */
 
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: color-mix(in srgb, var(--bg-sub) 45%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3285,14 +2308,15 @@ body.is-resizing-run-panel * {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 18px 20px;
-  max-width: 420px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+  padding: 16px 18px;
+  max-width: 440px;
+  box-shadow: 0 12px 40px color-mix(in srgb, var(--bg-sub) 70%, transparent);
 }
 
 .modal__title {
   margin: 0 0 8px;
-  font-size: 16px;
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .modal__body {
@@ -3303,7 +2327,7 @@ body.is-resizing-run-panel * {
 }
 
 .modal__body code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   background: color-mix(in srgb, var(--panel) 80%, var(--border) 20%);
   padding: 1px 5px;
   border-radius: 4px;
@@ -3324,7 +2348,7 @@ body.is-resizing-run-panel * {
   background: var(--bg);
   color: var(--text);
   font: inherit;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
   box-sizing: border-box;
 }
@@ -3499,7 +2523,7 @@ body.is-resizing-run-panel * {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
   white-space: pre-wrap;
@@ -3599,7 +2623,7 @@ body.is-resizing-run-panel * {
 }
 
 .source-repo__entry-name {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   word-break: break-all;
   color: var(--text);
@@ -3662,7 +2686,7 @@ body.is-resizing-run-panel * {
 }
 
 .security-panel__hint code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   background: color-mix(in srgb, var(--panel) 80%, var(--border) 20%);
   padding: 1px 5px;
   border-radius: 4px;
@@ -3786,7 +2810,7 @@ body.is-resizing-run-panel * {
 }
 
 .security-row__path {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   color: var(--muted);
   overflow: hidden;
@@ -3804,7 +2828,7 @@ body.is-resizing-run-panel * {
 .security-row__status-text {
   font-size: 11px;
   color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
 }
 
 .security-row__status-text--ok {
@@ -4316,7 +3340,7 @@ body.is-resizing-run-panel * {
 }
 
 .empty-state code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-style: normal;
   background: color-mix(in srgb, var(--panel) 80%, var(--border) 20%);
   padding: 1px 5px;
@@ -4614,80 +3638,9 @@ body.is-resizing-run-panel * {
  * live in `.dashboard__header` below; this row carries only the open
  * project tabs + `+`. Tauri's `decorations: true` paints the real
  * close/min/zoom controls above us, so no fake dots here. */
-.titlebar {
-  display: flex;
-  align-items: stretch;
-  padding-left: 8px;
-  height: 30px;
-  flex-shrink: 0;
-  background: var(--bg-sub);
-  border-bottom: 1px solid var(--border);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--fg-2);
-}
-
-.titlebar__tabs {
-  display: flex;
-  align-items: stretch;
-  min-width: 0;
-}
-
-.titlebar__tab {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 14px;
-  height: 30px;
-  background: transparent;
-  border: 0;
-  border-right: 1px solid var(--border-soft);
-  color: var(--muted);
-  font: inherit;
-  font-size: 11px;
-  cursor: pointer;
-  white-space: nowrap;
-  position: relative;
-}
-
-.titlebar__tab:hover {
-  color: var(--text);
-}
-
-.titlebar__tab--active {
-  background: var(--bg);
-  color: var(--text);
-  font-weight: 600;
-}
 
 /* Top-edge accent rail signals which tab is current — matches V5
  * design's 1px accent stripe at the top of an active tab. */
-.titlebar__tab--active::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: var(--accent);
-}
-
-.titlebar__tab--plus {
-  padding: 0 12px;
-  color: var(--muted);
-}
-
-.titlebar__tab-close {
-  color: var(--muted-2);
-  font-size: 12px;
-  line-height: 1;
-  padding: 0 2px;
-  cursor: pointer;
-}
-
-.titlebar__tab-close:hover {
-  color: var(--err);
-}
 
 /* ---------- Header palette + AI handle ---------- */
 
@@ -4717,23 +3670,6 @@ body.is-resizing-run-panel * {
   color: var(--text);
 }
 
-.header-ai {
-  font-weight: 600;
-}
-
-.header-ai__dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--muted-2);
-  flex-shrink: 0;
-}
-
-.header-ai__dot--running {
-  background: var(--accent);
-  animation: header-ai-pulse 1.4s ease-in-out infinite;
-}
-
 @keyframes header-ai-pulse {
   0%,
   100% {
@@ -4744,25 +3680,9 @@ body.is-resizing-run-panel * {
   }
 }
 
-.header-ai__count {
-  color: var(--fg-2);
-  font-weight: 500;
-}
-
 /* `N live` pill on the AI handle when something is running. Accent
  * solid + accent-fg text so the eye finds it before parsing the
  * sibling muted count. */
-.header-ai__live {
-  display: inline-flex;
-  align-items: center;
-  height: 14px;
-  padding: 0 5px;
-  border-radius: 7px;
-  background: var(--accent);
-  color: var(--accent-fg);
-  font-size: 9px;
-  font-weight: 700;
-}
 
 .header-ai__kbd,
 .header-palette__kbd {
@@ -4773,209 +3693,14 @@ body.is-resizing-run-panel * {
 
 /* ---------- App shell · Sidebar (slice 8 PR A) ---------- */
 
-.sidebar {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  background: var(--panel);
-  border-right: 1px solid var(--border);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--fg-2);
-}
-
 /* Section rails — mono uppercase 9.5px, bg-sub stripe with thin
  * borders top and bottom for a "shelf" feel. Sticky-style without
  * actually sticking (cheap; PR B can add `position: sticky` if the
  * scroll behaviour calls for it). */
-.sidebar__section-head {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  height: 20px;
-  padding: 0 12px;
-  background: var(--bg-sub);
-  border-top: 1px solid var(--border-soft);
-  border-bottom: 1px solid var(--border-soft);
-  flex-shrink: 0;
-}
-
-.sidebar__section-label {
-  color: var(--muted);
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-}
-
-.sidebar__section-spacer {
-  flex: 1;
-}
-
-.sidebar__section-right {
-  font-size: 10px;
-  font-weight: 600;
-}
-
-.sidebar__section-right--muted {
-  color: var(--muted-2);
-}
-
-.sidebar__section-right--accent {
-  color: var(--accent);
-}
-
-.sidebar__section-right--warn {
-  color: var(--warn);
-}
-
-.sidebar__section-action {
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 14px;
-  line-height: 1;
-  padding: 0 4px;
-  cursor: pointer;
-}
-
-.sidebar__section-action:hover:not(:disabled) {
-  color: var(--text);
-}
-
-.sidebar__section-action:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-
-.sidebar__group {
-  display: flex;
-  flex-direction: column;
-  padding: 2px 0;
-  flex-shrink: 0;
-}
-
-.sidebar__empty {
-  margin: 0;
-  padding: 4px 12px;
-  color: var(--muted-2);
-  font-size: 10.5px;
-  font-style: italic;
-}
 
 /* Generic row — button reset, 22px row height, accent left rail when
  * active. Each row variant overrides bullet colour or label tone but
  * shares this skeleton. */
-.sidebar__row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 22px;
-  padding: 0 10px;
-  background: transparent;
-  border: 0;
-  border-left: 2px solid transparent;
-  color: var(--fg-2);
-  font: inherit;
-  font-size: 11px;
-  text-align: left;
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.sidebar__row:hover {
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
-  color: var(--text);
-}
-
-.sidebar__row--browse {
-  color: var(--muted);
-}
-
-.sidebar__row--active {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  border-left-color: var(--accent);
-  color: var(--text);
-}
-
-.sidebar__row-label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.sidebar__row-right {
-  font-size: 10px;
-}
-
-.sidebar__row-right--muted {
-  color: var(--muted-2);
-}
-
-.sidebar__row-right--warn {
-  color: var(--warn);
-}
-
-.sidebar__row-right--accent {
-  color: var(--accent);
-}
-
-.sidebar__dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  background: var(--muted-2);
-}
-
-.sidebar__dot--active {
-  background: var(--ok);
-}
-
-.sidebar__dot--paused {
-  background: var(--warn);
-}
-
-.sidebar__dot--archived {
-  background: var(--muted-2);
-}
-
-.sidebar__dot--unknown {
-  background: var(--muted-2);
-}
-
-.sidebar__draft-glyph {
-  color: var(--accent);
-  font-size: 10px;
-  width: 10px;
-  flex-shrink: 0;
-  text-align: center;
-}
-
-.sidebar__bullet {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--muted-2);
-  flex-shrink: 0;
-}
-
-.sidebar__error {
-  margin: 4px 12px;
-  padding: 4px 8px;
-  background: var(--err-bg);
-  color: var(--err);
-  font-size: 10.5px;
-  border-radius: var(--radius);
-}
-
-.sidebar__files {
-  min-height: 0;
-}
 
 /* ---------- App shell · EditorTabs (slice 8 PR B) ---------- */
 
@@ -4983,202 +3708,23 @@ body.is-resizing-run-panel * {
  * open. Three regions: scrollable tab strip on the left, flex spacer,
  * segmented view-mode toggle on the right. Mirrors the V5 design's
  * 26-30px shelf height. */
-.editor-tabs {
-  display: flex;
-  align-items: stretch;
-  height: 28px;
-  flex-shrink: 0;
-  background: var(--bg-sub);
-  border-bottom: 1px solid var(--border);
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-
-.editor-tabs__strip {
-  display: flex;
-  align-items: stretch;
-  min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-}
 
 /* Tab is a button reset — 10px horizontal padding, mono content,
  * accent rail along the top edge when active so the eye finds it
  * without re-reading the basename. */
-.editor-tabs__tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 10px;
-  background: transparent;
-  border: 0;
-  border-right: 1px solid var(--border-soft);
-  color: var(--muted);
-  font: inherit;
-  font-size: 11px;
-  cursor: pointer;
-  white-space: nowrap;
-  position: relative;
-}
-
-.editor-tabs__tab:hover {
-  color: var(--text);
-  background: color-mix(in srgb, var(--accent) 4%, transparent);
-}
-
-.editor-tabs__tab--active {
-  background: var(--bg);
-  color: var(--text);
-}
-
-.editor-tabs__tab--active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 1px;
-  background: var(--accent);
-}
 
 /* Clean/dirty glyph in front of the basename. `M` mark in accent for
  * unmodified buffers, `●` in warn for ones with unsaved changes. */
-.editor-tabs__glyph {
-  font-size: 10px;
-  width: 10px;
-  text-align: center;
-  flex-shrink: 0;
-}
-
-.editor-tabs__glyph--clean {
-  color: var(--accent);
-}
-
-.editor-tabs__glyph--dirty {
-  color: var(--warn);
-}
-
-.editor-tabs__name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 240px;
-}
-
-.editor-tabs__close {
-  color: var(--muted-2);
-  font-size: 12px;
-  line-height: 1;
-  padding: 0 2px;
-  cursor: pointer;
-}
-
-.editor-tabs__close:hover {
-  color: var(--err);
-}
-
-.editor-tabs__spacer {
-  flex: 1;
-}
 
 /* View-mode toggle — segmented row of three buttons (src / split /
  * prev) on the right end of the strip. Active mode reads as accent
  * with the same top-edge rail the active tab gets. */
-.editor-tabs__view-mode {
-  display: flex;
-  align-items: stretch;
-  border-left: 1px solid var(--border-soft);
-  flex-shrink: 0;
-}
-
-.editor-tabs__mode-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0 9px;
-  background: transparent;
-  border: 0;
-  border-right: 1px solid var(--border-soft);
-  color: var(--muted);
-  font-family: inherit;
-  font-size: 10.5px;
-  font-weight: 500;
-  cursor: pointer;
-  position: relative;
-}
-
-.editor-tabs__mode-btn:last-child {
-  border-right: 0;
-}
-
-.editor-tabs__mode-btn:hover {
-  color: var(--text);
-}
-
-.editor-tabs__mode-btn--active {
-  background: var(--bg);
-  color: var(--accent);
-  font-weight: 700;
-}
-
-.editor-tabs__mode-btn--active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 1px;
-  background: var(--accent);
-}
-
-.editor-tabs__mode-kbd {
-  color: var(--muted-2);
-  font-size: 9px;
-}
 
 /* ---------- App shell · StatusBar (slice 8 PR B) ---------- */
 
 /* Pinned to the bottom of the dashboard, BELOW the RunPanel. Mono
  * 10.5px line of grouped signals separated by 1px dividers; pieces
  * with no data collapse out (no em-dash placeholders). */
-.status-bar {
-  display: flex;
-  align-items: center;
-  height: 22px;
-  flex-shrink: 0;
-  padding: 0 12px;
-  gap: 12px;
-  background: var(--bg-sub);
-  border-top: 1px solid var(--border);
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--muted);
-}
-
-.status-bar__sep {
-  width: 1px;
-  height: 12px;
-  background: var(--border);
-  flex-shrink: 0;
-}
-
-.status-bar__spacer {
-  flex: 1;
-}
-
-.status-bar__run {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--accent);
-}
-
-.status-bar__run-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: status-bar-pulse 1.4s ease-in-out infinite;
-}
 
 @keyframes status-bar-pulse {
   0%,
@@ -5188,22 +3734,6 @@ body.is-resizing-run-panel * {
   50% {
     opacity: 0.4;
   }
-}
-
-.status-bar__project {
-  color: var(--fg-2);
-}
-
-.status-bar__branch {
-  color: var(--muted);
-}
-
-.status-bar__dirty {
-  color: var(--warn);
-}
-
-.status-bar__chats {
-  color: var(--muted);
 }
 
 /* ---------- Agent picker (RunPanel chat header) ---------- */
@@ -5876,4 +4406,111 @@ body.is-resizing-run-panel * {
   flex: none;
   font-size: 11px;
   color: var(--muted);
+}
+
+/* ---------- Artifact run row (in-card accordion expansion) ---------- */
+
+.arun {
+  /* sits inside a padding-less .list__item--clickable, below the
+     row button — side margins mirror the button's 10px padding */
+  margin: 0 10px 9px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.arun__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.arun__on {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.arun__select {
+  height: 24px;
+  min-width: 0;
+  max-width: 220px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 0 4px;
+  outline: none;
+}
+
+.arun__meta {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.arun__meta--warn {
+  color: var(--warn);
+}
+
+.arun__grow {
+  flex: 1;
+}
+
+.arun__running {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 3px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.arun__running-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  animation: idepulse 1.4s ease-in-out infinite;
+}
+
+.arun__running-open {
+  color: var(--accent-2, var(--accent));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.arun__summary-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.arun__error {
+  margin: 0;
+  padding: 5px 8px;
+  border-radius: 3px;
+  background: var(--err-bg);
+  color: var(--err);
+  font-size: 11px;
+}
+
+.arun__plan {
+  border-top: 1px solid var(--border-soft);
+  padding-top: 10px;
 }

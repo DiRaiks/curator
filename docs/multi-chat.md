@@ -1,36 +1,50 @@
 # Multi-chat architecture
 
-How the chat drawer supports up to 3 concurrent agent conversations,
+How the agent panel supports up to 3 concurrent agent conversations,
 each with isolated state, scoped permission prompts, and aggregated
 status reporting.
 
 ## What the user sees
 
-The bottom drawer is a tabbed surface:
+Since shell v2 the chat lives in a 404px **left panel** (rail agent
+icon / ⌘J), Zed-style. One conversation is visible at a time; the
+panel header carries the active session's title pill, a history
+toggle (☰) and new chat (+):
 
 ```
-┌────────────────────────────────────────────────────────────────────┐
-│  ● acme-api/chat   × │ ● my-vault/04-th…  × │ ● New chat × │ + │
-├────────────────────────────────────────────────────────────────────┤
-│  CHAT  [History]  running · acme-api/chat        147K in · Stop│
-│  ─────────────────────────────────────────────────────────────────│
-│  ▶ start claude-code · acme-api/chat · cwd: /…                 │
-│  ◆ system: init · model=claude-opus-4-7                            │
-│  ⚠ Permission: Claude wants to use Bash       [Deny][Allow once]…  │
-│  ─────────────────────────────────────────────────────────────────│
-│  SCOPE: acme-api (repo)        ▸ Send · disabled while running │
-└────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│ AGENT  [acme-api/chat]            ☰  +   │
+│ scope [● acme-api ▾]  ✦ Claude·Sonnet  0c8af9
+│ ──────────────────────────────────────── │
+│ YOU                                      │
+│   Look at the last 6h of repo changes…   │
+│ CLAUDE · running ●                       │
+│   [READ] 02_projects/…/03_attacks.md  ✓  │
+│   [BASH] git log --since="6 hours"    ✓  │
+│   Reviewed the commits — proposing…      │
+│ ⚠ Permission: Bash        [Deny][Allow]  │
+│ ──────────────────────────────────────── │
+│ [ Ask about acme-api…  ⌘↵ to send      ] │
+│                    24.2k · $0.18  [stop] │
+└──────────────────────────────────────────┘
 ```
 
-- Each tab chip shows a state dot (idle / running / exited /
-  stopping), the chat title, a `!` badge when waiting on a permission,
-  and a close button (when ≥2 tabs exist).
-- "+" opens a new empty tab; the active tab stays where it is.
-- Inactive tabs stay **mounted-but-hidden** (`display: none`) so their
-  output buffer, session id, and event listener survive switches.
-- The permission card is rendered inline above the textarea inside its
+- The ☰ history pane replaces the conversation with two lists: **open
+  chats** (the concurrent conversations — state dot, title, `!` badge
+  when waiting on a permission, close ×) and **saved** sessions
+  (reopen / archive / delete). Clicking a row switches or reopens.
+- "+" opens a new empty chat; the active one stays where it is.
+- Inactive chats stay **mounted-but-hidden** (`display: none`) so
+  their output buffer, session id, and event listener survive
+  switches — including while the whole panel is closed: runs keep
+  streaming, the rail agent icon pulses, and the statusbar aggregates.
+- The permission card is rendered inline above the composer inside its
   own chat — no global modal that could be ambiguous about which run
   needs the user's attention.
+- The conversation renders as turns (`YOU` / `CLAUDE`) with tool-call
+  bubbles derived from the flat line buffer by
+  `shell/AgentConversation.tsx`; `→ tool` / `← status` line pairs fold
+  into one bubble with a live state while unfinished.
 
 ## Layer map
 
@@ -38,30 +52,34 @@ The bottom drawer is a tabbed surface:
 ┌──────────────────────────────────────────────────────────────────┐
 │  Dashboard.tsx                                                   │
 │    runPanelRef: RunPanelHandle  ← used for stagePrompt, reopen,  │
-│                                    subscribeToStatus, toggle     │
+│                                    subscribeToStatus             │
+│    activePanel === "agent" → host's `open` prop (panel show/hide)│
 └──────────────┬───────────────────────────────────────────────────┘
                │
 ┌──────────────▼───────────────────────────────────────────────────┐
-│  RunPanelHost.tsx                                                │
+│  RunPanelHost.tsx  (the .ide-panel.agent left panel)             │
 │    chats: ChatTabRecord[]                                        │
 │    activeChatId: ChatId                                          │
 │    tabStatus: Map<ChatId, ChatTabStatusInfo>                     │
-│    handlesRef: Map<ChatId, RunPanelHandle>  ← per-tab handles    │
+│    handlesRef: Map<ChatId, RunPanelHandle>  ← per-chat handles   │
+│    historyOpen + savedSessions (history pane)                    │
 │                                                                  │
-│    Mount-sync: getRuns() once → one tab per live backend run     │
-│    Tab bar UI (chips + "+" + close)                              │
+│    Mount-sync: getRuns() once → one chat per live backend run    │
+│    Panel header (session pill, ☰ history, + new chat)            │
+│    History pane: open-chat rows (switch/close) + saved sessions  │
+│      (reopen / archive / delete via listSessions/getSession)     │
 │    Status aggregation: derives vault-wide RunStatusInfo from     │
 │      tabStatus and re-broadcasts to subscribers                  │
-│    Imperative handle: delegates to active tab; reopenSession     │
-│      creates a new tab; stagePrompt falls back to new tab if     │
+│    Imperative handle: delegates to active chat; reopenSession    │
+│      creates a new chat; stagePrompt falls back to a new chat if │
 │      active is running                                           │
 └──────────────┬───────────────────────────────────────────────────┘
                │ renders N panels, only one visible
 ┌──────────────▼───────────────────────────────────────────────────┐
-│  RunPanel.tsx — one per chat tab                                 │
+│  RunPanel.tsx — one per chat                                     │
 │    Local state: status, lines, sessionId, currentRunId,          │
 │      chatDraft, selectedScope, stagedSource, pendingTitle,       │
-│      startedAtMs, pendingPermission, usage, collapsed            │
+│      startedAtMs, pendingPermission, usage                       │
 │    Subscribes to onRunEvents() — every callback gates on         │
 │      isMine(ev.runId) === currentRunIdRef.current                │
 │    Publishes ChatTabStatusInfo via onStatusChange prop           │
@@ -293,7 +311,8 @@ scrolled up (`followTail.current === true`).
 |---------------------------------------------------|-------------------------------------------------------|
 | `apps/desktop/src-tauri/src/lib.rs`               | `RunState`, command surface, emit pump, `mint_run_id` |
 | `apps/desktop/src/api.ts`                         | Typed IPC wrappers; spawn fns return `RunStartedEvent`|
-| `apps/desktop/src/components/RunPanelHost.tsx`    | Multi-chat host: tab bar, mount-sync, aggregation     |
-| `apps/desktop/src/components/RunPanel.tsx`        | One chat tab: state, listener, output, permission card slot |
+| `apps/desktop/src/components/RunPanelHost.tsx`    | Agent panel host: header, history pane, mount-sync, aggregation |
+| `apps/desktop/src/components/RunPanel.tsx`        | One chat: state, listener, conversation, composer, permission card slot |
+| `apps/desktop/src/components/shell/AgentConversation.tsx` | Turn/bubble view derived from the flat line buffer |
 | `apps/desktop/src/components/PermissionRequestCard.tsx` | Inline permission UI inside a chat              |
-| `apps/desktop/src/components/Dashboard.tsx`       | Hosts `RunPanelHost`; threads ref + handle methods    |
+| `apps/desktop/src/components/Dashboard.tsx`       | Hosts `RunPanelHost` as the agent left panel; threads ref + handle methods |

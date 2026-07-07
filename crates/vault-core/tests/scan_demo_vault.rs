@@ -1,10 +1,10 @@
 //! Integration test: scan the bundled demo vault and assert the headline
 //! findings. Acts as a smoke test for the real-vault conventions, the
-//! document-scope model, and the workflow-artifact catalogue.
+//! markdown index, and the workflow-artifact catalogue.
 
 use std::path::PathBuf;
 
-use vault_core::{scan_vault, ArtifactKind, DiagnosticLevel, Scope};
+use vault_core::{scan_vault, ArtifactKind, DiagnosticLevel};
 
 fn demo_vault_path() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -129,45 +129,22 @@ fn demo_vault_matches_expectations() {
     let project_slugs: Vec<&str> = r.projects.iter().map(|p| p.slug.as_str()).collect();
     assert_eq!(project_slugs, vec!["empty-project", "sample-project"]);
 
-    // Document scope (sanity).
-    let find_scope = |path: &str| -> Scope {
-        r.markdown_files
-            .iter()
-            .find(|f| f.path == path)
-            .unwrap_or_else(|| panic!("file not indexed: {path}"))
-            .scope
-            .clone()
-    };
-    assert_eq!(find_scope("00_meta/AGENTS.md"), Scope::Meta);
-    assert_eq!(
-        find_scope("02_projects/sample-project/_index.md"),
-        Scope::Project
-    );
-    assert_eq!(find_scope("06_daily/2026-05-17.md"), Scope::PersonalWork);
-    assert_eq!(
-        find_scope("03_areas/team/weekly-sync.md"),
-        Scope::TeamManagement
-    );
-    assert_eq!(find_scope("01_inbox/idea-2026-05-17.md"), Scope::Inbox);
-    assert_eq!(
-        find_scope("04_resources/defi-frontend-patterns.md"),
-        Scope::Resource
-    );
-    assert_eq!(
-        find_scope("05_archive/2025-old-experiment.md"),
-        Scope::Archive
-    );
-
-    // The newly added 00_meta/_claude artifact files are also indexed as
-    // markdown files with scope: meta.
-    assert_eq!(
-        find_scope("00_meta/_claude/agents/example-agent.md"),
-        Scope::Meta
-    );
-    assert_eq!(
-        find_scope("00_meta/_claude/rules/example-rule.md"),
-        Scope::Meta
-    );
+    // Files across every top-level dir are indexed (zones were removed;
+    // indexing is uniform).
+    let indexed = |path: &str| r.markdown_files.iter().any(|f| f.path == path);
+    for path in [
+        "00_meta/AGENTS.md",
+        "02_projects/sample-project/_index.md",
+        "06_daily/2026-05-17.md",
+        "03_areas/team/weekly-sync.md",
+        "01_inbox/idea-2026-05-17.md",
+        "04_resources/defi-frontend-patterns.md",
+        "05_archive/2025-old-experiment.md",
+        "00_meta/_claude/agents/example-agent.md",
+        "00_meta/_claude/rules/example-rule.md",
+    ] {
+        assert!(indexed(path), "file not indexed: {path}");
+    }
 
     // .bak and warning diagnostics survive.
     let has_warning_no_index = r.diagnostics.iter().any(|d| {

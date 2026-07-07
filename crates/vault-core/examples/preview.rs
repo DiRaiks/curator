@@ -59,19 +59,11 @@ fn main() {
         };
         println!("  [{label}] {} files", files.len());
         for f in files.iter().take(5) {
-            println!("    - {} ({:?})", f.path, f.scope);
+            println!("    - {}", f.path);
         }
         if files.len() > 5 {
             println!("    ... and {} more", files.len() - 5);
         }
     }
 
-    let e = &p.excluded_counts;
-    println!("--- excluded counts ---");
-    println!("  personal-work:     {}", e.personal_work);
-    println!("  team-management:   {}", e.team_management);
-    println!("  inbox:             {}", e.inbox);
-    println!("  archive/resource:  {}", e.archive_or_resource);
-    println!("  ignored-path:      {}", e.ignored_path);
-    println!("  bak:               {}", e.bak);
 }

@@ -3,7 +3,7 @@
 //! Two operations exposed to the Tauri shell:
 //!
 //! - [`init_vault`] turns a plain folder into a vault: writes
-//!   `.vault/config.yml`, the canonical zone directories, and a seed
+//!   `.vault/config.yml`, the canonical top-level directories, and a seed
 //!   `00_meta/AGENTS.md`. Refuses to overwrite an already-initialised
 //!   vault (presence of `.vault/config.yml` is the signal).
 //! - [`init_project`] writes `02_projects/<slug>/_index.md` from a
@@ -28,10 +28,10 @@ const CONFIG_YML: &str = include_str!("templates/config.yml");
 const AGENTS_MD: &str = include_str!("templates/AGENTS.md");
 const PROJECT_INDEX_TEMPLATE: &str = include_str!("templates/project_index.md");
 
-/// Canonical top-level zones a fresh vault gets. Ordering matters only
+/// Canonical top-level directories a fresh vault gets. Ordering matters only
 /// for diagnostics — the FS doesn't care, but the user sees the tree
 /// sorted lexicographically which already matches this list.
-const VAULT_ZONES: &[&str] = &[
+const VAULT_DIRS: &[&str] = &[
     "00_meta",
     "01_inbox/_drafts",
     "02_projects",
@@ -62,7 +62,7 @@ pub enum BootstrapError {
 /// against the runner's deny-list — the IDE will not init a vault into
 /// `~/.ssh`, system dirs, or other locations flagged as unsafe.
 ///
-/// On success, every directory in [`VAULT_ZONES`] is created (idempotent
+/// On success, every directory in [`VAULT_DIRS`] is created (idempotent
 /// via `create_dir_all`), `.vault/config.yml` is written, and
 /// `00_meta/AGENTS.md` is created if missing. The caller is expected to
 /// re-scan after — the function returns no value because everything the
@@ -79,8 +79,8 @@ pub fn init_vault(path: &Path) -> Result<(), BootstrapError> {
     std::fs::create_dir_all(canonical.join(".vault"))?;
     std::fs::write(&config_path, CONFIG_YML)?;
 
-    for zone in VAULT_ZONES {
-        std::fs::create_dir_all(canonical.join(zone))?;
+    for dir_name in VAULT_DIRS {
+        std::fs::create_dir_all(canonical.join(dir_name))?;
     }
 
     let agents_path = canonical.join("00_meta").join("AGENTS.md");
@@ -210,11 +210,11 @@ mod tests {
             .expect("config.yml written");
         assert!(config.contains("version: \"1\""));
 
-        // All canonical zones exist.
-        for zone in VAULT_ZONES {
+        // All canonical directories exist.
+        for dir_name in VAULT_DIRS {
             assert!(
-                dir.path().join(zone).is_dir(),
-                "expected zone dir {zone} to exist"
+                dir.path().join(dir_name).is_dir(),
+                "expected dir {dir_name} to exist"
             );
         }
 

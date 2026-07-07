@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { inspectSourceRepo, previewContext } from "../api";
+import { inspectSourceRepo } from "../api";
 import type {
   ArtifactKind,
-  ContextPreview,
   Project,
   Recommendation,
   RecommendationSeverity,
@@ -10,7 +9,7 @@ import type {
   WorkflowArtifact,
 } from "../types";
 import { maskHome } from "../utils/path";
-import { ContextPreviewPanel } from "./ContextPreview";
+import { ArtifactRunPanel, useArtifactRunCounts } from "./ArtifactRunPanel";
 import { SourceRepositorySection } from "./SourceRepositorySection";
 
 const RUNNABLE_KIND_LABEL: Record<ArtifactKind, string> = {
@@ -55,7 +54,7 @@ interface ProjectDetailProps {
    *  the editor. Used by the Run Plan "Create output stub" action. Throws on
    *  failure so the child can surface inline errors. */
   onCreateAndOpenFile: (relativePath: string) => Promise<void>;
-  /** Stage the materialized artifact prompt into the bottom chat panel
+  /** Stage the materialized artifact prompt into the agent composer
    *  instead of spawning the runner directly. The user reviews / edits /
    *  pre-approves permissions before clicking Send. Returns `null` on
    *  success or an error string to surface at the callsite. */
@@ -64,6 +63,11 @@ interface ProjectDetailProps {
     projectSlug: string;
     promptId: string;
   }) => string | null;
+  /** promptId of a currently-running chat (vault-wide) — lights the
+   *  live chip on the matching artifact card. */
+  runningSkill: string | null;
+  /** Open the agent panel (target of the running chip). */
+  onOpenAgent: () => void;
 }
 
 interface FieldProps {
@@ -96,6 +100,8 @@ export function ProjectDetail({
   onBack,
   onCreateAndOpenFile,
   onStagePrompt,
+  runningSkill,
+  onOpenAgent,
 }: ProjectDetailProps) {
   const [inspection, setInspection] = useState<SourceRepoInspection | null>(
     null,
@@ -170,37 +176,13 @@ export function ProjectDetail({
     return runnableArtifacts.filter((a) => a.kind === kindFilter);
   }, [runnableArtifacts, kindFilter]);
 
+  // Which artifact card is expanded in place. The run action, plan
+  // summary, and full run plan all render INSIDE the card (accordion) —
+  // the old bottom preview section forced a scroll past the whole list
+  // to find out what clicking a skill did.
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null);
-  const [preview, setPreview] = useState<ContextPreview | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
 
-  useEffect(() => {
-    if (!selectedPromptId) {
-      setPreview(null);
-      setPreviewError(null);
-      return;
-    }
-    let cancelled = false;
-    setPreviewLoading(true);
-    setPreviewError(null);
-    previewContext(vaultRoot, project.slug, selectedPromptId)
-      .then((p) => {
-        if (cancelled) return;
-        setPreview(p);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setPreviewError(err instanceof Error ? err.message : String(err));
-        setPreview(null);
-      })
-      .finally(() => {
-        if (!cancelled) setPreviewLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [vaultRoot, project.slug, selectedPromptId]);
+  const runCounts = useArtifactRunCounts(vaultRoot);
 
   const localPathDisplay = project.localPath
     ? maskHome(project.localPath, homeDir)
@@ -293,72 +275,82 @@ export function ProjectDetail({
           </p>
         ) : (
           <ul className="list">
-            {visibleArtifacts.map((p) => (
-              <li
-                key={`${p.kind}:${p.id}`}
-                className={
-                  "list__item list__item--clickable" +
-                  (selectedPromptId === p.id ? " list__item--selected" : "")
-                }
-              >
-                <button
-                  type="button"
-                  className="list__row-btn"
-                  onClick={() =>
-                    setSelectedPromptId(
-                      selectedPromptId === p.id ? null : p.id,
-                    )
+            {visibleArtifacts.map((p) => {
+              const expanded = selectedPromptId === p.id;
+              return (
+                <li
+                  key={`${p.kind}:${p.id}`}
+                  className={
+                    "list__item list__item--clickable" +
+                    (expanded ? " list__item--selected" : "")
                   }
-                  aria-pressed={selectedPromptId === p.id}
                 >
-                  <div className="list__primary">
-                    <span
-                      className={"tag tag--kind tag--kind-" + p.kind}
-                      title={RUNNABLE_KIND_LABEL[p.kind]}
-                    >
-                      {p.kind}
-                    </span>
-                    {p.order != null && (
-                      <span className="tag">order {p.order}</span>
-                    )}
-                    <span className="list__id">{p.id}</span>
-                    {p.title && p.title !== p.id && (
-                      <span className="list__title">{p.title}</span>
-                    )}
-                  </div>
-                  <div className="list__secondary">
-                    {p.outputFile && (
-                      <span className="tag tag--output" title={p.outputFile}>
-                        → {p.outputFile}
+                  <button
+                    type="button"
+                    className="list__row-btn"
+                    onClick={() =>
+                      setSelectedPromptId(expanded ? null : p.id)
+                    }
+                    aria-expanded={expanded}
+                  >
+                    <div className="list__primary">
+                      <span
+                        className={"tag tag--kind tag--kind-" + p.kind}
+                        title={RUNNABLE_KIND_LABEL[p.kind]}
+                      >
+                        {p.kind}
                       </span>
-                    )}
-                    <span className="list__path">{p.path}</span>
-                  </div>
-                </button>
-              </li>
-            ))}
+                      {p.order != null && (
+                        <span className="tag">order {p.order}</span>
+                      )}
+                      <span className="list__id">{p.id}</span>
+                      {p.title && p.title !== p.id && (
+                        <span className="list__title">{p.title}</span>
+                      )}
+                      {runningSkill === p.id && !expanded && (
+                        <span
+                          className="arun__running-dot"
+                          title="A chat is executing this artifact"
+                          aria-label="Running"
+                        />
+                      )}
+                    </div>
+                    <div className="list__secondary">
+                      {p.description && (
+                        <span className="list__description">
+                          {p.description}
+                        </span>
+                      )}
+                      {p.outputFile && (
+                        <span className="tag tag--output" title={p.outputFile}>
+                          → {p.outputFile}
+                        </span>
+                      )}
+                      <span className="list__path">{p.path}</span>
+                    </div>
+                  </button>
+                  {expanded && (
+                    <ArtifactRunPanel
+                      artifact={p}
+                      vaultRoot={vaultRoot}
+                      homeDir={homeDir}
+                      projects={[]}
+                      fixedProjectSlug={project.slug}
+                      runsCount={runCounts?.get(p.id) ?? null}
+                      runningSkill={runningSkill}
+                      onStagePrompt={onStagePrompt}
+                      onOpenFile={onOpenFile}
+                      onOpenAgent={onOpenAgent}
+                      onCreateAndOpenFile={onCreateAndOpenFile}
+                      sourceRepoInspection={inspection}
+                    />
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>
-
-      {selectedPromptId && (
-        <section className="project-detail__preview">
-          {previewLoading && !preview && (
-            <p className="empty">Computing run plan preview…</p>
-          )}
-          {previewError && <p className="welcome__error">{previewError}</p>}
-          {preview && (
-            <ContextPreviewPanel
-              preview={preview}
-              homeDir={homeDir}
-              isRefreshing={previewLoading}
-              onCreateAndOpenFile={onCreateAndOpenFile}
-              sourceRepoInspection={inspection}
-              onStagePrompt={onStagePrompt}
-            />
-          )}
-        </section>
-      )}
     </div>
   );
 }

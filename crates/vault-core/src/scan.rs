@@ -1,11 +1,11 @@
 //! Vault scan entry point.
 //!
-//! `scan_vault` walks the vault root, classifies Markdown files by privacy
-//! scope, aggregates them into zones, and delegates artifact + project
-//! discovery to the `artifacts` module. Returns a single `ScanResult` snapshot
-//! plus a list of diagnostics — never panics, never aborts on per-file errors.
+//! `scan_vault` walks the vault root, indexes Markdown files, and delegates
+//! artifact + project discovery to the `artifacts` module. Returns a single
+//! `ScanResult` snapshot plus a list of diagnostics — never panics, never
+//! aborts on per-file errors.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
@@ -17,11 +17,10 @@ use crate::artifacts::{
     kind_sort_index,
 };
 use crate::config::{read_vault_config, VAULT_FORMAT_VERSION_MAJOR};
-use crate::frontmatter::{fm_bool, fm_string, parse_frontmatter_from_head, FRONTMATTER_HEAD_BYTES};
-use crate::scope::{compute_scope, scope_label, zone_sort_priority};
+use crate::frontmatter::{fm_string, parse_frontmatter_from_head, FRONTMATTER_HEAD_BYTES};
 use crate::types::{
-    ArtifactKind, Diagnostic, DiagnosticLevel, Draft, MarkdownFile, Project, ScanResult, Scope,
-    WorkflowArtifact, Zone,
+    ArtifactKind, Diagnostic, DiagnosticLevel, Draft, MarkdownFile, Project, ScanResult,
+    WorkflowArtifact,
 };
 use crate::util::{detect_home_dir, read_head};
 
@@ -49,7 +48,6 @@ pub fn scan_vault(root: &Path) -> Result<ScanResult, ScanError> {
 
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
     let mut markdown_files: Vec<MarkdownFile> = Vec::new();
-    let mut zone_acc: HashMap<String, (Scope, usize)> = HashMap::new();
     let mut artifacts: Vec<WorkflowArtifact> = Vec::new();
     let mut projects: Vec<Project> = Vec::new();
     let mut drafts: Vec<Draft> = Vec::new();
@@ -138,21 +136,11 @@ pub fn scan_vault(root: &Path) -> Result<ScanResult, ScanError> {
             }
         }
 
-        let (scope, zone_root) = compute_scope(&rel, fm.as_ref());
-        let sensitivity = fm.as_ref().and_then(|m| fm_string(m, "sensitivity"));
-        let audience = fm.as_ref().and_then(|m| fm_string(m, "audience"));
-        let include_in_ai_context = fm
-            .as_ref()
-            .and_then(|m| fm_bool(m, "include_in_ai_context"));
         let note_type = fm.as_ref().and_then(|m| fm_string(m, "type"));
         let project_fm = fm.as_ref().and_then(|m| fm_string(m, "project"));
 
         markdown_files.push(MarkdownFile {
             path: rel.clone(),
-            scope: scope.clone(),
-            sensitivity,
-            audience,
-            include_in_ai_context,
             note_type,
             project: project_fm.clone(),
         });
@@ -183,10 +171,6 @@ pub fn scan_vault(root: &Path) -> Result<ScanResult, ScanError> {
             }
         }
 
-        if let Some(root) = zone_root {
-            let counter = zone_acc.entry(root).or_insert((scope.clone(), 0));
-            counter.1 += 1;
-        }
     }
 
     markdown_files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -199,33 +183,6 @@ pub fn scan_vault(root: &Path) -> Result<ScanResult, ScanError> {
                 "{suppressed} more markdown file(s) missing frontmatter (suppressed; cap = {MAX_MISSING_FRONTMATTER_DIAGNOSTICS})"
             ),
             path: None,
-        });
-    }
-
-    let mut zones: Vec<Zone> = zone_acc
-        .into_iter()
-        .map(|(path, (scope, file_count))| Zone {
-            path,
-            scope,
-            file_count,
-        })
-        .collect();
-    zones.sort_by(|a, b| {
-        zone_sort_priority(&a.scope)
-            .cmp(&zone_sort_priority(&b.scope))
-            .then_with(|| a.path.cmp(&b.path))
-    });
-
-    for z in &zones {
-        diagnostics.push(Diagnostic {
-            level: DiagnosticLevel::Info,
-            message: format!(
-                "private zone detected: {} ({}, {} files)",
-                z.path,
-                scope_label(&z.scope),
-                z.file_count
-            ),
-            path: Some(z.path.clone()),
         });
     }
 
@@ -291,7 +248,6 @@ pub fn scan_vault(root: &Path) -> Result<ScanResult, ScanError> {
         vault_format_version: config.raw_version,
         vault_format_supported,
         markdown_files,
-        zones,
         artifacts,
         projects,
         drafts,

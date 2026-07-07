@@ -1,17 +1,29 @@
 import {
   Children,
   cloneElement,
+  Fragment,
   isValidElement,
   useCallback,
   useMemo,
   type ReactNode,
 } from "react";
-import CodeMirror from "@uiw/react-codemirror";
+import CodeMirror, {
+  Decoration,
+  EditorView,
+  MatchDecorator,
+  ViewPlugin,
+  type DecorationSet,
+  type ViewUpdate,
+} from "@uiw/react-codemirror";
 import { markdown } from "@codemirror/lang-markdown";
+// Direct imports of packages the lockfile already pins transitively
+// (via @codemirror/lang-markdown → @codemirror/language → @lezer/highlight);
+// needed to map the markdown highlight tags onto the shell's --sx-* vars.
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { tags } from "@lezer/highlight";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import type { Scope } from "../types";
 import type { EditorViewMode } from "./EditorTabs";
 import {
   parseMarkdown,
@@ -22,19 +34,23 @@ import { FrontmatterForm } from "./FrontmatterForm";
 
 interface EditorPanelProps {
   path: string;
-  scope?: Scope;
   content: string;
   savedContent: string;
   saving: boolean;
   error: string | null;
+  /** `Date.now()` of the buffer's last successful save, or `null`
+   *  when it hasn't been saved this session. Drives the "saved Nm"
+   *  label in the path row. */
+  savedAtMs?: number | null;
   /** The file disappeared from the latest vault scan (deleted/moved
    *  externally). Save/Discard are disabled and a banner is shown; the
    *  in-memory buffer is preserved so the user doesn't lose work. */
   missing?: boolean;
-  /** View mode driven by the parent (Dashboard) — lifted out of the
-   *  editor in slice 8 PR B so the new `EditorTabs` strip can own the
-   *  segmented control and the ⌘1/2/3 shortcut applies globally. */
+  /** View mode driven by the parent (Dashboard) so the ⌘1/2/3
+   *  shortcut applies globally; the segmented control in the path row
+   *  reports clicks back through `onSetViewMode`. */
   viewMode: EditorViewMode;
+  onSetViewMode: (mode: EditorViewMode) => void;
   onChange: (next: string) => void;
   onSave: () => void;
   onDiscard: () => void;
@@ -46,6 +62,93 @@ interface EditorPanelProps {
 }
 
 const WIKILINK_RE = /\[\[([^\]\n]+)\]\]/g;
+
+const VIEW_MODES: ReadonlyArray<{ id: EditorViewMode; label: string }> = [
+  { id: "src", label: "src" },
+  { id: "split", label: "split" },
+  { id: "prev", label: "preview" },
+] as const;
+
+const isMac =
+  typeof navigator !== "undefined" &&
+  /mac/i.test(navigator.platform || navigator.userAgent || "");
+const MOD_LABEL = isMac ? "⌘" : "Ctrl+";
+
+/**
+ * Shell v2 source surface: NOT a code editor. No gutters, line
+ * numbers, or minimap — 13px mono at 1.85 line-height, wrapped, with
+ * light syntax coloring only. All colors route through the `--sx-*`
+ * theme vars so the graphite/porcelain toggle propagates without a
+ * re-mount.
+ */
+const cmShellTheme = EditorView.theme({
+  "&": {
+    backgroundColor: "transparent",
+    height: "100%",
+    fontSize: "13px",
+    color: "var(--fg-2)",
+  },
+  "&.cm-focused": { outline: "none" },
+  ".cm-scroller": {
+    fontFamily: "var(--mono)",
+    lineHeight: "1.85",
+  },
+  ".cm-content": {
+    padding: "20px 26px",
+    maxWidth: "760px",
+    caretColor: "var(--accent)",
+  },
+  ".cm-line": { padding: "0" },
+  ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--accent)" },
+  ".cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection":
+    {
+      backgroundColor: "color-mix(in srgb, var(--accent) 22%, transparent)",
+    },
+  ".cm-activeLine": { backgroundColor: "transparent" },
+});
+
+/** `[[wikilinks]]` aren't part of the markdown grammar, so the lezer
+ *  highlighter can't color them — a MatchDecorator paints the accent
+ *  link style over the raw source instead. */
+const wikilinkMatcher = new MatchDecorator({
+  regexp: /\[\[[^\]\n]+\]\]/g,
+  decoration: Decoration.mark({ class: "tk-link" }),
+});
+
+const cmWikilinkHighlight = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+    constructor(view: EditorView) {
+      this.decorations = wikilinkMatcher.createDeco(view);
+    }
+    update(update: ViewUpdate) {
+      this.decorations = wikilinkMatcher.updateDeco(update, this.decorations);
+    }
+  },
+  { decorations: (v) => v.decorations },
+);
+
+const cmMarkdownHighlight = syntaxHighlighting(
+  HighlightStyle.define([
+    { tag: tags.heading, color: "var(--sx-head)", fontWeight: "600" },
+    { tag: tags.strong, color: "var(--sx-bold)", fontWeight: "700" },
+    { tag: tags.emphasis, color: "var(--fg-2)", fontStyle: "italic" },
+    { tag: tags.monospace, color: "var(--sx-code)" },
+    { tag: tags.link, color: "var(--sx-link)", textDecoration: "underline" },
+    { tag: tags.url, color: "var(--sx-link)" },
+    { tag: tags.quote, color: "var(--fg-2)", fontStyle: "italic" },
+    { tag: tags.processingInstruction, color: "var(--sx-punct)" },
+    { tag: tags.meta, color: "var(--sx-punct)" },
+    { tag: tags.contentSeparator, color: "var(--sx-punct)" },
+  ]),
+);
+
+function fmtSavedAgo(savedAtMs: number): string {
+  const sec = Math.max(0, Math.round((Date.now() - savedAtMs) / 1000));
+  if (sec < 60) return "saved now";
+  if (sec < 3600) return `saved ${Math.round(sec / 60)}m`;
+  return `saved ${Math.round(sec / 3600)}h`;
+}
 
 /**
  * Markdown editor with three view modes:
@@ -68,13 +171,14 @@ const WIKILINK_RE = /\[\[([^\]\n]+)\]\]/g;
  */
 export function EditorPanel({
   path,
-  scope,
   content,
   savedContent,
   saving,
   error,
+  savedAtMs = null,
   missing = false,
   viewMode,
+  onSetViewMode,
   onChange,
   onSave,
   onDiscard,
@@ -82,11 +186,19 @@ export function EditorPanel({
   onOpenWikilink,
 }: EditorPanelProps) {
   const isDirty = content !== savedContent;
-  const sizeBytes = useMemo(() => new Blob([content]).size, [content]);
   const saveDisabled = !isDirty || saving || missing;
   const discardDisabled = !isDirty || saving || missing;
 
-  const cmExtensions = useMemo(() => [markdown()], []);
+  const cmExtensions = useMemo(
+    () => [
+      markdown(),
+      cmShellTheme,
+      cmMarkdownHighlight,
+      cmWikilinkHighlight,
+      EditorView.lineWrapping,
+    ],
+    [],
+  );
 
   const parsed = useMemo(() => parseMarkdown(content), [content]);
 
@@ -111,121 +223,165 @@ export function EditorPanel({
   );
 
   return (
-    <article className="editor" aria-label={`Markdown editor for ${path}`}>
-      <header className="editor__header">
-        <div className="editor__meta">
-          <span className="editor__path">{path}</span>
-          {scope && (
-            <span className={"scope scope--" + scope}>{scope}</span>
-          )}
-          <span className="editor__size" title="Approximate byte size">
-            {sizeBytes} B
-          </span>
-          {isDirty && (
-            <span
-              className="tag tag--warning"
-              title="Unsaved changes — Save or Discard before navigating away"
+    <article
+      className="ide-edhost"
+      aria-label={`Markdown editor for ${path}`}
+    >
+      {/* Path row: full vault-relative path, save state, mode segment. */}
+      <div className="ide-pathrow">
+        <span className="path" title={path}>
+          {path}
+        </span>
+        <span className="saved">
+          {saving
+            ? "saving…"
+            : isDirty
+              ? "unsaved"
+              : savedAtMs != null
+                ? fmtSavedAgo(savedAtMs)
+                : null}
+        </span>
+        <span className="grow" />
+        {isDirty && !missing && (
+          <>
+            <button
+              type="button"
+              className="ide-btn primary sm"
+              onClick={onSave}
+              disabled={saveDisabled}
             >
-              unsaved
-            </span>
-          )}
-          {missing && (
-            <span
-              className="tag tag--warning"
-              title="The file is no longer present on disk."
+              save
+            </button>
+            <button
+              type="button"
+              className="ide-btn ghost sm"
+              onClick={onDiscard}
+              disabled={discardDisabled}
             >
-              missing on disk
-            </span>
-          )}
+              discard
+            </button>
+          </>
+        )}
+        <div className="mode-seg" role="group" aria-label="Editor view mode">
+          {VIEW_MODES.map((m, i) => (
+            <button
+              key={m.id}
+              type="button"
+              className={m.id === viewMode ? "on" : ""}
+              aria-pressed={m.id === viewMode}
+              title={`${m.label} (${MOD_LABEL}${i + 1})`}
+              onClick={() => onSetViewMode(m.id)}
+            >
+              {m.label}
+            </button>
+          ))}
         </div>
-        <div className="editor__actions">
-          {/* The view-mode segmented control moved to `EditorTabs` in
-              slice 8 PR B — Save / Discard / Close remain here. */}
-          <button
-            type="button"
-            className="btn btn--primary btn--small"
-            onClick={onSave}
-            disabled={saveDisabled}
-            title={
-              missing
-                ? "Save is disabled because the file no longer exists on disk."
-                : undefined
-            }
-          >
-            {saving ? "Saving…" : "Save"}
-          </button>
-          <button
-            type="button"
-            className="btn btn--small"
-            onClick={onDiscard}
-            disabled={discardDisabled}
-          >
-            Discard
-          </button>
-          <button
-            type="button"
-            className="btn btn--small"
-            onClick={onClose}
-          >
-            Close
-          </button>
-        </div>
-      </header>
+        <button
+          type="button"
+          className="ide-btn ghost sm"
+          onClick={onClose}
+          title="Close file"
+        >
+          close
+        </button>
+      </div>
       {missing && (
-        <p className="editor__missing" role="alert">
+        <p className="ide-ed-banner" role="alert">
           <strong>This file was deleted or moved outside the app.</strong>{" "}
           Your in-editor changes are kept in memory. Save is disabled to avoid
           silently re-creating the file. Close the editor, or re-create the
           file externally and click Refresh.
         </p>
       )}
-      {error && <p className="welcome__error">{error}</p>}
-      {/* Frontmatter form is always rendered so users can read the
-       * metadata even in `prev` mode — `react-markdown` doesn't have a
-       * frontmatter extension wired up, so without this the YAML block
-       * just disappears from view. In `prev` the form switches to
-       * read-only so it stays an inspection surface, not an editor. */}
-      <FrontmatterForm
-        frontmatter={parsed.frontmatter}
-        hasFrontmatter={parsed.hasFrontmatter}
-        readOnly={viewMode === "prev"}
-        onChange={updateFrontmatter}
-      />
-      {/* Both panes are always mounted — only their visibility flips via
-       * the body modifier class. Keeps CodeMirror's scroll/selection +
-       * the preview's scroll position alive across mode switches. */}
-      <div className={"editor__body editor__body--" + viewMode}>
-        <CodeMirror
-          className="editor__cm"
-          value={parsed.body}
-          height="100%"
-          extensions={cmExtensions}
-          onChange={updateBody}
-          basicSetup={{
-            lineNumbers: true,
-            foldGutter: false,
-            highlightActiveLineGutter: false,
-            highlightActiveLine: true,
-            indentOnInput: true,
-            bracketMatching: false,
-            autocompletion: false,
-          }}
-          aria-label={"Markdown source of " + path}
+      {error && (
+        <p className="ide-ed-banner ide-ed-banner--err" role="alert">
+          {error}
+        </p>
+      )}
+      {/* Frontmatter editing surface for src/split (CodeMirror edits
+       * the body only). In `prev` mode the form is replaced by the
+       * compact read-only fm-card inside the preview pane below —
+       * matching the design's inspection view. */}
+      {viewMode !== "prev" && (
+        <FrontmatterForm
+          frontmatter={parsed.frontmatter}
+          hasFrontmatter={parsed.hasFrontmatter}
+          readOnly={false}
+          onChange={updateFrontmatter}
         />
-        <div
-          className="editor__preview"
-          aria-label={"Rendered preview of " + path}
-        >
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            components={makeWikilinkComponents(onOpenWikilink)}
+      )}
+      {/* Both panes are always mounted — only their visibility flips via
+       * the `hidden` class. Keeps CodeMirror's scroll/selection + the
+       * preview's scroll position alive across mode switches. */}
+      <div className="ide-edwrap">
+        <div className={"ide-edpane" + (viewMode === "prev" ? " hidden" : "")}>
+          <CodeMirror
+            className="ide-cm"
+            value={parsed.body}
+            height="100%"
+            // "none" — the wrapper's default is a light theme that
+            // paints a white background over our var-driven theme.
+            theme="none"
+            extensions={cmExtensions}
+            onChange={updateBody}
+            basicSetup={{
+              lineNumbers: false,
+              foldGutter: false,
+              highlightActiveLineGutter: false,
+              highlightActiveLine: false,
+              indentOnInput: true,
+              bracketMatching: false,
+              autocompletion: false,
+            }}
+            aria-label={"Markdown source of " + path}
+          />
+        </div>
+        <div className={"ide-edpane" + (viewMode === "src" ? " hidden" : "")}>
+          <div
+            className="ide-preview"
+            aria-label={"Rendered preview of " + path}
           >
-            {parsed.body}
-          </ReactMarkdown>
+            {viewMode === "prev" && parsed.hasFrontmatter && (
+              <FmCard frontmatter={parsed.frontmatter} />
+            )}
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={makeWikilinkComponents(onOpenWikilink)}
+            >
+              {parsed.body}
+            </ReactMarkdown>
+          </div>
         </div>
       </div>
     </article>
   );
+}
+
+/** Read-only frontmatter card for preview mode: 2-column mono grid
+ *  (design `fm-card`). Editing happens through the form in src/split. */
+function FmCard({
+  frontmatter,
+}: {
+  frontmatter: Record<string, FrontmatterValue>;
+}) {
+  const entries = Object.entries(frontmatter);
+  if (entries.length === 0) return null;
+  return (
+    <div className="fm-card">
+      {entries.map(([k, v]) => (
+        <Fragment key={k}>
+          <span className="k">{k}</span>
+          <span className="v">{formatFmValue(v)}</span>
+        </Fragment>
+      ))}
+    </div>
+  );
+}
+
+function formatFmValue(v: FrontmatterValue): string {
+  if (v === null) return "—";
+  if (Array.isArray(v)) return v.join(" · ");
+  return String(v);
 }
 
 // ---------- Wikilink support ----------

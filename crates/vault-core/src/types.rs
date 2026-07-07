@@ -7,42 +7,14 @@
 
 use serde::Serialize;
 
-#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum Scope {
-    Project,
-    Meta,
-    PersonalWork,
-    TeamManagement,
-    Inbox,
-    Resource,
-    Archive,
-    Unknown,
-}
-
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct MarkdownFile {
     pub path: String,
-    pub scope: Scope,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sensitivity: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub audience: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub include_in_ai_context: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
-}
-
-#[derive(Debug, Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct Zone {
-    pub path: String,
-    pub scope: Scope,
-    pub file_count: usize,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -66,7 +38,6 @@ pub struct ScanResult {
     /// surfaces the "version missing" warning separately).
     pub vault_format_supported: bool,
     pub markdown_files: Vec<MarkdownFile>,
-    pub zones: Vec<Zone>,
     pub artifacts: Vec<WorkflowArtifact>,
     pub projects: Vec<Project>,
     /// Markdown notes proposed by an agent run for the user to review and
@@ -78,7 +49,7 @@ pub struct ScanResult {
 
 /// A note an agent produced as a side-output of a run — typically a
 /// reusable pattern, observation, or decision worth keeping — that the
-/// agent itself does NOT promote into a permanent vault zone. The user
+/// agent itself does NOT promote into a permanent location. The user
 /// reviews and decides where (if anywhere) it lands.
 ///
 /// Detection: any markdown file whose frontmatter contains both
@@ -204,7 +175,6 @@ pub struct ContextPreview {
     pub output_file_exists: bool,
     pub included: Vec<IncludedFile>,
     pub source_repo: SourceRepoStatus,
-    pub excluded_counts: ExcludedCounts,
     pub warnings: Vec<PreviewWarning>,
     /// Runner-agnostic prompt text the user can copy into Zed, Claude Code,
     /// Codex, Cursor, etc. Contains paths + instructions, not embedded file
@@ -219,7 +189,6 @@ pub struct ContextPreview {
 #[serde(rename_all = "camelCase")]
 pub struct IncludedFile {
     pub path: String,
-    pub scope: Scope,
     pub reason: IncludeReason,
 }
 
@@ -231,17 +200,6 @@ pub enum IncludeReason {
     ProjectIndex,
     ProjectDocument,
     ExistingOutputFile,
-}
-
-#[derive(Debug, Serialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ExcludedCounts {
-    pub personal_work: usize,
-    pub team_management: usize,
-    pub inbox: usize,
-    pub archive_or_resource: usize,
-    pub ignored_path: usize,
-    pub bak: usize,
 }
 
 /// Snapshot of the source-repo metadata declared in the project's

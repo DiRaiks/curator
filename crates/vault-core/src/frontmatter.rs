@@ -33,11 +33,6 @@ pub(crate) fn fm_i64(m: &serde_yaml_ng::Mapping, k: &str) -> Option<i64> {
         .and_then(|v| v.as_i64())
 }
 
-pub(crate) fn fm_bool(m: &serde_yaml_ng::Mapping, k: &str) -> Option<bool> {
-    m.get(serde_yaml_ng::Value::String(k.to_string()))
-        .and_then(|v| v.as_bool())
-}
-
 pub(crate) fn fm_string_array(m: &serde_yaml_ng::Mapping, k: &str) -> Vec<String> {
     match m.get(serde_yaml_ng::Value::String(k.to_string())) {
         Some(serde_yaml_ng::Value::Sequence(seq)) => seq

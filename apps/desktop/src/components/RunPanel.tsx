@@ -9,9 +9,6 @@ import {
 } from "react";
 
 import {
-  archiveSession,
-  deleteSession,
-  getSession,
   listSessions,
   onRunEvents,
   resumeFreeformRun,
@@ -38,26 +35,27 @@ import {
   type LineKind,
   type UsageSnapshot,
 } from "../acpRender";
-import { usePopoverPosition } from "../hooks/usePopoverPosition";
-import type { Project, SessionFull, SessionSummary } from "../types";
+import type { Draft, Project, SessionFull, SessionSummary } from "../types";
 import { isSessionLineKind } from "../types";
 import { AgentPicker } from "./AgentPicker";
 import { PermissionRequestCard } from "./PermissionRequestCard";
+import { AgentConversation } from "./shell/AgentConversation";
+import { formatCost, formatTokens } from "./shell/chatFormat";
 import { Tooltip } from "./Tooltip";
 
 /**
- * Persistent bottom drawer that streams the active run's output and hosts
- * the free-form chat input.
+ * One chat conversation inside the agent panel (shell v2). Streams the
+ * active run's output as turn-grouped conversation view and hosts the
+ * composer.
  *
- * The chat input is always available when the panel is expanded — Send
- * either starts a fresh freeform run (idle / fresh state) or replies to
- * the captured session (exited + session id available). The "New chat"
- * button discards an exited session so the user can start over without
- * the prior conversation context.
+ * The composer is always visible — Send either starts a fresh freeform
+ * run (idle / fresh state) or replies to the captured session (exited +
+ * session id available); while a run streams the button becomes Stop.
+ * Chats keep streaming when the panel is hidden — the host keeps every
+ * RunPanel mounted (`visible={false}` → `display: none`).
  *
- * Lines are stored as `{ kind, text }` so the renderer can color stderr
- * differently. We don't word-wrap programmatically — the `<pre>` does it
- * via CSS so the renderer stays cheap on long outputs.
+ * Lines are stored as `{ kind, text }`; the turn/bubble view is derived
+ * per render by `AgentConversation`.
  */
 
 // `LineKind` is re-exported from `../acpRender` so the ACP renderer
@@ -139,30 +137,20 @@ const MAX_RETAINED_LINES = 5000;
 /** Sentinel scope value for "no project — run inside the vault". */
 const VAULT_SCOPE = "__vault__";
 
-/** Preamble injected before the user's prompt when the privacy toggle is
- *  on. Soft enforcement: the agent has read access to the full vault via
- *  --add-dir, so this is a behavioural rule, not a filesystem block.
- *  Claude honours it reliably in practice; for hard isolation we'd need
- *  per-zone --add-dir lists, which is a bigger refactor.
- *
- *  Zone names are derived from the vault's own scope vocabulary
- *  (see scope.rs) so the rule survives if the user renames folders. */
-const PRIVACY_PREAMBLE = `## Privacy boundary (hard rule for this run)
-
-Do NOT read, list, or grep any file whose scope is \`personal-work\` or \`team-management\`. This includes (but isn't limited to) folders typically named \`06_daily\`, \`journal\`, \`private\`, \`personal\`, \`meetings\`, \`1on1\`, \`one-on-ones\`, \`people\`, \`team\`, \`management\`, or any subfolder with frontmatter \`scope: personal-work\` / \`scope: team-management\`.
-
-If the task seems to require their content, STOP and ask the user — do not try to infer the content from filenames, do not work around the rule with Bash, and do not write inferred summaries to disk. Violating this rule corrupts user trust.
-
----
-
-`;
-
 interface RunPanelProps {
   /** Canonical vault root. Forwarded to `start_freeform_run`. */
   vaultRoot: string;
   /** All projects from the current scan. The scope dropdown filters down
    *  to those with a `localPath` (the rest can't be a cwd target). */
   projects: Project[];
+  /** Current drafts from the latest scan. Diffed against a snapshot
+   *  taken when a run starts — anything present now but not in the
+   *  snapshot was written during the run, surfacing the "N drafts"
+   *  notice. The vault watcher's rescans keep this prop fresh while
+   *  the run streams. */
+  drafts?: Draft[];
+  /** Open the Drafts panel — target of the drafts-notice button. */
+  onOpenDrafts?: () => void;
   /** Optional id supplied by the host when multiple panels coexist
    *  (multi-chat). Used purely as a React key + status-report tag — the
    *  panel itself doesn't care, but the host needs to demultiplex
@@ -183,15 +171,9 @@ interface RunPanelProps {
   /** When false, the panel renders into the DOM but is hidden via
    *  `display: none`. Used by the multi-chat host to keep inactive tabs
    *  mounted (so their state, listeners, and output buffer survive) while
-   *  only the active one is visible. Default true. */
+   *  only the active one is visible — including while the whole agent
+   *  panel is closed. Default true. */
   visible?: boolean;
-  /** Initial collapsed state of the drawer. Defaults to `true` so the
-   *  app loads with the drawer in compact mode. The multi-chat host
-   *  overrides to `false` for tabs the user explicitly creates via
-   *  "+" (otherwise opening a new tab would visually "close" the
-   *  drawer to the active tab's default-collapsed state, looking
-   *  exactly like a regression). */
-  initialCollapsed?: boolean;
   /** Publishes a coarse status snapshot to the host whenever this
    *  panel's state changes. Lets the host build the tab-bar indicators
    *  (running dot, pending-permission badge), the aggregate
@@ -232,15 +214,10 @@ export interface ChatTabStatusInfo {
   costUsd: number;
   /** Total saved sessions for the vault — vault-wide, not per-tab,
    *  but reported via the per-tab channel because each panel runs
-   *  `listSessions()` to fill its own dropdown cache. The host takes
-   *  the maximum across reporting tabs (they all see the same DB; a
+   *  `listSessions()` to fill its own cache. The host takes the
+   *  maximum across reporting tabs (they all see the same DB; a
    *  newly-mounted tab may briefly lag with `null`). */
   savedCount: number | null;
-  /** Per-tab collapsed flag. The host uses this on the *active* tab to
-   *  drop the drawer back to its content-driven height — without it
-   *  the user-set drawer height would leave an empty band below the
-   *  collapsed header. */
-  collapsed: boolean;
 }
 
 /** Snapshot of the live run state suitable for ambient UI surfaces
@@ -279,18 +256,15 @@ export interface RunStatusInfo {
   savedCount: number | null;
 }
 
-/** Imperative handle exposed to Dashboard. Used today for four things:
- *  reopening a saved session into the editor's chat panel, toggling the
- *  panel collapsed state from the header AI button, letting ambient
- *  surfaces subscribe to run-status updates so the AI handle / status
- *  bar can pulse in lockstep with the bottom drawer, and staging an
+/** Imperative handle exposed to Dashboard. Used today for three things:
+ *  reopening a saved session into the agent panel, letting ambient
+ *  surfaces subscribe to run-status updates so the rail agent icon /
+ *  statusbar can pulse in lockstep with the panel, and staging an
  *  artifact-generated prompt into the chat input so the user can review
- *  / edit / grant permissions before sending. */
+ *  / edit / grant permissions before sending. Opening/closing the agent
+ *  panel itself is Dashboard's `activePanel` state, not a handle call. */
 export interface RunPanelHandle {
   reopenSession: (session: SessionFull) => void;
-  /** Flip the panel between collapsed (compact header) and expanded
-   *  (full output + chat input). Wired to the header AI button. */
-  toggleCollapsed: () => void;
   /** Subscribe to live status updates. The callback fires once
    *  immediately with the current snapshot, then on every transition
    *  thereafter. Returns an unsubscribe function. */
@@ -312,18 +286,26 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     {
       vaultRoot,
       projects,
+      drafts = [],
+      onOpenDrafts,
       chatId = "default",
       initialState,
       visible = true,
-      initialCollapsed = true,
       onStatusChange,
     },
     ref,
   ) {
   const [status, setStatus] = useState<RunStatus>({ kind: "idle" });
   const [lines, setLines] = useState<OutputLine[]>([]);
-  const [collapsed, setCollapsed] = useState(initialCollapsed);
-  const outputRef = useRef<HTMLPreElement | null>(null);
+  const outputRef = useRef<HTMLDivElement | null>(null);
+
+  // Draft paths present when the current conversation's first run
+  // started. `null` = no run yet (no notice). Read through a ref by
+  // the start handlers so they don't need `drafts` in their deps.
+  const [draftBaseline, setDraftBaseline] =
+    useState<ReadonlySet<string> | null>(null);
+  const draftPathsRef = useRef<string[]>([]);
+  draftPathsRef.current = drafts.map((d) => d.path);
 
   // Claude session id captured from the first `system init` event in the
   // stream. Once it's set, the user can continue the conversation via the
@@ -367,15 +349,6 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
    *  resume. */
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
 
-  /** When true, prepend a hardening preamble to the next outgoing prompt
-   *  telling the agent NOT to read files under personal-work or
-   *  team-management zones. The vault is still passed as `--add-dir` —
-   *  this is a behavioural instruction, not a filesystem block — but the
-   *  agent honours it reliably. Session-only state; the toggle resets on
-   *  app launch so an absent-minded `true` from a past session doesn't
-   *  silently weaken future runs. */
-  const [excludePersonalZones, setExcludePersonalZones] = useState(false);
-
   // Session-history bookkeeping. `pendingTitle` is set when the user
   // sends a fresh freeform message — it survives the run lifecycle and
   // becomes the History row's title at save time. `startedAtMs` marks
@@ -394,9 +367,32 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     promptId: string;
   } | null>(null);
 
+  /** The artifact this conversation is EXECUTING — captured from
+   *  `stagedSource` at send time (staged runs go through
+   *  `startFreeformRun`, whose `promptId` is the "chat" sentinel).
+   *  Feeds the status broadcast's `runningSkill` so artifact cards can
+   *  show a live running chip. Survives the run; cleared on New chat /
+   *  re-stage. */
+  const [stagedRun, setStagedRun] = useState<{
+    projectSlug: string;
+    promptId: string;
+  } | null>(null);
+
   /** Ref to the chat textarea so `stagePrompt` can focus it after writing
    *  the draft. The user expects to land in the input ready to edit. */
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Auto-grow the composer with its content (VSCode/Zed behaviour):
+  // reset to auto so shrinking works, then size to content; the CSS
+  // max-height caps it and flips on the scrollbar. Re-measured on
+  // draft changes and on visibility flips — a hidden textarea reports
+  // scrollHeight 0, so sizing while hidden would collapse it.
+  useEffect(() => {
+    const el = chatInputRef.current;
+    if (!el || !visible) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [chatDraft, visible]);
 
   /** Current permission request awaiting a user decision, scoped to
    *  *this panel's* run via the same `isMine(runId)` filter the stream
@@ -427,17 +423,10 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
   pendingTitleRef.current = pendingTitle;
   startedAtMsRef.current = startedAtMs;
 
-  // Recent active sessions, populated when the user opens the dropdown.
-  // Lazy-loaded so the panel mount cost stays unchanged for users who
-  // never touch the chat history.
-  const [recentSessions, setRecentSessions] = useState<SessionSummary[] | null>(null);
-  const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
-  const [sessionMenuError, setSessionMenuError] = useState<string | null>(null);
-
-  // Cache backing the collapsed compact header — latest session + count
-  // for this vault. Eager-fetched while idle so the drawer can say "last
-  // run 11m ago · $0.21" without waiting for a menu open. Invalidated on
-  // run exit so the next idle picks up the freshly saved row.
+  // Saved-session cache — drives the vault-wide saved count reported
+  // via status broadcasts. Eager-fetched on mount; refreshed after
+  // every save. (The session history list itself lives in the host's
+  // history pane now.)
   const [lastSessions, setLastSessions] = useState<SessionSummary[] | null>(null);
 
   // Projects eligible as a chat scope. Without a `localPath` the backend
@@ -700,6 +689,14 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
             // conversation began.
             setStartedAtMs(Date.now());
           }
+          // Snapshot drafts at run start so anything appearing later
+          // is attributable to the agent. Resume keeps the earlier
+          // baseline — the conversation is still "one piece of work".
+          setDraftBaseline((prev) =>
+            ev.resume && prev !== null
+              ? prev
+              : new Set(draftPathsRef.current),
+          );
           setChatDraft("");
           setChatError(null);
           // Staging chip belongs to the pre-send moment — once the run
@@ -707,7 +704,6 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
           // regular conversation again.
           setStagedSource(null);
           setStatus({ kind: "running", started: ev });
-          setCollapsed(false);
         },
         onStdout: (ev) => {
           if (!isMine(ev.runId)) return;
@@ -804,7 +800,6 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
         kind: "system",
         text: `! failed to attach run listeners: ${text}`,
       });
-      setCollapsed(false);
     });
 
     return () => {
@@ -902,7 +897,9 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     setPendingTitle(null);
     setStartedAtMs(null);
     setStagedSource(null);
+    setStagedRun(null);
     setPendingPermission(null);
+    setDraftBaseline(null);
     // Fresh chat — restore picker defaults so the next conversation
     // starts on the catalog's "no opinion" model. Keeping the prior
     // selection here would surprise users who explicitly hit "New
@@ -953,11 +950,15 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
         setUsage(EMPTY_USAGE);
         setStartedAtMs(Date.now());
       }
+      // Same baseline rule as the listener's onStarted (which will
+      // re-apply this idempotently when the broadcast arrives).
+      setDraftBaseline((prev) =>
+        ev.resume && prev !== null ? prev : new Set(draftPathsRef.current),
+      );
       setChatDraft("");
       setChatError(null);
       setStagedSource(null);
       setStatus({ kind: "running", started: ev });
-      setCollapsed(false);
     },
     [],
   );
@@ -1051,24 +1052,18 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
           ? `${stagedSource.projectSlug}/${stagedSource.promptId}`
           : text.slice(0, 200),
       );
+      // Remember which artifact this conversation is executing —
+      // staged runs spawn through `startFreeformRun` (promptId
+      // "chat"), so without this the status broadcast can't report
+      // the skill id and artifact cards can't show a running chip.
+      setStagedRun(stagedSource);
       const scopeProject =
         effectiveScope === VAULT_SCOPE
           ? null
           : scopeOptions.find((p) => p.slug === effectiveScope) ?? null;
-      // Optional privacy hardening: prepend a behavioural rule telling
-      // the agent to stay out of personal-work / team-management zones.
-      // The user's typed text stays in the title (above) so History rows
-      // don't read like the policy header.
-      const outgoing = excludePersonalZones ? PRIVACY_PREAMBLE + text : text;
-      if (excludePersonalZones) {
-        appendLine({
-          kind: "system",
-          text: "▸ privacy: personal-work + team-management zones blocked by request",
-        });
-      }
       const startedNew = await startFreeformRun({
         vaultRoot,
-        prompt: outgoing,
+        prompt: text,
         scopeProjectSlug: scopeProject?.slug,
         scopeRepoPath: scopeProject?.localPath ?? undefined,
         runner: selectedRunner,
@@ -1090,7 +1085,6 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     effectiveScope,
     scopeOptions,
     vaultRoot,
-    excludePersonalZones,
     selectedRunner,
     selectedModel,
     stagedSource,
@@ -1346,8 +1340,6 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     setStagedSource(null);
     setPendingPermission(null);
     setChatError(null);
-    setCollapsed(false);
-    setSessionMenuOpen(false);
   }, []);
 
   // Apply host-injected `initialState` exactly once on mount. The two
@@ -1362,8 +1354,11 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
       const s = initialState.started;
       currentRunIdRef.current = s.runId || null;
       setCurrentRunId(s.runId || null);
+      // Adopting mid-run (app restart during a conversation): baseline
+      // from the current scan — drafts written before the restart are
+      // already in it, so only genuinely-new ones get noticed.
+      setDraftBaseline(new Set(draftPathsRef.current));
       setStatus({ kind: "running", started: s });
-      setCollapsed(false);
     } else {
       reopenSession(initialState.session);
     }
@@ -1425,8 +1420,15 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
       status.kind === "exited"
         ? status.started
         : null;
+    // Artifact runs carry their promptId on the spawn payload; staged
+    // artifact runs spawn as freeform ("chat" sentinel), so fall back
+    // to the staged source captured at send time.
     const runningSkill =
-      started && started.promptId !== "chat" ? started.promptId : null;
+      started && started.promptId !== "chat"
+        ? started.promptId
+        : started
+          ? (stagedRun?.promptId ?? null)
+          : null;
     const runningProject =
       started && started.projectSlug !== "(vault)"
         ? started.projectSlug
@@ -1448,7 +1450,6 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
       contextSize: usage.contextSize,
       costUsd: usage.costUsd,
       savedCount: lastSessions?.length ?? null,
-      collapsed,
     });
   }, [
     chatId,
@@ -1456,11 +1457,11 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     status,
     pendingPermission,
     pendingTitle,
+    stagedRun,
     usage.contextUsed,
     usage.contextSize,
     usage.costUsd,
     lastSessions,
-    collapsed,
   ]);
 
   const subscribeToStatus = useCallback(
@@ -1479,10 +1480,6 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     },
     [],
   );
-
-  const toggleCollapsed = useCallback(() => {
-    setCollapsed((c) => !c);
-  }, []);
 
   const stagePrompt = useCallback<RunPanelHandle["stagePrompt"]>(
     ({ text, projectSlug, promptId }) => {
@@ -1507,6 +1504,8 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
         setUsage(EMPTY_USAGE);
         setPendingTitle(null);
         setStartedAtMs(null);
+        setDraftBaseline(null);
+        setStagedRun(null);
         // Same rationale as `onNewChat` — staging an artifact opens a
         // fresh conversation; carry-over of the prior chat's picker
         // selection would surprise the user.
@@ -1522,17 +1521,19 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
       setChatDraft(text);
       setStagedSource({ projectSlug, promptId });
       setChatError(null);
-      setCollapsed(false);
-      // requestAnimationFrame so the textarea is mounted (the expanded
-      // chat input is conditionally rendered while collapsed).
+      // requestAnimationFrame so Dashboard has committed the panel-open
+      // state and the textarea is visible before we focus it.
       requestAnimationFrame(() => {
         const el = chatInputRef.current;
         if (!el) return;
         el.focus();
         // Drop the caret at the end so the user can append (e.g.
         // "...also please be brief") without first clicking past the
-        // pre-filled text.
+        // pre-filled text — but scroll the view back to the TOP so the
+        // staged prompt is reviewable from its beginning (the caret
+        // jump would otherwise leave the box showing the tail).
         el.setSelectionRange(text.length, text.length);
+        el.scrollTop = 0;
       });
       return null;
     },
@@ -1541,46 +1542,17 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
 
   useImperativeHandle(
     ref,
-    () => ({ reopenSession, toggleCollapsed, subscribeToStatus, stagePrompt }),
-    [reopenSession, toggleCollapsed, subscribeToStatus, stagePrompt],
+    () => ({ reopenSession, subscribeToStatus, stagePrompt }),
+    [reopenSession, subscribeToStatus, stagePrompt],
   );
 
-  // ---------- Session quick-switch dropdown ----------
-
-  const openSessionMenu = useCallback(async () => {
-    setSessionMenuOpen((open) => !open);
-    if (recentSessions !== null) return; // already loaded
-    try {
-      const list = await listSessions(vaultRoot, false);
-      setRecentSessions(list);
-      setSessionMenuError(null);
-    } catch (err) {
-      setSessionMenuError(err instanceof Error ? err.message : String(err));
-    }
-  }, [recentSessions, vaultRoot]);
-
-  // Invalidate the dropdown cache when the panel transitions to
-  // exited — opening the menu next time will refetch and pick up the
-  // freshly-saved row. The compact-header cache (`lastSessions`) is
-  // NOT cleared here: the save-completion path in the persistence
-  // effect refreshes it explicitly so the count flips from N → N+1
-  // in one render rather than briefly going through `null`.
-  useEffect(() => {
-    if (status.kind === "exited") {
-      setRecentSessions(null);
-    }
-  }, [status.kind]);
-
-  // Eager-fetch the recent session list whenever the cache is empty.
+  // Eager-fetch the saved-session list whenever the cache is empty.
   // We deliberately don't gate on `status.kind === "idle"` — when the
   // app mounts mid-run (HMR in dev, IDE restart during a long
   // conversation), the run-status sync recovers `kind: "running"`
   // immediately, and an idle-only fetch would never fire. The result
-  // was the AI handle and StatusBar reading `savedCount: 0` forever
-  // until the run exited. Driving solely off `lastSessions === null`
-  // catches the mount-during-running case at the cost of one extra
-  // IPC during regular start-from-idle (negligible — same call the
-  // dropdown would make on first open).
+  // was the rail agent icon and StatusBar reading `savedCount: 0`
+  // forever until the run exited.
   useEffect(() => {
     if (lastSessions !== null) return;
     let cancelled = false;
@@ -1589,7 +1561,7 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
         const list = await listSessions(vaultRoot, false);
         if (!cancelled) setLastSessions(list);
       } catch {
-        // Best-effort: the compact line falls back to bare "● idle".
+        // Best-effort: savedCount just stays null until the next save.
       }
     })();
     return () => {
@@ -1597,81 +1569,7 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     };
   }, [vaultRoot, lastSessions]);
 
-  const onPickSessionFromMenu = useCallback(
-    async (summary: SessionSummary) => {
-      try {
-        const full = await getSession(summary.id);
-        reopenSession(full);
-      } catch (err) {
-        setSessionMenuError(err instanceof Error ? err.message : String(err));
-      }
-    },
-    [reopenSession],
-  );
-
-  /**
-   * Refresh the dropdown cache without closing the popover, so the user
-   * can chain multiple actions (archive one, delete another) without
-   * the menu flickering away after each click.
-   */
-  const refreshSessionMenu = useCallback(async () => {
-    try {
-      const list = await listSessions(vaultRoot, false);
-      setRecentSessions(list);
-      setSessionMenuError(null);
-    } catch (err) {
-      setSessionMenuError(err instanceof Error ? err.message : String(err));
-    }
-  }, [vaultRoot]);
-
-  const onArchiveFromMenu = useCallback(
-    async (summary: SessionSummary) => {
-      try {
-        await archiveSession(summary.id, !summary.archived);
-        await refreshSessionMenu();
-      } catch (err) {
-        setSessionMenuError(err instanceof Error ? err.message : String(err));
-      }
-    },
-    [refreshSessionMenu],
-  );
-
-  const onDeleteFromMenu = useCallback(
-    async (summary: SessionSummary) => {
-      // Confirm before deleting — the action is irreversible and the
-      // icon target is small, so a stray click shouldn't wipe a chat.
-      const ok = window.confirm(
-        `Delete this chat from history?\n\n"${summary.title}"\n\nThis cannot be undone.`,
-      );
-      if (!ok) return;
-      try {
-        await deleteSession(summary.id);
-        // If we just deleted the currently-active session, drop the
-        // exited state too — there's no row to upsert into on resume.
-        if (summary.claudeSessionId === sessionId) {
-          setStatus({ kind: "idle" });
-          setLines([]);
-          setSessionId(null);
-          setUsage(EMPTY_USAGE);
-          setPendingTitle(null);
-          setStartedAtMs(null);
-        }
-        await refreshSessionMenu();
-      } catch (err) {
-        setSessionMenuError(err instanceof Error ? err.message : String(err));
-      }
-    },
-    [refreshSessionMenu, sessionId],
-  );
-
-  const statusLabel = useMemo(() => describeStatus(status), [status]);
-  const compact = useMemo(
-    () => compactStatusLine({ status, usage, lastSessions }),
-    [status, usage, lastSessions],
-  );
-  const sessionsCount = lastSessions?.length ?? recentSessions?.length ?? null;
-  const showChatInput =
-    !collapsed && status.kind !== "running" && status.kind !== "stopping";
+  const isRunning = status.kind === "running" || status.kind === "stopping";
 
   // Latest agent plan / todo-list snapshot. The ACP renderer collapses
   // every `SessionUpdate.plan` emission into one line keyed by
@@ -1690,554 +1588,238 @@ export const RunPanel = forwardRef<RunPanelHandle, RunPanelProps>(
     [lines],
   );
 
+  const scopeName =
+    effectiveScope === VAULT_SCOPE ? "the vault" : effectiveScope;
+
+  // Drafts that appeared after this conversation's run started — the
+  // agent's proposed knowledge notes awaiting curation.
+  const newDraftCount = useMemo(() => {
+    if (draftBaseline === null) return 0;
+    let n = 0;
+    for (const d of drafts) {
+      if (!draftBaseline.has(d.path)) n += 1;
+    }
+    return n;
+  }, [drafts, draftBaseline]);
+
   return (
-    <aside
-      className={"run-panel" + (collapsed ? " run-panel--collapsed" : "")}
-      aria-label="Agent run output"
-      // Stay mounted-but-hidden when the host is showing a sibling tab.
-      // Unmounting would detach `onRunEvents` and freeze any backend
-      // run streaming into this conversation.
+    <section
+      className="ide-agent-chat"
+      aria-label="Agent conversation"
+      // Stay mounted-but-hidden when the host is showing a sibling tab
+      // (or the whole agent panel is closed). Unmounting would detach
+      // `onRunEvents` and freeze any backend run streaming into this
+      // conversation.
       style={visible ? undefined : { display: "none" }}
     >
-      <header className="run-panel__header">
-        {collapsed ? (
-          <>
-            <div className="run-panel__compact">
-              <span
-                className={
-                  "run-panel__compact-dot run-panel__compact-dot--" +
-                  compact.dot
-                }
-                aria-hidden="true"
-              />
-              <span className="run-panel__compact-label">{compact.label}</span>
-              {compact.meta && (
-                <span className="run-panel__compact-meta">{compact.meta}</span>
-              )}
-            </div>
-            <SessionMenuButton
-              open={sessionMenuOpen}
-              loading={recentSessions === null && sessionMenuError === null}
-              sessions={recentSessions ?? []}
-              error={sessionMenuError}
-              activeSessionId={sessionId}
-              compact
-              sessionsCount={sessionsCount}
-              onToggle={() => void openSessionMenu()}
-              onPick={(s) => void onPickSessionFromMenu(s)}
-              onArchive={(s) => void onArchiveFromMenu(s)}
-              onDelete={(s) => void onDeleteFromMenu(s)}
-              onDismiss={() => setSessionMenuOpen(false)}
-            />
-          </>
-        ) : (
-          <>
-            <span className="run-panel__title">Chat</span>
-            <SessionMenuButton
-              open={sessionMenuOpen}
-              loading={recentSessions === null && sessionMenuError === null}
-              sessions={recentSessions ?? []}
-              error={sessionMenuError}
-              activeSessionId={sessionId}
-              onToggle={() => void openSessionMenu()}
-              onPick={(s) => void onPickSessionFromMenu(s)}
-              onArchive={(s) => void onArchiveFromMenu(s)}
-              onDelete={(s) => void onDeleteFromMenu(s)}
-              onDismiss={() => setSessionMenuOpen(false)}
-            />
-            <span
-              className={"run-panel__status run-panel__status--" + status.kind}
-            >
-              {statusLabel}
-            </span>
-            {hasUsage(usage) && (
-              <Tooltip
-                content={formatUsageTooltip(usage)}
-                placement="top"
-                align="end"
-                ariaLabel="Session usage"
-              >
-                <span className="run-panel__usage">
-                  {formatUsageSummary(usage)}
-                </span>
-              </Tooltip>
-            )}
-          </>
-        )}
-        {status.kind === "running" && (
-          <button
-            type="button"
-            className="btn btn--small btn--danger"
-            onClick={onStop}
-          >
-            Stop
-          </button>
-        )}
-        {status.kind === "stopping" && (
-          <button
-            type="button"
-            className="btn btn--small"
-            disabled
-          >
-            Stopping…
-          </button>
-        )}
-        {canResume && (
-          <button
-            type="button"
-            className="btn btn--small"
-            onClick={onNewChat}
-            title="Discard the current session and start a fresh chat"
-          >
-            New chat
-          </button>
-        )}
-        <button
-          type="button"
-          className="btn btn--small"
-          onClick={() => setCollapsed((c) => !c)}
-          aria-expanded={!collapsed}
+      {/* Scope row: per-session scope chip + runner/model picker,
+          session id on the right. */}
+      <div className="ide-agent-sub">
+        <span>scope</span>
+        <span
+          className="scope"
+          title={
+            scopeLocked
+              ? "Scope is locked while continuing this session"
+              : "Where the agent runs. 'vault' runs in the vault; a project runs in its repo with the vault attached via --add-dir."
+          }
         >
-          {collapsed ? "Show" : "Hide"}
-        </button>
-      </header>
-      {!collapsed && latestPlan && (
-        <div
-          className="run-panel__plan"
-          role="status"
-          aria-label="Agent plan"
-        >
-          <pre className="run-panel__plan-body">{latestPlan}</pre>
+          <span
+            className={
+              "ide-dot " +
+              (isRunning ? "run" : status.kind === "exited" ? "ok" : "idle")
+            }
+          />
+          <select
+            value={effectiveScope}
+            onChange={(e) => setSelectedScope(e.target.value)}
+            disabled={scopeLocked}
+            aria-label="Chat scope"
+          >
+            <option value={VAULT_SCOPE}>vault</option>
+            {scopeOptions.map((p) => (
+              <option key={p.slug} value={p.slug}>
+                {p.slug}
+              </option>
+            ))}
+          </select>
+        </span>
+        <AgentPicker
+          runner={selectedRunner}
+          model={selectedModel}
+          // Runner is fixed for the lifetime of a conversation: a chat
+          // that started against Claude can't become a Codex chat
+          // (separate session stores). Re-enables on `idle` only.
+          runnerLocked={status.kind !== "idle"}
+          modelLocked={isRunning}
+          onRunnerChange={setSelectedRunner}
+          onModelChange={setSelectedModel}
+        />
+        <span className="grow" />
+        {sessionId && (
+          <span title={sessionId}>{sessionId.slice(0, 6)}</span>
+        )}
+      </div>
+
+      {latestPlan && (
+        <div className="ide-agent-plan" role="status" aria-label="Agent plan">
+          <pre>{latestPlan}</pre>
         </div>
       )}
-      {!collapsed && visibleLines.length > 0 && (
-        <pre
-          ref={outputRef}
-          className="run-panel__output"
-          onScroll={onScroll}
-        >
-          {visibleLines.map((l, i) => (
-            <span
-              key={i}
-              className={
-                "run-panel__line run-panel__line--" +
-                l.kind +
-                (l.hidden ? " run-panel__line--hidden" : "") +
-                (l.parentToolUseId ? " run-panel__line--subagent" : "")
-              }
-            >
-              {renderLineWithCodeBlocks(l.text)}
-              {"\n"}
-            </span>
-          ))}
-        </pre>
-      )}
-      {!collapsed && (
-        <PermissionRequestCard
-          request={pendingPermission}
-          onResolved={() => setPendingPermission(null)}
-        />
-      )}
-      {showChatInput && (
-        <form
-          className="run-panel__chat"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void onSend();
-          }}
-        >
-          <div className="run-panel__chat-scope">
-            <AgentPicker
-              runner={selectedRunner}
-              model={selectedModel}
-              // Runner is fixed for the lifetime of a conversation:
-              // a chat that started against Claude can't suddenly
-              // become a Codex chat (different session stores, no
-              // cross-CLI compatibility). The picker re-enables on
-              // `idle` only — `onNewChat` + `stagePrompt`'s exit
-              // reset both flip status to idle.
-              runnerLocked={status.kind !== "idle"}
-              // The chat form is only rendered when status is
-              // `idle` / `exited` (see `showChatInput`); running /
-              // stopping take the form away entirely, so model is
-              // always swappable while this picker is visible.
-              modelLocked={false}
-              onRunnerChange={setSelectedRunner}
-              onModelChange={setSelectedModel}
-            />
-            <label
-              htmlFor="run-panel-scope"
-              className="run-panel__chat-scope-label"
-            >
-              Scope:
-            </label>
-            <select
-              id="run-panel-scope"
-              className="run-panel__chat-scope-select"
-              value={effectiveScope}
-              onChange={(e) => setSelectedScope(e.target.value)}
-              disabled={scopeLocked}
-              title={
-                scopeLocked
-                  ? "Scope is locked while continuing this session"
-                  : "Where the agent runs. 'Vault only' runs in the vault; selecting a project runs in its repo with the vault available via --add-dir."
-              }
-            >
-              <option value={VAULT_SCOPE}>Vault only</option>
-              {scopeOptions.map((p) => (
-                <option key={p.slug} value={p.slug}>
-                  {p.slug} (repo)
-                </option>
-              ))}
-            </select>
-            <label
-              className="run-panel__chat-privacy"
-              title={
-                "When on, the next message is prefixed with a strict instruction telling the agent NOT to read personal-work or team-management zones. The vault is still passed to the agent via --add-dir — this is a behavioural rule, not a filesystem block — but the model honours it reliably. Session-only; resets on app launch."
-              }
-            >
-              <input
-                type="checkbox"
-                checked={excludePersonalZones}
-                onChange={(e) => setExcludePersonalZones(e.target.checked)}
-                disabled={sending}
-              />
-              <span>🔒 Skip personal zones</span>
-            </label>
-          </div>
-          {stagedSource && (
-            <div
-              className="run-panel__staged"
-              role="status"
-              aria-label="Staged artifact"
-            >
-              <span className="run-panel__staged-label">
-                Staged from{" "}
-                <code>
-                  {stagedSource.projectSlug}/{stagedSource.promptId}
-                </code>{" "}
-                — review and Send to run.
-              </span>
-              <button
-                type="button"
-                className="btn btn--small btn--ghost"
-                onClick={() => {
-                  setStagedSource(null);
-                  setChatDraft("");
-                }}
-                title="Discard the staged prompt"
-              >
-                Clear
-              </button>
-            </div>
+
+      <div
+        ref={outputRef}
+        className="ide-agent-body"
+        onScroll={onScroll}
+      >
+        {visibleLines.length === 0 ? (
+          <p className="ide-panel-hint">
+            Ask about {scopeName}. The vault is attached to every chat;
+            pick a project scope to run inside its repo. ⌘↵ sends.
+          </p>
+        ) : (
+          <AgentConversation
+            lines={visibleLines}
+            running={isRunning}
+            agentLabel={selectedRunner === "codex" ? "codex" : "claude"}
+          />
+        )}
+      </div>
+
+      {newDraftCount > 0 && (
+        <div className="ide-agent-notice" role="status">
+          <span
+            className="ide-pill"
+            style={{
+              background: "var(--accent)",
+              color: "var(--accent-fg)",
+              fontWeight: 700,
+            }}
+          >
+            {newDraftCount} draft{newDraftCount === 1 ? "" : "s"}
+          </span>
+          <span style={{ flex: 1, color: "var(--fg-2)" }}>
+            Written to <code>01_inbox/_drafts/</code>. Review in Drafts.
+          </span>
+          {onOpenDrafts && (
+            <button type="button" className="ide-btn sm" onClick={onOpenDrafts}>
+              Drafts →
+            </button>
           )}
+        </div>
+      )}
+
+      <PermissionRequestCard
+        request={pendingPermission}
+        onResolved={() => setPendingPermission(null)}
+      />
+
+      {stagedSource && (
+        <div className="ide-agent-staged" role="status" aria-label="Staged artifact">
+          <span className="txt">
+            staged from{" "}
+            <code>
+              {stagedSource.projectSlug}/{stagedSource.promptId}
+            </code>{" "}
+            — review and send
+          </span>
+          <button
+            type="button"
+            className="ide-btn ghost sm"
+            onClick={() => {
+              setStagedSource(null);
+              setChatDraft("");
+            }}
+            title="Discard the staged prompt"
+          >
+            clear
+          </button>
+        </div>
+      )}
+
+      <div className="ide-composer">
+        {chatError && (
+          <div className="ide-agent-error" role="alert">
+            {chatError}
+          </div>
+        )}
+        <div className="box">
           <textarea
             ref={chatInputRef}
-            className="run-panel__chat-input"
             value={chatDraft}
             onChange={(e) => setChatDraft(e.target.value)}
             placeholder={
-              canResume
-                ? "Reply to continue the conversation. Cmd/Ctrl+Enter to send."
-                : "Ask the agent to read, create, or edit files. Cmd/Ctrl+Enter to send."
+              isRunning
+                ? "Agent is working…"
+                : canResume
+                  ? `Reply about ${scopeName}…   ⌘↵ to send`
+                  : `Ask about ${scopeName}…   ⌘↵ to send`
             }
-            rows={3}
-            disabled={sending}
+            rows={2}
+            disabled={sending || isRunning}
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
                 e.preventDefault();
                 void onSend();
               }
             }}
-            aria-label={canResume ? "Reply to the agent" : "Message to the agent"}
+            aria-label={
+              canResume ? "Reply to the agent" : "Message to the agent"
+            }
           />
-          <div className="run-panel__chat-actions">
-            {chatError && (
-              <span className="run-panel__chat-error" role="alert">
-                {chatError}
-              </span>
+          <div className="crow">
+            {canResume && (
+              <button
+                type="button"
+                className="ide-chip"
+                onClick={onNewChat}
+                title="Discard the current session and start a fresh chat here"
+              >
+                + new
+              </button>
             )}
-            <button
-              type="submit"
-              className="btn btn--primary btn--small"
-              disabled={sending || chatDraft.trim() === ""}
-            >
-              {sending
-                ? canResume
-                  ? "Replying…"
-                  : "Sending…"
-                : canResume
-                  ? "Reply"
-                  : "Send"}
-            </button>
+            <span className="grow" />
+            {hasUsage(usage) ? (
+              <Tooltip
+                content={formatUsageTooltip(usage)}
+                placement="top"
+                align="end"
+                ariaLabel="Session usage"
+              >
+                <span className="meta">{formatUsageSummary(usage)}</span>
+              </Tooltip>
+            ) : (
+              <span className="meta">ready</span>
+            )}
+            {status.kind === "running" ? (
+              <button
+                type="button"
+                className="ide-btn primary"
+                onClick={() => void onStop()}
+              >
+                stop
+              </button>
+            ) : status.kind === "stopping" ? (
+              <button type="button" className="ide-btn" disabled>
+                stopping…
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="ide-btn primary"
+                disabled={sending || chatDraft.trim() === ""}
+                onClick={() => void onSend()}
+              >
+                {sending ? "…" : canResume ? "reply ⌘↵" : "send ⌘↵"}
+              </button>
+            )}
           </div>
-        </form>
-      )}
-    </aside>
+        </div>
+      </div>
+    </section>
   );
   },
 );
-
-interface SessionMenuButtonProps {
-  open: boolean;
-  loading: boolean;
-  sessions: SessionSummary[];
-  error: string | null;
-  activeSessionId: string | null;
-  /** Collapsed-mode RunPanel: shorten the toggle label to `☰ {count}`. */
-  compact?: boolean;
-  /** Total session count for the compact label; `null` when unknown. */
-  sessionsCount?: number | null;
-  onToggle: () => void;
-  onPick: (s: SessionSummary) => void;
-  onArchive: (s: SessionSummary) => void;
-  onDelete: (s: SessionSummary) => void;
-  onDismiss: () => void;
-}
-
-/**
- * Compact "History" dropdown in the chat panel header. Each row exposes
- * the same three actions the History tab offers (reopen / archive /
- * delete) so the user doesn't have to leave the chat panel to clean up
- * their list. The full History tab remains the place for bulk review,
- * filtering, and surfacing archived items.
- */
-function SessionMenuButton({
-  open,
-  loading,
-  sessions,
-  error,
-  activeSessionId,
-  compact = false,
-  sessionsCount = null,
-  onToggle,
-  onPick,
-  onArchive,
-  onDelete,
-  onDismiss,
-}: SessionMenuButtonProps) {
-  const visible = sessions.slice(0, 12);
-  // Compact label drops the word "History" — the icon carries the
-  // meaning in the collapsed drawer; the count is the only extra signal
-  // worth showing inline.
-  const toggleLabel = compact
-    ? sessionsCount != null
-      ? `☰ ${sessionsCount}`
-      : "☰"
-    : "⌛ History";
-  const toggleRef = useRef<HTMLButtonElement | null>(null);
-  const menuStyle = usePopoverPosition({
-    anchorRef: toggleRef,
-    open,
-    placement: "top",
-    align: "auto",
-  });
-  return (
-    <div className="run-panel__history">
-      <button
-        ref={toggleRef}
-        type="button"
-        className="btn btn--small run-panel__history-toggle"
-        onClick={onToggle}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        title="Reopen, archive, or delete recent chats"
-      >
-        {toggleLabel}
-      </button>
-      {open && (
-        <>
-          <div
-            className="run-panel__history-scrim"
-            onClick={onDismiss}
-            aria-hidden="true"
-          />
-          <div
-            className="run-panel__history-menu"
-            role="listbox"
-            style={menuStyle}
-          >
-            {loading && (
-              <div className="run-panel__history-empty">Loading…</div>
-            )}
-            {error && (
-              <div className="run-panel__history-empty run-panel__history-empty--err">
-                {error}
-              </div>
-            )}
-            {!loading && !error && visible.length === 0 && (
-              <div className="run-panel__history-empty">
-                No saved chats yet.
-              </div>
-            )}
-            {!loading &&
-              !error &&
-              visible.map((s) => (
-                <div
-                  key={s.id}
-                  className={
-                    "run-panel__history-item" +
-                    (s.claudeSessionId === activeSessionId
-                      ? " run-panel__history-item--active"
-                      : "")
-                  }
-                >
-                  <button
-                    type="button"
-                    className="run-panel__history-item-main"
-                    onClick={() => onPick(s)}
-                    title={s.title}
-                  >
-                    <span className="run-panel__history-item-title">
-                      {truncateTitle(s.title)}
-                    </span>
-                    <span className="run-panel__history-item-meta">
-                      {s.freeform ? "chat" : s.projectSlug} ·{" "}
-                      {formatRelativeMs(s.startedAtMs)}
-                    </span>
-                  </button>
-                  <div className="run-panel__history-item-actions">
-                    <button
-                      type="button"
-                      className="run-panel__history-item-action"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onArchive(s);
-                      }}
-                      title="Archive — exempt from auto-trim"
-                      aria-label="Archive chat"
-                    >
-                      📥
-                    </button>
-                    <button
-                      type="button"
-                      className="run-panel__history-item-action run-panel__history-item-action--danger"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDelete(s);
-                      }}
-                      title="Delete permanently"
-                      aria-label="Delete chat"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                </div>
-              ))}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function truncateTitle(s: string): string {
-  if (s.length <= 60) return s;
-  return s.slice(0, 59) + "…";
-}
-
-function formatRelativeMs(ms: number): string {
-  const diff = Date.now() - ms;
-  if (diff < 60_000) return "just now";
-  if (diff < 3600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3600_000)}h ago`;
-  return `${Math.floor(diff / 86_400_000)}d ago`;
-}
-
-function describeStatus(status: RunStatus): string {
-  switch (status.kind) {
-    case "idle":
-      return "idle";
-    case "running":
-      return `running · ${status.started.projectSlug}/${status.started.promptId}`;
-    case "stopping":
-      return "stopping…";
-    case "exited":
-      return status.exit.success
-        ? "exited (success)"
-        : `exited (code ${status.exit.code ?? "?"})`;
-  }
-}
-
-/** Visual state for the collapsed compact header row.
- *
- * `dot` selects the colored status indicator class
- * (`run-panel__compact-dot--{dot}`). `label` is the primary status word
- * (idle / running / ready to reply / stopping). `meta` is the optional
- * trailing detail string — scope, tokens, cost, last-run age.
- */
-interface CompactStatus {
-  dot: "muted" | "running" | "stopping" | "ok";
-  label: string;
-  meta: string | null;
-}
-
-/**
- * Build the one-line status payload rendered when the RunPanel is
- * collapsed. Idle uses the cached `lastSessions` list to surface the
- * most recent run; running / stopping / exited summarise the current
- * session from `status` + `usage`. Side-effect free — purely a view
- * helper so the JSX stays a thin renderer.
- */
-function compactStatusLine(args: {
-  status: RunStatus;
-  usage: SessionUsage;
-  lastSessions: SessionSummary[] | null;
-}): CompactStatus {
-  const { status, usage, lastSessions } = args;
-  const usageSummary = hasUsage(usage) ? formatUsageSummary(usage) : null;
-
-  switch (status.kind) {
-    case "running": {
-      const parts = [scopeLabel(status.started)];
-      if (usageSummary) parts.push(usageSummary);
-      return { dot: "running", label: "running", meta: parts.join(" · ") };
-    }
-    case "stopping": {
-      const parts = [scopeLabel(status.started)];
-      if (usageSummary) parts.push(usageSummary);
-      return { dot: "stopping", label: "stopping…", meta: parts.join(" · ") };
-    }
-    case "exited": {
-      const parts: string[] = [];
-      if (status.started) parts.push(scopeLabel(status.started));
-      if (usageSummary) parts.push(usageSummary);
-      return {
-        dot: "ok",
-        label: "ready to reply",
-        meta: parts.length > 0 ? parts.join(" · ") : null,
-      };
-    }
-    case "idle": {
-      const latest = lastSessions && lastSessions.length > 0
-        ? lastSessions[0]
-        : null;
-      if (!latest) {
-        return {
-          dot: "muted",
-          label: "idle",
-          meta: lastSessions === null ? null : "no chats yet",
-        };
-      }
-      const parts = [`last run ${formatRelativeMs(latest.startedAtMs)}`];
-      if (latest.costUsd > 0) parts.push(formatCost(latest.costUsd));
-      return { dot: "muted", label: "idle", meta: parts.join(" · ") };
-    }
-  }
-}
-
-/**
- * Short, glanceable label for the run's scope. Freeform vault runs
- * render as `vault`; freeform project runs render as the slug; artifact
- * runs render as `slug/promptId` so the user can tell which prompt is
- * running without expanding the panel.
- */
-function scopeLabel(started: RunStartedEvent): string {
-  if (started.freeform) {
-    return started.projectSlug === "(vault)" ? "vault" : started.projectSlug;
-  }
-  return `${started.projectSlug}/${started.promptId}`;
-}
 
 /**
  * Project the internal `RunStatus + SessionUsage + saved list` triple
@@ -2293,34 +1875,6 @@ function buildRunStatusInfo(
 }
 
 
-function renderLineWithCodeBlocks(text: string): React.ReactNode {
-  if (!text.includes("```")) return text;
-  const fence = /```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g;
-  const parts: React.ReactNode[] = [];
-  let cursor = 0;
-  let key = 0;
-  let match: RegExpExecArray | null;
-  while ((match = fence.exec(text)) !== null) {
-    const [whole, lang, body] = match;
-    if (match.index > cursor) {
-      parts.push(text.slice(cursor, match.index));
-    }
-    parts.push(
-      <span key={key++} className="run-panel__codeblock">
-        {lang ? (
-          <span className="run-panel__codeblock-lang">{lang}</span>
-        ) : null}
-        {lang ? "\n" : ""}
-        {body.replace(/\n$/, "")}
-      </span>,
-    );
-    cursor = match.index + whole.length;
-  }
-  if (cursor < text.length) {
-    parts.push(text.slice(cursor));
-  }
-  return <>{parts}</>;
-}
 
 
 function mergeUsage(prev: SessionUsage, snap: UsageSnapshot): SessionUsage {
@@ -2347,22 +1901,6 @@ function hasUsage(u: SessionUsage): boolean {
   // Wait for `contextUsed` (a true measurement) or `costUsd` (only
   // reported once billing has accrued) before showing the chip.
   return u.contextUsed > 0 || u.costUsd > 0;
-}
-
-function formatTokens(n: number): string {
-  if (n < 1000) return String(n);
-  if (n < 1_000_000) {
-    const k = n / 1000;
-    return k >= 100 ? `${Math.round(k)}K` : `${k.toFixed(1).replace(/\.0$/, "")}K`;
-  }
-  return `${(n / 1_000_000).toFixed(2)}M`;
-}
-
-function formatCost(usd: number): string {
-  if (usd === 0) return "$0";
-  if (usd < 0.01) return `$${usd.toFixed(4)}`;
-  if (usd < 1) return `$${usd.toFixed(3)}`;
-  return `$${usd.toFixed(2)}`;
 }
 
 function formatUsageSummary(u: SessionUsage): string {

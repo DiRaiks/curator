@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "Curator",
-        "width": 1100,
-        "height": 720,
-        "minWidth": 800,
-        "minHeight": 500
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1100,
+        "minHeight": 600
       }
     ],
     "security": {

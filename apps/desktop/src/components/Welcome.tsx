@@ -6,6 +6,7 @@ import {
   removeRecentVault,
 } from "../api";
 import type { RecentVault } from "../types";
+import { loadShellTheme } from "./shell/types";
 
 interface WelcomeProps {
   onOpenVault: () => void;
@@ -71,7 +72,13 @@ export function Welcome({
 
   const hasRecent = recent !== null && recent.length > 0;
 
+  // Wrapped in `.ide <theme>` so the pre-vault screen shares the shell
+  // palette (legacy vars bridge inside .ide). Theme comes from the same
+  // persisted state the statusbar toggle writes.
+  const [theme] = useState(() => loadShellTheme());
+
   return (
+    <div className={"ide " + theme}>
     <div className="welcome">
       <div className="welcome__card">
         <h1 className="welcome__title">Curator</h1>
@@ -129,6 +136,7 @@ export function Welcome({
           <p className="welcome__error">recent: {listError}</p>
         )}
       </div>
+    </div>
     </div>
   );
 }

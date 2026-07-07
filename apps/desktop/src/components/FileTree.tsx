@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { ShellIcon } from "./shell/ShellIcon";
 
 interface TreeNode {
   name: string;
@@ -7,9 +8,13 @@ interface TreeNode {
   isFile: boolean;
 }
 
+/** Vault-relative directory prefix whose subtree renders in the
+ *  accent "draft" tone with a count badge on the folder row. */
+const DRAFTS_DIR = "01_inbox/_drafts";
+
 /**
  * Vault-relative paths of every directory that should render expanded.
- * Lifted out of the individual rows so the sidebar can drive "collapse
+ * Lifted out of the individual rows so the parent can drive "collapse
  * all" and auto-reveal in one place. A directory is open iff its path
  * is in this set — an empty set means the whole tree is collapsed.
  */
@@ -47,6 +52,14 @@ function buildTree(paths: string[]): TreeNode {
   return root;
 }
 
+function countFiles(node: TreeNode): number {
+  let n = 0;
+  for (const c of node.children.values()) {
+    n += c.isFile ? 1 : countFiles(c);
+  }
+  return n;
+}
+
 interface FileTreeProps {
   files: string[];
   onSelectFile?: (path: string) => void;
@@ -57,6 +70,9 @@ interface FileTreeProps {
   onToggleDir: (path: string) => void;
 }
 
+/** Vault file tree in the shell v2 look: 22px mono rows, folder icons
+ *  info-blue, md icons muted, drafts subtree in accent with a count
+ *  badge on the `_drafts/` folder. */
 export function FileTree({
   files,
   onSelectFile,
@@ -66,10 +82,10 @@ export function FileTree({
 }: FileTreeProps) {
   const tree = useMemo(() => buildTree(files), [files]);
   if (files.length === 0) {
-    return <p className="empty">No markdown files.</p>;
+    return <p className="ide-panel-hint">No markdown files.</p>;
   }
   return (
-    <ul className="tree">
+    <div className="ide-tree" role="tree">
       {[...tree.children.values()].sort(compareNodes).map((n) => (
         <TreeItem
           key={n.path}
@@ -81,7 +97,7 @@ export function FileTree({
           onToggleDir={onToggleDir}
         />
       ))}
-    </ul>
+    </div>
   );
 }
 
@@ -108,57 +124,67 @@ function TreeItem({
   onToggleDir,
 }: TreeItemProps) {
   const open = expanded.has(node.path);
-  const padding = { paddingLeft: depth * 12 + 4 };
+  const padding = { paddingLeft: depth * 12 + 10 };
+  const inDrafts =
+    node.path === DRAFTS_DIR || node.path.startsWith(DRAFTS_DIR + "/");
+
   if (node.isFile) {
     const isActive = activePath === node.path;
     return (
-      <li
-        className={
-          "tree__item tree__item--file" +
-          (isActive ? " tree__item--active" : "")
-        }
-        title={node.path}
-      >
-        <button
-          type="button"
-          className="tree__file-btn"
-          style={padding}
-          onClick={() => onSelectFile?.(node.path)}
-          disabled={!onSelectFile}
-        >
-          <span className="tree__icon">·</span>
-          {node.name}
-        </button>
-      </li>
-    );
-  }
-  return (
-    <li className="tree__item tree__item--dir">
       <button
         type="button"
-        className="tree__toggle"
+        role="treeitem"
+        aria-selected={isActive}
+        className={
+          "ide-tnode file" +
+          (inDrafts ? " draft" : "") +
+          (isActive ? " active" : "")
+        }
+        style={padding}
+        title={node.path}
+        onClick={() => onSelectFile?.(node.path)}
+        disabled={!onSelectFile}
+      >
+        <span className="caret" />
+        <span className="ic">
+          <ShellIcon name="md" size={14} />
+        </span>
+        <span className="nm">{node.name}</span>
+      </button>
+    );
+  }
+
+  const draftCount = node.path === DRAFTS_DIR ? countFiles(node) : 0;
+  return (
+    <>
+      <button
+        type="button"
+        role="treeitem"
+        aria-expanded={open}
+        className={"ide-tnode dir" + (inDrafts ? " draft" : "")}
         style={padding}
         onClick={() => onToggleDir(node.path)}
-        aria-expanded={open}
+        title={node.path}
       >
-        <span className="tree__icon">{open ? "▾" : "▸"}</span>
-        {node.name}
+        <span className="caret">{open ? "▾" : "▸"}</span>
+        <span className="ic">
+          <ShellIcon name="folder" size={14} />
+        </span>
+        <span className="nm">{node.name}/</span>
+        {draftCount > 0 && <span className="tbadge">{draftCount}</span>}
       </button>
-      {open && (
-        <ul className="tree">
-          {[...node.children.values()].sort(compareNodes).map((c) => (
-            <TreeItem
-              key={c.path}
-              node={c}
-              depth={depth + 1}
-              onSelectFile={onSelectFile}
-              activePath={activePath}
-              expanded={expanded}
-              onToggleDir={onToggleDir}
-            />
-          ))}
-        </ul>
-      )}
-    </li>
+      {open &&
+        [...node.children.values()].sort(compareNodes).map((c) => (
+          <TreeItem
+            key={c.path}
+            node={c}
+            depth={depth + 1}
+            onSelectFile={onSelectFile}
+            activePath={activePath}
+            expanded={expanded}
+            onToggleDir={onToggleDir}
+          />
+        ))}
+    </>
   );
 }

@@ -40,7 +40,6 @@ crates/vault-core/
     runner/            # ACP-driven runner abstraction (Claude + Codex)
     markdown_io.rs     # vault-rooted read / write / create / promote / discard
     source_repo.rs     # read-only repo inspection (git status, detected files)
-    scope.rs           # privacy-zone classification
     frontmatter.rs     # YAML helpers
     types.rs           # serializable data types
 examples/demo-vault/   # sample vault used by "Open Demo Vault"
@@ -54,7 +53,6 @@ docs/                  # architecture notes
 | vault config (parsed)                 | `.vault/config.yml` — declares `version:`               |
 | projects                              | `02_projects/<slug>/_index.md`                          |
 | per-machine project overlay (optional)| `02_projects/<slug>/_local.md` (merged on top of index) |
-| zones (privacy classification)        | top-level folders + frontmatter `scope:`                |
 | vault-skills                          | `.vault/skills/*.skill.md`                              |
 | agent-prompts                         | `00_meta/agent-tasks/prompts/*.md`                      |
 | claude-skills                         | `00_meta/_claude/skills/<name>/SKILL.md`                |
@@ -66,7 +64,7 @@ docs/                  # architecture notes
 ## Core capabilities (current)
 
 1. **Vault scan + watch** — Rust scanner produces a `ScanResult`
-   (projects, artifacts, zones, drafts, diagnostics); a `notify`-based
+   (projects, artifacts, drafts, diagnostics); a `notify`-based
    watcher fires `vault:changed` events on debounced file activity.
 2. **Markdown editor** — CodeMirror 6 source mode + `react-markdown`
    preview with GFM. Frontmatter renders as an editable form (or
@@ -76,11 +74,12 @@ docs/                  # architecture notes
    (`claude-agent-acp` JS wrapper for Claude, `codex-acp` native
    binary for Codex) over JSON-RPC on subprocess stdio. The vault is
    forwarded via ACP `additional_directories`; cwd is set to the
-   project repo (validated via a deny-list of sensitive paths). A
-   tabbed bottom drawer runs up to 3 chats concurrently; each
+   project repo (validated via a deny-list of sensitive paths). The
+   Zed-style agent panel (left, ⌘J) runs up to 3 chats concurrently;
+   conversations render as turns with tool-call bubbles, each chat
    streams `session/update` events, surfaces an inline permission
    card on `session/request_permission`, and supports resume by
-   session id. Subagent activity renders nested under its parent —
+   session id. Chats keep streaming while the panel is closed. Subagent activity renders nested under its parent —
    `Task` subagents from their on-wire `parentToolUseId`, and
    `Workflow`-tool subagents (which never hit the wire) via a
    journal-tailing watcher that synthesises the same notifications.
@@ -105,6 +104,18 @@ docs/                  # architecture notes
    config; the IDE never auto-commits.
 8. **Vault format versioning** — `.vault/config.yml` declares
    `version:`; IDE warns when the vault is newer than it supports.
+9. **Shell v2 (VSCode-style)** — activity rail with a single swappable
+   left panel (Projects / Search / Source Control / AI Artifacts /
+   Drafts / CVE Scan / Diagnostics / Agent / Settings), the vault
+   file tree always visible on the right, ⌘K command palette,
+   graphite/porcelain themes, resizable panels with persisted layout.
+10. **Content search** — `search_vault` command: case-insensitive
+    substring scan across the vault's Markdown (capped hits/snippets),
+    surfaced in the Search panel grouped by file.
+11. **Artifact run accordion** — artifact cards expand in place with a
+    run row (`▶ run…` stages the materialized prompt into the agent
+    composer — human reviews before Send), a run-plan summary, and a
+    live "running" chip tied to session status.
 
 ## Scan result shape (current; see `crates/vault-core/src/types.rs`)
 
@@ -121,7 +132,6 @@ interface ScanResult {
   vaultFormatVersion: string | null;
   vaultFormatSupported: boolean;
   markdownFiles: MarkdownFile[];
-  zones: Zone[];
   artifacts: WorkflowArtifact[];
   projects: Project[];
   drafts: Draft[];
@@ -142,8 +152,6 @@ interface ScanResult {
 
 Tracked separately, but the major pieces in flight:
 
-- **Per-zone agent access toggles** — opt-in expansion of agent
-  read/write into personal zones via `.vault/config.yml`
 - **Tool whitelisting from `claude-agent.tools[]` frontmatter** + an
   Approve-tools dialog for dangerous capabilities
 - **Persistent agent permission rules** — the inline permission card
@@ -168,7 +176,7 @@ Tracked separately, but the major pieces in flight:
   built-in Source Control view, but the commit is always a deliberate
   user action — there is no automatic commit path.
 - **Curation, not auto-promote** — agents propose knowledge into
-  `01_inbox/_drafts/`; promotion to permanent zones is always a
+  `01_inbox/_drafts/`; promotion to a permanent location is always a
   human decision.
 - **Skills are first-class** — they're versioned content in the
   vault, not hard-coded behaviour. Any user can fork / customize /

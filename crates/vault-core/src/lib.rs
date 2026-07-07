@@ -28,11 +28,13 @@ pub use config::VAULT_FORMAT_VERSION_MAJOR;
 
 mod artifacts;
 mod frontmatter;
-mod scope;
 mod util;
 
 mod scan;
 pub use scan::{scan_vault, ScanError};
+
+mod search;
+pub use search::{search_vault, SearchHit, SearchResult};
 
 mod preview;
 pub use preview::{preview_context, PreviewError};

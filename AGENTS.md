@@ -37,7 +37,11 @@ before non-trivial work in that area.
 - [`docs/architecture.md`](docs/architecture.md) — top-level layer map
   (React → Tauri shell → `vault-core`), command surface, threading,
   vault conventions, security boundaries.
-- [`docs/multi-chat.md`](docs/multi-chat.md) — bottom chat drawer:
+- [`docs/shell.md`](docs/shell.md) — shell v2 frontend: rail/panel
+  layout, state + persistence keys, resize rules, editor theming, CSS
+  conventions (`.ide` scope, bridge vars, the `:where()` reset
+  gotcha), popover positioning hook.
+- [`docs/multi-chat.md`](docs/multi-chat.md) — agent panel chats:
   `RunState` as a `HashMap<RunId, ActiveRun>` (cap = 3), how `runId`
   is minted and threaded through every event, the strict
   `isMine(runId)` filter that keeps sibling chat tabs isolated, the

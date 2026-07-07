@@ -4,10 +4,6 @@
 //! and prompt, and returns a `ContextPreview` describing what would be made
 //! available to an AI runner. No files are written, no AI is invoked here.
 //!
-//! Privacy-zone exclusions (`personal-work`, `team-management`, `inbox`,
-//! `archive`, `resource`) are tallied as counts, never as file contents. The
-//! static policy also excludes `*.bak`, `.env*`, `*.pem`, `*.key`.
-//!
 //! The runner-agnostic prompt text (what the user copies into Zed / Claude
 //! Code / Codex / Cursor) is assembled by the `runner_prompt` submodule.
 
@@ -15,12 +11,10 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use thiserror::Error;
-use walkdir::WalkDir;
 
-use crate::scan::{is_pruned, scan_vault, ScanError};
+use crate::scan::{scan_vault, ScanError};
 use crate::types::{
-    ContextPreview, ExcludedCounts, IncludeReason, IncludedFile, PreviewWarning, Scope,
-    SourceRepoStatus, WarningKind,
+    ContextPreview, IncludeReason, IncludedFile, PreviewWarning, SourceRepoStatus, WarningKind,
 };
 
 mod runner_prompt;
@@ -149,14 +143,12 @@ pub fn preview_context(
     if r.has_agents_md {
         included.push(IncludedFile {
             path: "00_meta/AGENTS.md".to_string(),
-            scope: Scope::Meta,
             reason: IncludeReason::MetaAgentsRules,
         });
     }
 
     included.push(IncludedFile {
         path: prompt.path.clone(),
-        scope: Scope::Meta,
         reason: IncludeReason::SelectedPrompt,
     });
 
@@ -166,7 +158,6 @@ pub fn preview_context(
     {
         included.push(IncludedFile {
             path: project.index_file.clone(),
-            scope: Scope::Project,
             reason: IncludeReason::ProjectIndex,
         });
         handled_project_paths.insert(project.index_file.clone());
@@ -176,14 +167,16 @@ pub fn preview_context(
         if output_exists && resolved.starts_with(&project_prefix) {
             included.push(IncludedFile {
                 path: resolved.clone(),
-                scope: Scope::Project,
                 reason: IncludeReason::ExistingOutputFile,
             });
             handled_project_paths.insert(resolved.clone());
         }
     }
 
-    let mut excluded = ExcludedCounts::default();
+    // Every indexed markdown file under the project dir joins the run
+    // plan. (Privacy zones and per-file `scope:` opt-outs were removed
+    // from the product — the agent reads the vault via --add-dir
+    // regardless; the plan lists the project's own documents.)
     for f in &r.markdown_files {
         if !f.path.starts_with(&project_prefix) {
             continue;
@@ -191,26 +184,11 @@ pub fn preview_context(
         if handled_project_paths.contains(&f.path) {
             continue;
         }
-        match f.scope {
-            Scope::Project | Scope::Meta => {
-                included.push(IncludedFile {
-                    path: f.path.clone(),
-                    scope: f.scope.clone(),
-                    reason: IncludeReason::ProjectDocument,
-                });
-            }
-            Scope::PersonalWork => excluded.personal_work += 1,
-            Scope::TeamManagement => excluded.team_management += 1,
-            Scope::Inbox => excluded.inbox += 1,
-            Scope::Archive | Scope::Resource => excluded.archive_or_resource += 1,
-            Scope::Unknown => excluded.ignored_path += 1,
-        }
+        included.push(IncludedFile {
+            path: f.path.clone(),
+            reason: IncludeReason::ProjectDocument,
+        });
     }
-
-    // Static-policy exclusions: `*.bak`, `.env*`, `*.pem`, `*.key`.
-    let (bak_count, ignored_count) = count_static_excluded_in_project(vault_root, &project.path);
-    excluded.bak = bak_count;
-    excluded.ignored_path += ignored_count;
 
     included.sort_by(|a, b| {
         include_reason_order(&a.reason)
@@ -269,7 +247,6 @@ pub fn preview_context(
         output_file_exists: output_exists,
         included,
         source_repo,
-        excluded_counts: excluded,
         warnings,
         external_runner_prompt,
         unresolved_placeholders,
@@ -286,39 +263,3 @@ fn include_reason_order(r: &IncludeReason) -> u8 {
     }
 }
 
-fn count_static_excluded_in_project(vault_root: &Path, project_rel: &str) -> (usize, usize) {
-    let dir = vault_root.join(project_rel);
-    if !dir.is_dir() {
-        return (0, 0);
-    }
-    let mut bak = 0usize;
-    let mut ignored = 0usize;
-    let walker = WalkDir::new(&dir)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !is_pruned(e));
-    for entry in walker.flatten() {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.ends_with(".bak") {
-            bak += 1;
-            continue;
-        }
-        if is_static_ignored_filename(&name) {
-            ignored += 1;
-        }
-    }
-    (bak, ignored)
-}
-
-fn is_static_ignored_filename(name: &str) -> bool {
-    if name.starts_with(".env") {
-        return true;
-    }
-    if name.ends_with(".pem") || name.ends_with(".key") {
-        return true;
-    }
-    false
-}

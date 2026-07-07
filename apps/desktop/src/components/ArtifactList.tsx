@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import type { ArtifactKind, WorkflowArtifact } from "../types";
+import type { ArtifactKind, Project, WorkflowArtifact } from "../types";
+import { ArtifactRunPanel, useArtifactRunCounts } from "./ArtifactRunPanel";
 
 const KIND_ORDER: ArtifactKind[] = [
   "agent-prompt",
@@ -35,9 +36,35 @@ const KIND_HINT: Record<ArtifactKind, string> = {
 
 interface ArtifactListProps {
   artifacts: WorkflowArtifact[];
+  vaultRoot: string;
+  homeDir: string | null;
+  /** Run targets for the in-card `run on <project>` select. */
+  projects: Project[];
+  /** Pre-selected run target (the project the user last drilled into). */
+  activeProject: string | null;
+  /** promptId of a currently-running chat — lights the live chip on
+   *  the matching card. */
+  runningSkill: string | null;
+  onStagePrompt: (args: {
+    text: string;
+    projectSlug: string;
+    promptId: string;
+  }) => string | null;
+  onOpenFile: (path: string) => void;
+  onOpenAgent: () => void;
 }
 
-export function ArtifactList({ artifacts }: ArtifactListProps) {
+export function ArtifactList({
+  artifacts,
+  vaultRoot,
+  homeDir,
+  projects,
+  activeProject,
+  runningSkill,
+  onStagePrompt,
+  onOpenFile,
+  onOpenAgent,
+}: ArtifactListProps) {
   const grouped = useMemo(() => groupByKind(artifacts), [artifacts]);
   const totalsByKind = useMemo(() => {
     const acc = {} as Record<ArtifactKind, number>;
@@ -47,6 +74,10 @@ export function ArtifactList({ artifacts }: ArtifactListProps) {
   }, [artifacts]);
 
   const [filter, setFilter] = useState<ArtifactKind | null>(null);
+  // One expanded card at a time (accordion): the run row / open action
+  // appear inside the clicked card instead of somewhere else on screen.
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const runCounts = useArtifactRunCounts(vaultRoot);
 
   if (artifacts.length === 0) {
     return (
@@ -75,6 +106,26 @@ export function ArtifactList({ artifacts }: ArtifactListProps) {
           kind={kind}
           artifacts={grouped[kind] || []}
           count={totalsByKind[kind]}
+          expandedKey={expandedKey}
+          onToggle={(key) =>
+            setExpandedKey((prev) => (prev === key ? null : key))
+          }
+          renderExpansion={(a) => (
+            <ArtifactRunPanel
+              artifact={a}
+              vaultRoot={vaultRoot}
+              homeDir={homeDir}
+              projects={projects}
+              defaultProjectSlug={activeProject}
+              runsCount={runCounts?.get(a.id) ?? null}
+              runningSkill={runningSkill}
+              onStagePrompt={onStagePrompt}
+              onOpenFile={onOpenFile}
+              onOpenAgent={onOpenAgent}
+            />
+          )}
+          runningSkill={runningSkill}
+          onOpenFile={onOpenFile}
         />
       ))}
     </>
@@ -131,9 +182,28 @@ interface KindGroupProps {
   kind: ArtifactKind;
   artifacts: WorkflowArtifact[];
   count: number;
+  expandedKey: string | null;
+  onToggle: (key: string) => void;
+  /** In-card expansion body for runnable artifacts (run row + plan). */
+  renderExpansion: (a: WorkflowArtifact) => React.ReactNode;
+  runningSkill: string | null;
+  onOpenFile: (path: string) => void;
 }
 
-function KindGroup({ kind, artifacts, count }: KindGroupProps) {
+function artifactKey(a: WorkflowArtifact): string {
+  return a.kind + "|" + a.id + "|" + a.path;
+}
+
+function KindGroup({
+  kind,
+  artifacts,
+  count,
+  expandedKey,
+  onToggle,
+  renderExpansion,
+  runningSkill,
+  onOpenFile,
+}: KindGroupProps) {
   if (artifacts.length === 0) {
     return null;
   }
@@ -149,7 +219,15 @@ function KindGroup({ kind, artifacts, count }: KindGroupProps) {
       </header>
       <ul className="list">
         {artifacts.map((a) => (
-          <ArtifactItem key={a.kind + "|" + a.id + "|" + a.path} artifact={a} />
+          <ArtifactItem
+            key={artifactKey(a)}
+            artifact={a}
+            expanded={expandedKey === artifactKey(a)}
+            onToggle={() => onToggle(artifactKey(a))}
+            renderExpansion={renderExpansion}
+            runningSkill={runningSkill}
+            onOpenFile={onOpenFile}
+          />
         ))}
       </ul>
     </section>
@@ -160,33 +238,82 @@ function KindGroup({ kind, artifacts, count }: KindGroupProps) {
 
 interface ArtifactItemProps {
   artifact: WorkflowArtifact;
+  expanded: boolean;
+  onToggle: () => void;
+  renderExpansion: (a: WorkflowArtifact) => React.ReactNode;
+  runningSkill: string | null;
+  onOpenFile: (path: string) => void;
 }
 
-function ArtifactItem({ artifact: a }: ArtifactItemProps) {
+function ArtifactItem({
+  artifact: a,
+  expanded,
+  onToggle,
+  renderExpansion,
+  runningSkill,
+  onOpenFile,
+}: ArtifactItemProps) {
   return (
-    <li className="list__item">
-      <div className="list__primary">
-        <span
-          className={"tag " + (a.runnable ? "tag--runnable" : "tag--ref")}
-          title={
-            a.runnable
-              ? "Eligible for AI runner execution (no runner is implemented yet)"
-              : "Reference-only — not runnable in this build"
-          }
-        >
-          {a.runnable ? "runnable" : "reference-only"}
-        </span>
-        <span className="list__id">{a.id}</span>
-        {a.title && a.title !== a.id && (
-          <span className="list__title">{a.title}</span>
-        )}
-      </div>
-      <ArtifactSecondary artifact={a} />
+    <li
+      className={
+        "list__item list__item--clickable" +
+        (expanded ? " list__item--selected" : "")
+      }
+    >
+      <button
+        type="button"
+        className="list__row-btn"
+        onClick={onToggle}
+        aria-expanded={expanded}
+      >
+        <div className="list__primary">
+          <span
+            className={"tag " + (a.runnable ? "tag--runnable" : "tag--ref")}
+            title={
+              a.runnable
+                ? "Runnable — expand for the run action"
+                : "Reference-only — not runnable in this build"
+            }
+          >
+            {a.runnable ? "runnable" : "reference-only"}
+          </span>
+          <span className="list__id">{a.id}</span>
+          {a.title && a.title !== a.id && (
+            <span className="list__title">{a.title}</span>
+          )}
+          {runningSkill === a.id && !expanded && (
+            <span
+              className="arun__running-dot"
+              title="A chat is executing this artifact"
+              aria-label="Running"
+            />
+          )}
+        </div>
+        <ArtifactSecondary artifact={a} />
+      </button>
+      {expanded &&
+        (a.runnable ? (
+          renderExpansion(a)
+        ) : (
+          <div className="arun">
+            <div className="arun__row">
+              <button
+                type="button"
+                className="btn btn--small"
+                onClick={() => onOpenFile(a.path)}
+                title={a.path}
+              >
+                open
+              </button>
+              <span className="arun__meta">reference-only</span>
+            </div>
+          </div>
+        ))}
     </li>
   );
 }
 
-function ArtifactSecondary({ artifact: a }: ArtifactItemProps) {
+function ArtifactSecondary({ artifact: a }: { artifact: WorkflowArtifact }) {
   switch (a.kind) {
     case "agent-prompt":
       return (

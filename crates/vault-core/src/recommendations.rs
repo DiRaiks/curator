@@ -519,7 +519,7 @@ fn newest_mtime_in_dir(dir: &Path) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Draft, MarkdownFile, Project, ScanResult, Scope};
+    use crate::types::{Draft, MarkdownFile, Project, ScanResult};
 
     fn empty_scan() -> ScanResult {
         ScanResult {
@@ -534,7 +534,6 @@ mod tests {
             vault_format_version: Some("1".into()),
             vault_format_supported: true,
             markdown_files: Vec::new(),
-            zones: Vec::new(),
             artifacts: Vec::new(),
             projects: Vec::new(),
             drafts: Vec::new(),
@@ -584,10 +583,6 @@ mod tests {
     fn md_file(path: &str) -> MarkdownFile {
         MarkdownFile {
             path: path.into(),
-            scope: Scope::Project,
-            sensitivity: None,
-            audience: None,
-            include_in_ai_context: None,
             note_type: None,
             project: None,
         }

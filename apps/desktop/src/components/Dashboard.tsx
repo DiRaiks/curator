@@ -6,20 +6,25 @@ import {
   readMarkdownFile,
   writeMarkdownFile,
 } from "../api";
-import type { Project, Scope, ScanResult } from "../types";
+import type { GitStatus, Project, ScanResult } from "../types";
 import { maskHome } from "../utils/path";
 import { ArtifactList } from "./ArtifactList";
 import { ConfirmDirtyDialog } from "./ConfirmDirtyDialog";
-import { Diagnostics } from "./Diagnostics";
 import { EditorPanel } from "./EditorPanel";
 import { EditorTabs, type EditorViewMode } from "./EditorTabs";
 import { EmptyVaultFresh } from "./EmptyVaultFresh";
 import { EmptyVaultNoProjects } from "./EmptyVaultNoProjects";
 import { HistoryPanel } from "./HistoryPanel";
 import { NewFileDialog } from "./NewFileDialog";
-import { Sidebar, type ViewId } from "./Sidebar";
-import { StatusBar } from "./StatusBar";
-import { TitleBar } from "./TitleBar";
+import { LeftPanel, PanelSettings } from "./shell/LeftPanel";
+import { PanelCve } from "./shell/PanelCve";
+import { PanelGit } from "./shell/PanelGit";
+import { Rail } from "./shell/Rail";
+import { ShellFiles } from "./shell/ShellFiles";
+import { ShellPalette, type PaletteCommand } from "./shell/ShellPalette";
+import { ShellStatusBar } from "./shell/ShellStatusBar";
+import { ShellTitleBar } from "./shell/ShellTitleBar";
+import { SHELL_STORAGE_KEY, type PanelId, type ShellTheme } from "./shell/types";
 
 /** Most open editor buffers we keep around. Spec: LRU eviction at 8. */
 const MAX_OPEN_FILES = 8;
@@ -29,13 +34,106 @@ const MAX_OPEN_FILES = 8;
  *  their preference on upgrade. */
 const EDITOR_VIEW_MODE_STORAGE_KEY = "vide.editor.viewMode";
 
-/** Slice 8 PR C — persisted multi-project tabs. We store the slug list
- *  and the active slug separately because writing one without the
- *  other (e.g. switching active without changing openProjects) is the
- *  common case; bundling them into a single JSON blob would force a
- *  serialize-everything-on-every-switch pattern. */
-const OPEN_PROJECTS_STORAGE_KEY = "vide.openProjects";
+/** Slug of the project the user last drilled into. (The slice-8
+ *  multi-project titlebar tabs were retired by shell v2 — only the
+ *  active slug persists now.) */
 const ACTIVE_PROJECT_STORAGE_KEY = "vide.activeProject";
+
+/** Left panels rendered by the shell — the agent chat is one of them
+ *  (404px instead of 268px; its host stays mounted while closed so
+ *  running chats keep streaming). */
+type LeftPanelId = PanelId;
+
+const LEFT_PANEL_IDS: readonly LeftPanelId[] = [
+  "projects",
+  "search",
+  "git",
+  "skills",
+  "drafts",
+  "cve",
+  "diag",
+  "agent",
+  "settings",
+];
+
+/** Resize bounds (README "Resize rules"): agent 320–560, files
+ *  200–320; the editor floor drives auto-collapse of the left panel. */
+const AGENT_WIDTH_DEFAULT = 404;
+const AGENT_WIDTH_MIN = 320;
+const AGENT_WIDTH_MAX = 560;
+const FILES_WIDTH_DEFAULT = 250;
+const FILES_WIDTH_MIN = 200;
+const FILES_WIDTH_MAX = 320;
+const PLAIN_PANEL_WIDTH = 268;
+const RAIL_WIDTH = 52;
+const EDITOR_MIN_WIDTH = 480;
+
+interface ShellPersistedState {
+  theme: ShellTheme;
+  activePanel: LeftPanelId | null;
+  agentWidth: number;
+  filesWidth: number;
+}
+
+function clampWidth(v: unknown, min: number, max: number, dflt: number): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return dflt;
+  return Math.min(max, Math.max(min, Math.round(v)));
+}
+
+function loadShellState(): ShellPersistedState {
+  const fallback: ShellPersistedState = {
+    theme: "graphite",
+    activePanel: "projects",
+    agentWidth: AGENT_WIDTH_DEFAULT,
+    filesWidth: FILES_WIDTH_DEFAULT,
+  };
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = window.localStorage.getItem(SHELL_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return fallback;
+    const p = parsed as Record<string, unknown>;
+    return {
+      theme: p.theme === "porcelain" ? "porcelain" : "graphite",
+      activePanel:
+        p.activePanel === null
+          ? null
+          : LEFT_PANEL_IDS.includes(p.activePanel as LeftPanelId)
+            ? (p.activePanel as LeftPanelId)
+            : fallback.activePanel,
+      agentWidth: clampWidth(
+        p.agentWidth,
+        AGENT_WIDTH_MIN,
+        AGENT_WIDTH_MAX,
+        AGENT_WIDTH_DEFAULT,
+      ),
+      filesWidth: clampWidth(
+        p.filesWidth,
+        FILES_WIDTH_MIN,
+        FILES_WIDTH_MAX,
+        FILES_WIDTH_DEFAULT,
+      ),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Identifier for the currently-rendered center view. Shell v2 keeps
+ * the center views that still need main-pane room (project detail,
+ * artifact detail, drafts review, run history, git diffs) reachable
+ * from the left panels while their surfaces migrate; `zones`,
+ * `security` and `diagnostics` were absorbed by the rail panels.
+ */
+export type ViewId =
+  | "projects"
+  | "artifacts"
+  | "drafts"
+  | "history"
+  | "source-control"
+  | "editor";
 import { useRecommendations } from "../hooks/useRecommendations";
 import { DraftsList } from "./DraftsList";
 import { ProjectDetail } from "./ProjectDetail";
@@ -43,9 +141,7 @@ import { ProjectList } from "./ProjectList";
 import { RecommendationsBell } from "./RecommendationsBell";
 import { type RunPanelHandle, type RunStatusInfo } from "./RunPanel";
 import { RunPanelHost } from "./RunPanelHost";
-import { SecurityPanel } from "./SecurityPanel";
 import { SourceControlPanel } from "./SourceControlPanel";
-import { ZoneList } from "./ZoneList";
 
 interface DashboardProps {
   result: ScanResult;
@@ -63,7 +159,9 @@ interface OpenFile {
   path: string;
   content: string;
   savedContent: string;
-  scope?: Scope;
+  /** `Date.now()` of the last successful save this session, or `null`
+   *  before the first one. Drives the editor path row's "saved Nm". */
+  savedAtMs?: number | null;
   /** True when the file no longer appears in the latest vault scan — e.g.
    *  it was deleted or moved outside the IDE. Set by the post-rescan
    *  reconciliation effect. */
@@ -76,83 +174,6 @@ interface OpenFile {
 }
 
 type PendingAction = (() => Promise<void> | void) | null;
-
-interface PillProps {
-  ok: boolean;
-  label: string;
-  title?: string;
-}
-
-function StatusPill({ ok, label, title }: PillProps) {
-  return (
-    <span
-      className={"pill " + (ok ? "pill--ok" : "pill--warn")}
-      title={title}
-    >
-      {label}: {ok ? "present" : "missing"}
-    </span>
-  );
-}
-
-interface VaultFormatPillProps {
-  hasVaultConfig: boolean;
-  vaultFormatVersion: string | null;
-  vaultFormatSupported: boolean;
-  /** When set, the pill renders a small "fix" link that calls this
-   *  handler. Used only in the legacy-vault case (existing vault
-   *  structure but no `.vault/config.yml` yet) — gives the user a
-   *  one-click way to fix the warning without leaving the dashboard. */
-  onClickFix?: () => void;
-}
-
-function VaultFormatPill({
-  hasVaultConfig,
-  vaultFormatVersion,
-  vaultFormatSupported,
-  onClickFix,
-}: VaultFormatPillProps) {
-  let label: string;
-  let ok: boolean;
-  let tooltip: string;
-
-  if (!hasVaultConfig) {
-    label = "format: none";
-    ok = false;
-    tooltip =
-      'Vault has no .vault/config.yml. Add the file with `version: "1"` to lock the format contract.';
-  } else if (!vaultFormatVersion) {
-    label = "format: ?";
-    ok = false;
-    tooltip =
-      '.vault/config.yml has no parseable `version:` field. Add `version: "1"`.';
-  } else if (!vaultFormatSupported) {
-    label = `format: ${vaultFormatVersion} (too new)`;
-    ok = false;
-    tooltip = `Vault declares format ${vaultFormatVersion}, which is newer than this IDE supports. Some fields may not be read correctly.`;
-  } else {
-    label = `format: ${vaultFormatVersion}`;
-    ok = true;
-    tooltip = `Vault format ${vaultFormatVersion} declared in .vault/config.yml.`;
-  }
-
-  const showFix = !ok && !!onClickFix;
-  return (
-    <span className={"pill " + (ok ? "pill--ok" : "pill--warn")} title={tooltip}>
-      {label}
-      {showFix && (
-        <button
-          type="button"
-          className="pill__fix-link"
-          onClick={onClickFix}
-          aria-label="Create .vault/config.yml"
-          title={'Create .vault/config.yml with version: "1"'}
-        >
-          fix
-        </button>
-      )}
-    </span>
-  );
-}
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -170,28 +191,59 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
   const [view, setView] = useState<ViewId>("projects");
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
 
-  // Slice 8 PR C — open project tabs in the titlebar and which one
-  // is the active context. Slugs (not Project objects) are the source
-  // of truth so we can persist them across restarts; the full Project
-  // is looked up via `result.projects` when needed.
-  const [openProjects, setOpenProjects] = useState<string[]>(() => {
-    if (typeof window === "undefined") return [];
-    try {
-      const raw = window.localStorage.getItem(OPEN_PROJECTS_STORAGE_KEY);
-      if (!raw) return [];
-      const parsed: unknown = JSON.parse(raw);
-      if (
-        Array.isArray(parsed) &&
-        parsed.every((s) => typeof s === "string")
-      ) {
-        return parsed as string[];
-      }
-    } catch {
-      // Malformed JSON or missing key — fall through to the empty default.
-      // Mistyped values shouldn't crash the dashboard.
-    }
-    return [];
-  });
+  // Shell v2 chrome: theme + which left panel is open. Restored from
+  // localStorage in one shot so a reload lands where the user left.
+  const [theme, setTheme] = useState<ShellTheme>(() => loadShellState().theme);
+  const [activePanel, setActivePanel] = useState<LeftPanelId | null>(
+    () => loadShellState().activePanel,
+  );
+  const [agentWidth, setAgentWidth] = useState<number>(
+    () => loadShellState().agentWidth,
+  );
+  const [filesWidth, setFilesWidth] = useState<number>(
+    () => loadShellState().filesWidth,
+  );
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  // Last non-null panel, so ⌘B can re-open what the user closed.
+  const lastPanelRef = useRef<LeftPanelId>("projects");
+  // Latest save-if-dirty closure for the ⌘S handler — the keyboard
+  // effect mounts once, so it reads through a ref instead of
+  // re-binding on every buffer change.
+  const saveIfDirtyRef = useRef<() => void>(() => {});
+
+  useEffect(() => {
+    if (activePanel) lastPanelRef.current = activePanel;
+  }, [activePanel]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const state: ShellPersistedState = {
+      theme,
+      activePanel,
+      agentWidth,
+      filesWidth,
+    };
+    window.localStorage.setItem(SHELL_STORAGE_KEY, JSON.stringify(state));
+  }, [theme, activePanel, agentWidth, filesWidth]);
+
+  // Auto-collapse the left panel when the editor would drop below its
+  // minimum width (README resize rules) — narrow window or panels
+  // dragged wide.
+  useEffect(() => {
+    const check = () => {
+      setActivePanel((panel) => {
+        if (!panel) return panel;
+        const leftW = panel === "agent" ? agentWidth : PLAIN_PANEL_WIDTH;
+        const editorW =
+          window.innerWidth - RAIL_WIDTH - leftW - filesWidth;
+        return editorW < EDITOR_MIN_WIDTH ? null : panel;
+      });
+    };
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, [agentWidth, filesWidth]);
+
   const [activeProject, setActiveProject] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
     return window.localStorage.getItem(ACTIVE_PROJECT_STORAGE_KEY);
@@ -314,22 +366,28 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
       } else if (e.key === "3") {
         e.preventDefault();
         setEditorViewMode("prev");
+      } else if (e.key.toLowerCase() === "s") {
+        // ⌘S — save the active buffer. The webview would otherwise
+        // trigger the browser save dialog.
+        e.preventDefault();
+        saveIfDirtyRef.current();
+      } else if (e.key.toLowerCase() === "j") {
+        // ⌘J — toggle the agent panel.
+        e.preventDefault();
+        setActivePanel((p) => (p === "agent" ? null : "agent"));
+      } else if (e.key.toLowerCase() === "k") {
+        // ⌘K — command palette.
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      } else if (e.key.toLowerCase() === "b") {
+        // ⌘B — toggle the left panel; re-opens the last one used.
+        e.preventDefault();
+        setActivePanel((p) => (p ? null : lastPanelRef.current));
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
-
-  // Persist open-project tabs + active slug separately. Two writes
-  // because the common case is "switch active project" which doesn't
-  // need to re-serialize the openProjects array.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(
-      OPEN_PROJECTS_STORAGE_KEY,
-      JSON.stringify(openProjects),
-    );
-  }, [openProjects]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -340,18 +398,10 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
     }
   }, [activeProject]);
 
-  // Drop stale slugs after a rescan — a project may have been renamed
-  // or deleted between sessions. `result.projects` is the source of
-  // truth; persisted slugs that don't exist in it any more get
-  // silently discarded so the title bar doesn't hold ghost tabs.
+  // Drop a stale active slug after a rescan — the project may have
+  // been renamed or deleted between sessions.
   useEffect(() => {
     const validSlugs = new Set(result.projects.map((p) => p.slug));
-    setOpenProjects((prev) => {
-      const filtered = prev.filter((s) => validSlugs.has(s));
-      // Identity-preserve when nothing changed so the persist effect
-      // doesn't fire on every rescan.
-      return filtered.length === prev.length ? prev : filtered;
-    });
     setActiveProject((prev) =>
       prev && !validSlugs.has(prev) ? null : prev,
     );
@@ -375,7 +425,7 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
     setCreateConfigDialog({ busy: true, error: null });
     try {
       // initVault is idempotent for existing structure: writes the
-      // missing .vault/config.yml + creates zone dirs that don't exist
+      // missing .vault/config.yml + creates canonical dirs that don't exist
       // yet, but skips an existing 00_meta/AGENTS.md. Re-scan picks up
       // the new config and the format-pill flips green automatically.
       await initVault(result.vaultRoot);
@@ -415,7 +465,11 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
       // false error in the prompt card even when staging worked.
       const handle = runPanelRef.current;
       if (!handle) return "Chat panel not ready yet.";
-      return handle.stagePrompt(args);
+      const err = handle.stagePrompt(args);
+      // Successful staging should land the user in the composer —
+      // open the agent panel so the pre-filled draft is visible.
+      if (!err) setActivePanel("agent");
+      return err;
     },
     [],
   );
@@ -449,16 +503,12 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
     return handle.subscribeToStatus(setRunStatusInfo);
   }, []);
 
-  // Auto-include the running chat's project in the title-bar tab strip
-  // so a user who started a chat via RunPanel scope dropdown (rather
-  // than a sidebar click) still gets a visible tab for it. The tab
-  // sticks around after the chat exits — closing it is up to the user.
+  // Adopt the running chat's project as the active one when nothing
+  // is active yet — a chat started from the RunPanel scope dropdown
+  // should still light up the Projects panel.
   useEffect(() => {
     const slug = runStatusInfo.runningProject;
     if (!slug) return;
-    setOpenProjects((prev) =>
-      prev.includes(slug) ? prev : [...prev, slug],
-    );
     setActiveProject((prev) => prev ?? slug);
   }, [runStatusInfo.runningProject]);
 
@@ -472,48 +522,27 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
   // surface fresh hints.
   const recs = useRecommendations(result.vaultRoot, refreshTick);
 
-  // Changed-file count for the sidebar "source control" badge. `null` =
-  // not a git repo (or not loaded yet) → the row shows a muted "—".
-  // Recomputed on every rescan so the badge tracks edits made via the
-  // editor, agent runs, or external tools. The SourceControlPanel keeps
-  // its own (full) status; this is just the cheap count for the rail.
-  const [changedCount, setChangedCount] = useState<number | null>(null);
+  // Vault git snapshot — the single source for every changed-file
+  // count in the chrome (rail badge, titlebar ±N, Source Control
+  // panel sections), per the design's "one source per count" rule.
+  // `null` = not loaded / not a git repo. Recomputed on every rescan
+  // and whenever the git panel mutates the index (`gitTick`).
+  const [vaultGit, setVaultGit] = useState<GitStatus | null>(null);
+  const [gitTick, setGitTick] = useState(0);
   useEffect(() => {
     let cancelled = false;
     void gitStatus(result.vaultRoot)
       .then((s) => {
         if (cancelled) return;
-        setChangedCount(s.isGitRepo ? s.files.length : null);
+        setVaultGit(s.isGitRepo ? s : null);
       })
       .catch(() => {
-        if (!cancelled) setChangedCount(null);
+        if (!cancelled) setVaultGit(null);
       });
     return () => {
       cancelled = true;
     };
-  }, [result.vaultRoot, refreshTick]);
-
-  // Navigate to a project's detail view from the bell. Reuses the
-  // same flow as a TitleBar tab click / sidebar PROJECTS row click so
-  // the project gets added to the open-tabs strip and becomes active —
-  // not just rendered as a one-off detail page that leaves the tab
-  // strip out of sync. `openProject` is defined further below; the
-  // body is replicated inline here to keep the existing top-down
-  // declaration order (RecommendationsBell renders before openProject
-  // would be available via hoisting).
-  const goToProject = useCallback(
-    (slug: string) => {
-      const project = result.projects.find((p) => p.slug === slug);
-      if (!project) return;
-      setOpenProjects((prev) =>
-        prev.includes(slug) ? prev : [...prev, slug],
-      );
-      setActiveProject(slug);
-      setSelectedProject(project);
-      setView("projects");
-    },
-    [result.projects],
-  );
+  }, [result.vaultRoot, refreshTick, gitTick]);
 
   const filePaths = useMemo(
     () => result.markdownFiles.map((f) => f.path),
@@ -526,12 +555,6 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
 
   const isDirty =
     activeFile != null && activeFile.content !== activeFile.savedContent;
-  /** Total unsaved buffers across all tabs — surfaced in the status bar
-   *  for at-a-glance "how much work is pending" awareness. */
-  const dirtyCount = openFiles.reduce(
-    (n, f) => (f.content !== f.savedContent ? n + 1 : n),
-    0,
-  );
   // Fall back to the projects view when the user explicitly chose the
   // editor but no file is open — otherwise the main pane renders
   // nothing. Renamed from `effectiveTab` in slice 8 PR A; behavior
@@ -575,6 +598,12 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
     if (next !== "projects") setSelectedProject(null);
   };
 
+  /** Rail click: open the panel; clicking the active icon again
+   *  closes it. */
+  const pickPanel = useCallback((id: PanelId) => {
+    setActivePanel((p) => (p === id ? null : id));
+  }, []);
+
   const [openError, setOpenError] = useState<string | null>(null);
 
   const doOpenFile = useCallback(
@@ -583,8 +612,7 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
       setOpenError(null);
       try {
         const content = await readMarkdownFile(result.vaultRoot, path);
-        const scope = result.markdownFiles.find((f) => f.path === path)?.scope;
-        addOrSwitchTab({ path, content, savedContent: content, scope });
+        addOrSwitchTab({ path, content, savedContent: content });
         setView("editor");
       } catch (err: unknown) {
         // Surface inline; `window.alert` is silently disabled in the Tauri
@@ -593,7 +621,7 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
         setOpenError(`Open failed for ${path}: ${errorMessage(err)}`);
       }
     },
-    [result.vaultRoot, result.markdownFiles, addOrSwitchTab],
+    [result.vaultRoot, addOrSwitchTab],
   );
 
   const attemptOpenFile = useCallback(
@@ -608,30 +636,16 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
   );
 
   /**
-   * Open (or switch to) a project's tab. Used by sidebar PROJECTS row
-   * clicks and TitleBar tab-switch clicks. Unified landing:
-   *
-   *   1. Add `slug` to `openProjects` if not already there.
-   *   2. Set `activeProject = slug`.
-   *   3. `view = "projects"` with `selectedProject` set to the project,
-   *      so the main pane renders that project's `ProjectDetail`
-   *      (Run plans, Source Repo, Recommendations, ContextPreview).
-   *
-   * Two entry points (sidebar click + ProjectList click on the main
-   * Projects view) now lead to the same place. `_index.md` is just a
-   * file — open it from FILES tree or from inside ProjectDetail when
-   * you actually want to edit the description.
-   *
-   * Refuses gracefully if the slug isn't in the current scan (project
-   * may have been deleted between renders).
+   * Open a project: make it the active context and render its
+   * `ProjectDetail` (Run plans, Source Repo, Recommendations,
+   * ContextPreview) in the center. Used by the Projects panel rows
+   * and the recommendations bell. Refuses gracefully if the slug
+   * isn't in the current scan.
    */
   const openProject = useCallback(
     (slug: string) => {
       const project = result.projects.find((p) => p.slug === slug);
       if (!project) return;
-      setOpenProjects((prev) =>
-        prev.includes(slug) ? prev : [...prev, slug],
-      );
       setActiveProject(slug);
       setSelectedProject(project);
       setView("projects");
@@ -639,47 +653,8 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
     [result.projects],
   );
 
-  /**
-   * Close a project tab. If the closed tab was the active one, fall
-   * back to the previous tab in the strip; or to the new first tab
-   * when the closed tab was at the head; or to `null` when no tabs
-   * remain. `selectedProject` mirrors the fallback so a ProjectDetail
-   * currently on screen re-renders to the new active's content (or
-   * collapses back to the ProjectList when nothing's left). `view` is
-   * NOT touched — a user editing a file shouldn't get yanked out of
-   * the editor by a tab-close.
-   *
-   * The file buffers themselves are intentionally NOT closed — a user
-   * might have other files from that project open and want to keep
-   * editing them.
-   */
-  const closeProject = useCallback(
-    (slug: string) => {
-      const idx = openProjects.indexOf(slug);
-      if (idx < 0) return;
-      const remaining = openProjects.filter((s) => s !== slug);
-      setOpenProjects(remaining);
-
-      if (activeProject === slug) {
-        const fallback =
-          idx > 0 ? openProjects[idx - 1] : remaining[0] ?? null;
-        setActiveProject(fallback);
-        const fallbackProj = fallback
-          ? result.projects.find((p) => p.slug === fallback) ?? null
-          : null;
-        setSelectedProject(fallbackProj);
-      }
-    },
-    [openProjects, activeProject, result.projects],
-  );
-
-  /**
-   * Titlebar `+` handler. Spec offers two implementations: a popover
-   * picker or just routing to the existing Projects view. Going with
-   * the latter — re-using `ProjectList` in the main pane is simpler
-   * than building a popover, and the ProjectList click already opens
-   * a project (now wired through `openProject`).
-   */
+  /** Projects-panel `+` handler: routes to the ProjectList in the
+   *  center, which doubles as the "open another project" picker. */
   const onAddProject = useCallback(() => {
     setSelectedProject(null);
     setView("projects");
@@ -798,7 +773,10 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
         activeFile.path,
         activeFile.content,
       );
-      updateActiveFile({ savedContent: activeFile.content });
+      updateActiveFile({
+        savedContent: activeFile.content,
+        savedAtMs: Date.now(),
+      });
       return true;
     } catch (err: unknown) {
       setEditorError(errorMessage(err));
@@ -807,6 +785,11 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
       setEditorSaving(false);
     }
   }, [activeFile, result.vaultRoot, updateActiveFile]);
+
+  // Keep the ⌘S closure current (see saveIfDirtyRef above).
+  saveIfDirtyRef.current = () => {
+    if (isDirty) void saveOpenFile();
+  };
 
   const discardOpenFile = useCallback(() => {
     if (!activeFile) return;
@@ -907,14 +890,18 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
   //             no projects yet — the onboarding form helps create one.
   // The "proceedWithoutVault" override lets the user bypass either
   // state for read-only inspection of an unusual folder.
+  // Both gates render inside an `.ide <theme>` wrapper so their legacy
+  // styles pick up the shell palette via the bridged variables.
   if (!proceedWithoutVault && !result.hasVaultConfig && !result.hasMeta) {
     return (
-      <EmptyVaultFresh
-        result={result}
-        onRescan={onRescan}
-        onProceedWithout={() => setProceedWithoutVault(true)}
-        onPickAnother={onClose}
-      />
+      <div className={"ide " + theme}>
+        <EmptyVaultFresh
+          result={result}
+          onRescan={onRescan}
+          onProceedWithout={() => setProceedWithoutVault(true)}
+          onPickAnother={onClose}
+        />
+      </div>
     );
   }
   if (
@@ -923,144 +910,146 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
     result.projects.length === 0
   ) {
     return (
-      <EmptyVaultNoProjects
-        result={result}
-        onRescan={onRescan}
-        onOpenFile={(path) => attemptOpenFile(path)}
-        onChatWithVault={() => setProceedWithoutVault(true)}
-      />
+      <div className={"ide " + theme}>
+        <EmptyVaultNoProjects
+          result={result}
+          onRescan={onRescan}
+          onOpenFile={(path) => attemptOpenFile(path)}
+          onChatWithVault={() => setProceedWithoutVault(true)}
+        />
+      </div>
     );
   }
 
   const runningChats = runStatusInfo.runningCount;
+  const diagErrors = result.diagnostics.filter(
+    (d) => d.level === "error",
+  ).length;
+  const diagWarnings = result.diagnostics.filter(
+    (d) => d.level === "warning",
+  ).length;
+
+  // ⌘K command set. Rebuilt per render — the palette only mounts
+  // while open, so the cost is a handful of object literals.
+  const paletteCommands: PaletteCommand[] = [
+    { id: "agent", label: "Open agent panel", hint: "⌘J", run: () => setActivePanel("agent") },
+    { id: "projects", label: "Open projects panel", run: () => setActivePanel("projects") },
+    { id: "search", label: "Search vault", run: () => setActivePanel("search") },
+    { id: "git", label: "Open source control", run: () => setActivePanel("git") },
+    { id: "skills", label: "Open AI artifacts", run: () => setActivePanel("skills") },
+    { id: "drafts", label: "Review drafts", run: () => setActivePanel("drafts") },
+    { id: "cve", label: "CVE scan", run: () => setActivePanel("cve") },
+    { id: "diag", label: "Open diagnostics", run: () => setActivePanel("diag") },
+    { id: "settings", label: "Open settings", run: () => setActivePanel("settings") },
+    { id: "new-file", label: "New markdown file", run: attemptNewFile },
+    {
+      id: "theme",
+      label: "Toggle theme (graphite / porcelain)",
+      run: () => setTheme((t) => (t === "graphite" ? "porcelain" : "graphite")),
+    },
+    { id: "mode-src", label: "Editor: source mode", hint: "⌘1", run: () => setEditorViewMode("src") },
+    { id: "mode-split", label: "Editor: split mode", hint: "⌘2", run: () => setEditorViewMode("split") },
+    { id: "mode-prev", label: "Editor: preview mode", hint: "⌘3", run: () => setEditorViewMode("prev") },
+    { id: "refresh", label: "Refresh vault (re-scan)", run: attemptRefresh },
+    { id: "close-vault", label: "Close vault", run: onClose },
+  ];
 
   return (
-    <div className="dashboard">
-      <TitleBar
-        openProjects={openProjects}
-        activeProject={activeProject}
-        onSwitchProject={openProject}
-        onCloseProject={closeProject}
-        onAddProject={onAddProject}
-      />
+    <div className={"ide " + theme}>
+      <ShellTitleBar
+        vaultLabel={displayedVaultRoot}
+        branch={vaultGit?.branch ?? null}
+        dirtyCount={vaultGit?.files.length ?? 0}
+        onFixConfig={
+          isLegacyVault
+            ? () => setCreateConfigDialog({ busy: false, error: null })
+            : undefined
+        }
+        onRefresh={attemptRefresh}
+        refreshing={refreshing}
+        onCloseVault={onClose}
+        onOpenPalette={() => setPaletteOpen(true)}
+      >
+        <RecommendationsBell
+          active={recs.active}
+          dismissed={recs.dismissed}
+          onDismiss={(id) => void recs.dismiss(id)}
+          onRestore={(id) => void recs.restore(id)}
+          onClearAll={() => void recs.clearAll()}
+          onGoToProject={openProject}
+          onOpenFile={attemptOpenFile}
+        />
+      </ShellTitleBar>
 
-      {/* Single chrome row carrying every status pill + utility button.
-       * Project tabs live in the `<TitleBar>` above; everything else is
-       * here so the user has one obvious place to scan for vault
-       * state. */}
-      <header className="dashboard__header">
-        <div className="dashboard__title">
-          <span className="dashboard__label">Vault</span>
-          <span className="dashboard__path" title={displayedVaultRoot}>
-            {displayedVaultRoot}
-          </span>
-        </div>
-        <div className="dashboard__meta">
-          <VaultFormatPill
-            hasVaultConfig={result.hasVaultConfig}
-            vaultFormatVersion={result.vaultFormatVersion}
-            vaultFormatSupported={result.vaultFormatSupported}
-            onClickFix={
+      <div className="ide-body">
+        <Rail
+          active={activePanel}
+          onPick={pickPanel}
+          gitBadge={vaultGit?.files.length ?? 0}
+          draftsBadge={result.drafts.length}
+          errorBadge={diagErrors}
+          agentRunning={runningChats > 0}
+        />
+
+        {activePanel === "git" && (
+          <PanelGit
+            vaultRoot={result.vaultRoot}
+            status={vaultGit}
+            onRefetch={() => setGitTick((t) => t + 1)}
+            onOpenFile={attemptOpenFile}
+            onOpenFullView={() => onSwitchView("source-control")}
+          />
+        )}
+        {activePanel === "cve" && <PanelCve projects={result.projects} />}
+        {activePanel === "settings" && (
+          <PanelSettings
+            result={result}
+            vaultLabel={displayedVaultRoot}
+            theme={theme}
+            onSetTheme={setTheme}
+            onFixConfig={
               isLegacyVault
                 ? () => setCreateConfigDialog({ busy: false, error: null })
                 : undefined
             }
           />
-          <StatusPill ok={result.hasMeta} label="meta" title="00_meta/" />
-          <StatusPill ok={result.hasGit} label="git" title=".git/" />
-          <span className="pill">{result.markdownFiles.length} md files</span>
-          <span className="pill">{result.artifacts.length} artifacts</span>
-          <span className="pill">{result.projects.length} projects</span>
-          {result.zones.length > 0 && (
-            <span
-              className="pill"
-              title="Private / team-management zones detected — see the Zones tab for the breakdown."
-            >
-              {result.zones.length} zones
-            </span>
-          )}
-          <RecommendationsBell
-            active={recs.active}
-            dismissed={recs.dismissed}
-            onDismiss={(id) => void recs.dismiss(id)}
-            onRestore={(id) => void recs.restore(id)}
-            onClearAll={() => void recs.clearAll()}
-            onGoToProject={goToProject}
-            onOpenFile={attemptOpenFile}
-          />
-          {/* AI handle — toggles the bottom chat drawer via RunPanel's
-            * imperative handle. Pulses with the live `runStatusInfo`
-            * from RunPanel; the count reflects saved chat sessions for
-            * this vault. (The ⌘K palette button that used to live next
-            * to this one was a no-op; removed until the palette UI
-            * actually exists.) */}
-          <button
-            type="button"
-            className="header-ai"
-            aria-label="Toggle chat panel"
-            title="Toggle chat panel"
-            onClick={() => runPanelRef.current?.toggleCollapsed()}
-          >
-            <span
-              className={
-                "header-ai__dot" +
-                (runningChats > 0 ? " header-ai__dot--running" : "")
-              }
-              aria-hidden="true"
-            />
-            <span>AI</span>
-            <span className="header-ai__count">{savedSessionCount}</span>
-            {runningChats > 0 && (
-              <span className="header-ai__live">{runningChats} live</span>
-            )}
-          </button>
-          <button
-            type="button"
-            className="btn btn--small"
-            onClick={attemptRefresh}
-            disabled={refreshing}
-            title="Re-scan the vault from disk. Editor content is preserved."
-          >
-            {refreshing ? "Refreshing…" : "Refresh"}
-          </button>
-          <button type="button" className="btn btn--small" onClick={onClose}>
-            Close
-          </button>
-        </div>
-      </header>
-
-      <div className="dashboard__body">
-        <Sidebar
+        )}
+        {/* Agent panel host — always mounted so running chats keep
+            streaming while the panel is closed; hidden via display:none
+            inside. */}
+        <RunPanelHost
+          ref={runPanelRef}
+          vaultRoot={result.vaultRoot}
           projects={result.projects}
           drafts={result.drafts}
-          artifactCount={result.artifacts.length}
-          zoneCount={result.zones.length}
-          diagnostics={result.diagnostics}
-          sessionCount={savedSessionCount}
-          changedCount={changedCount}
-          files={filePaths}
-          activeView={effectiveView}
-          activeProject={activeProject}
-          activeFilePath={activeFile?.path ?? null}
-          openError={openError}
-          onSwitchView={onSwitchView}
-          onOpenProject={openProject}
-          onOpenFile={attemptOpenFile}
-          onOpenDraft={() => setView("drafts")}
-          onNewFile={attemptNewFile}
+          open={activePanel === "agent"}
+          width={agentWidth}
+          onResize={setAgentWidth}
+          onOpenDrafts={() => setActivePanel("drafts")}
         />
+        {(activePanel === "projects" ||
+          activePanel === "search" ||
+          activePanel === "skills" ||
+          activePanel === "drafts" ||
+          activePanel === "diag") && (
+          <LeftPanel
+            view={activePanel}
+            result={result}
+            activeProject={activeProject}
+            sessionCount={savedSessionCount}
+            onOpenProject={openProject}
+            onOpenFile={attemptOpenFile}
+            onOpenHistory={() => onSwitchView("history")}
+            onAddProject={onAddProject}
+            onOpenArtifactsView={() => onSwitchView("artifacts")}
+            onOpenDraftsView={() => onSwitchView("drafts")}
+          />
+        )}
 
-        <main
-          className={
-            "dashboard__main" +
-            (effectiveView === "editor" ? " dashboard__main--editor" : "")
-          }
-        >
-          {/* Slice 8 PR A: the `<nav class="tabs">` strip was removed
-              here — sidebar BROWSE rows now drive the view switch. The
-              panel sections below kept their `id` for any external
-              `aria-controls` references, but no longer claim
-              `role="tabpanel"` since there's no `tablist` parent. */}
+        <main className="ide-center">
+          {/* Center views still rendered with the legacy `.panel`
+              styling while their surfaces migrate into shell v2 —
+              navigation into them now comes from the rail panels. */}
           {effectiveView === "projects" && (
             <section
               id="panel-projects"
@@ -1081,6 +1070,8 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
                   onBack={() => setSelectedProject(null)}
                   onCreateAndOpenFile={createAndOpenFile}
                   onStagePrompt={handleStagePrompt}
+                  runningSkill={runStatusInfo.runningSkill}
+                  onOpenAgent={() => setActivePanel("agent")}
                 />
               ) : (
                 <ProjectList
@@ -1096,7 +1087,17 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
               id="panel-artifacts"
               className="panel"
             >
-              <ArtifactList artifacts={result.artifacts} />
+              <ArtifactList
+                artifacts={result.artifacts}
+                vaultRoot={result.vaultRoot}
+                homeDir={result.homeDir}
+                projects={result.projects}
+                activeProject={activeProject}
+                runningSkill={runStatusInfo.runningSkill}
+                onStagePrompt={handleStagePrompt}
+                onOpenFile={attemptOpenFile}
+                onOpenAgent={() => setActivePanel("agent")}
+              />
             </section>
           )}
           {effectiveView === "drafts" && (
@@ -1110,14 +1111,6 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
                 onRescan={rescanWithTick}
                 onPreview={attemptOpenFile}
               />
-            </section>
-          )}
-          {effectiveView === "security" && (
-            <section
-              id="panel-security"
-              className="panel"
-            >
-              <SecurityPanel projects={result.projects} />
             </section>
           )}
           {effectiveView === "source-control" && (
@@ -1141,65 +1134,43 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
                 vaultRoot={result.vaultRoot}
                 onReopen={(session) => {
                   runPanelRef.current?.reopenSession(session);
-                  // After reopening, drop the user back into the chat
-                  // so they see the restored conversation immediately.
-                  setView("projects");
+                  // Land the user in the agent panel so the restored
+                  // conversation is immediately visible.
+                  setActivePanel("agent");
                 }}
               />
             </section>
           )}
-          {effectiveView === "zones" && (
-            <section
-              id="panel-zones"
-              className="panel"
-            >
-              <ZoneList zones={result.zones} />
-            </section>
-          )}
-          {effectiveView === "diagnostics" && (
-            <section
-              id="panel-diagnostics"
-              className="panel"
-            >
-              <Diagnostics diagnostics={result.diagnostics} />
-            </section>
-          )}
-          {effectiveView === "editor" && openFiles.length > 0 && (
-            <EditorTabs
-              tabs={openFiles.map((f) => ({
-                path: f.path,
-                modified: f.content !== f.savedContent,
-              }))}
-              activeIndex={activeFileIdx}
-              viewMode={editorViewMode}
-              onSwitch={(idx) => {
-                setActiveFileIdx(idx);
-                // Touch the LRU timestamp on user-initiated switch so
-                // a freshly-focused tab doesn't get evicted next.
-                setOpenFiles((prev) =>
-                  prev.map((f, i) =>
-                    i === idx ? { ...f, lastAccessedAt: Date.now() } : f,
-                  ),
-                );
-              }}
-              onClose={attemptCloseTab}
-              onSetViewMode={setEditorViewMode}
-            />
-          )}
           {effectiveView === "editor" && activeFile && (
-            <section
-              id="panel-editor"
-              className="panel panel--editor"
-            >
+            <div className="ide-editor" id="panel-editor">
+              <EditorTabs
+                tabs={openFiles.map((f) => ({
+                  path: f.path,
+                  modified: f.content !== f.savedContent,
+                }))}
+                activeIndex={activeFileIdx}
+                onSwitch={(idx) => {
+                  setActiveFileIdx(idx);
+                  // Touch the LRU timestamp on user-initiated switch so
+                  // a freshly-focused tab doesn't get evicted next.
+                  setOpenFiles((prev) =>
+                    prev.map((f, i) =>
+                      i === idx ? { ...f, lastAccessedAt: Date.now() } : f,
+                    ),
+                  );
+                }}
+                onClose={attemptCloseTab}
+              />
               <EditorPanel
                 path={activeFile.path}
-                scope={activeFile.scope}
                 content={activeFile.content}
                 savedContent={activeFile.savedContent}
                 saving={editorSaving}
                 error={editorError}
+                savedAtMs={activeFile.savedAtMs}
                 missing={activeFile.missing}
                 viewMode={editorViewMode}
+                onSetViewMode={setEditorViewMode}
                 onChange={(next) => updateActiveFile({ content: next })}
                 onSave={() => {
                   void saveOpenFile();
@@ -1208,30 +1179,47 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
                 onClose={attemptCloseEditor}
                 onOpenWikilink={onOpenWikilink}
               />
-            </section>
+            </div>
           )}
         </main>
+
+        <ShellFiles
+          files={filePaths}
+          activeFilePath={activeFile?.path ?? null}
+          openError={openError}
+          width={filesWidth}
+          onResize={setFilesWidth}
+          onOpenFile={attemptOpenFile}
+          onNewFile={attemptNewFile}
+        />
       </div>
 
-      <RunPanelHost
-        ref={runPanelRef}
-        vaultRoot={result.vaultRoot}
-        projects={result.projects}
+      <ShellStatusBar
+        runningCount={runStatusInfo.runningCount}
+        runningTitle={
+          runStatusInfo.runningSkill ?? runStatusInfo.runningProject
+        }
+        totalChats={savedSessionCount}
+        errorCount={diagErrors}
+        warningCount={diagWarnings}
+        watchingCount={result.markdownFiles.length}
+        fileMode={activeFile ? "md · gfm" : null}
+        theme={theme}
+        onToggleTheme={() =>
+          setTheme((t) => (t === "graphite" ? "porcelain" : "graphite"))
+        }
+        onOpenAgent={() => setActivePanel("agent")}
+        onOpenDiagnostics={() => setActivePanel("diag")}
       />
 
-      <StatusBar
-        activeProject={activeProject ?? runStatusInfo.runningProject}
-        // Branch + cursor still aren't lifted — keep `null` so those
-        // slots collapse silently until a future PR plumbs
-        // `inspect_source_repo` / CodeMirror cursor events through.
-        branch={null}
-        dirtyCount={dirtyCount}
-        totalChats={savedSessionCount}
-        runningChats={runStatusInfo.runningCount}
-        runningSkill={runStatusInfo.runningSkill}
-        fileMode={activeFile ? "md gfm" : null}
-        cursor={null}
-      />
+      {paletteOpen && (
+        <ShellPalette
+          files={filePaths}
+          commands={paletteCommands}
+          onOpenFile={attemptOpenFile}
+          onClose={() => setPaletteOpen(false)}
+        />
+      )}
 
       {pendingAction && activeFile && isDirty && (
         <ConfirmDirtyDialog
@@ -1269,7 +1257,7 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
                 files.
               </p>
               <p style={{ margin: 0, color: "var(--muted)", fontSize: 12 }}>
-                Also creates any missing canonical zone directories (no-op if
+                Also creates any missing canonical directories (no-op if
                 they already exist) and adds <code>00_meta/AGENTS.md</code>{" "}
                 only if the file isn't there yet.
               </p>

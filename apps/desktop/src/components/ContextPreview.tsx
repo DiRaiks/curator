@@ -1,7 +1,6 @@
 import { useState } from "react";
 import type {
   ContextPreview,
-  ExcludedCounts,
   IncludedFile,
   IncludeReason,
   PreviewWarning,
@@ -15,9 +14,6 @@ import { Tooltip } from "./Tooltip";
 
 const SURFACED_TOOLTIP =
   "Files the prompt makes the agent aware of. AGENTS.md, the prompt itself, the project index, and any existing output file are explicitly required reads; project documents are surfaced via the project-folder pointer but the agent decides which to open.\n\nThe agent has read access to the entire vault via --add-dir; this list is a map, not a sandbox.";
-
-const PRIVACY_ZONES_TOOLTIP =
-  "Zones AGENTS.md asks the agent to leave alone. Listed for transparency — the agent has read access to the full vault and these files are not blocked at the filesystem level. Use the chat panel's 'Skip personal zones' toggle to inject a hard preamble for runs where this matters.";
 
 // ---------- Labels ----------
 
@@ -37,27 +33,6 @@ const REASON_LABELS: Record<IncludeReason, { label: string; tone: ReasonTone }> 
     "project-document": { label: "project", tone: "ok" },
     "existing-output-file": { label: "output", tone: "warn" },
   };
-
-type BucketTone = "err" | "warn" | "muted";
-
-/**
- * Excluded-content buckets, in display order. Order is "loudest first"
- * — buckets that point at real security concerns (personal-work,
- * team-management) lead so the user notices counts > 0 immediately.
- * Buckets whose count is zero are filtered out at render time.
- */
-const BUCKETS: ReadonlyArray<{
-  key: keyof ExcludedCounts;
-  label: string;
-  tone: BucketTone;
-}> = [
-  { key: "personalWork", label: "personal-work", tone: "err" },
-  { key: "teamManagement", label: "team-management", tone: "err" },
-  { key: "inbox", label: "inbox", tone: "warn" },
-  { key: "archiveOrResource", label: "archive/resource", tone: "muted" },
-  { key: "bak", label: ".bak files", tone: "muted" },
-  { key: "ignoredPath", label: "ignored paths", tone: "muted" },
-];
 
 const WARNING_LABEL: Record<WarningKind, string> = {
   "output-file-missing": "output_file missing",
@@ -118,7 +93,6 @@ export function ContextPreviewPanel({
         <WarningsBlock warnings={preview.warnings} />
       )}
       <VaultFilesBlock files={preview.included} />
-      <ExcludedBlock counts={preview.excludedCounts} />
       {/* Secondary action: stage the prompt into the chat panel, or copy
        * it for paste into Zed / Claude / Codex / Cursor. Collapsed by
        * default so the card focuses on the run plan; advanced users
@@ -455,60 +429,3 @@ function ReasonBadge({ reason }: { reason: IncludeReason }) {
   );
 }
 
-// ---------- Excluded counts ----------
-
-function ExcludedBlock({ counts }: { counts: ExcludedCounts }) {
-  // Buckets with zero hits are filtered out — the user only sees what's
-  // actually being excluded so the panel stays scannable. The total is
-  // the sum over ALL buckets (the empties contribute zero anyway).
-  const nonZero = BUCKETS.filter(({ key }) => counts[key] > 0);
-  const total = BUCKETS.reduce((acc, { key }) => acc + counts[key], 0);
-
-  return (
-    <section
-      className="preview__excluded"
-      aria-label="Privacy zones listed off-limits by convention"
-    >
-      <h4 className="preview__section-title">
-        Privacy zones · {total} file{total === 1 ? "" : "s"}
-        <span className="preview__total">informational — not blocked</span>
-        <Tooltip
-          content={PRIVACY_ZONES_TOOLTIP}
-          placement="bottom"
-          align="start"
-        >
-          <span
-            className="preview__section-hint"
-            aria-label="What 'privacy zones' means"
-          >
-            (info)
-          </span>
-        </Tooltip>
-      </h4>
-      {nonZero.length === 0 ? (
-        <p className="empty">Nothing excluded.</p>
-      ) : (
-        <ul className="bucket-grid" aria-label="Exclusions">
-          {nonZero.map(({ key, label, tone }) => (
-            <li key={key} className="bucket-pill">
-              <span
-                className={"bucket-pill__dot bucket-pill__dot--" + tone}
-                aria-hidden="true"
-              />
-              <span className="bucket-pill__label">{label}</span>
-              <span className="bucket-pill__count">{counts[key]}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-      <p className="preview__excluded-hint">
-        Listed here for transparency. By default the agent has read access
-        to the entire vault via <code>--add-dir</code>; these zones are{" "}
-        <strong>not</strong> blocked at the filesystem level. Toggle{" "}
-        <strong>🔒 Skip personal zones</strong> in the chat panel to
-        inject a hard preamble that tells the agent to stay out of
-        personal-work and team-management content for that run.
-      </p>
-    </section>
-  );
-}

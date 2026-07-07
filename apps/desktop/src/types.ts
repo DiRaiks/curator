@@ -8,30 +8,10 @@ export type ArtifactKind =
   | "claude-command"
   | "claude-rule";
 
-export type Scope =
-  | "project"
-  | "meta"
-  | "personal-work"
-  | "team-management"
-  | "inbox"
-  | "resource"
-  | "archive"
-  | "unknown";
-
 export interface MarkdownFile {
   path: string;
-  scope: Scope;
-  sensitivity?: string;
-  audience?: string;
-  includeInAiContext?: boolean;
   noteType?: string;
   project?: string;
-}
-
-export interface Zone {
-  path: string;
-  scope: Scope;
-  fileCount: number;
 }
 
 export interface WorkflowArtifact {
@@ -121,7 +101,6 @@ export interface ScanResult {
    *  missing-version warning lives in `diagnostics`). */
   vaultFormatSupported: boolean;
   markdownFiles: MarkdownFile[];
-  zones: Zone[];
   artifacts: WorkflowArtifact[];
   projects: Project[];
   drafts: Draft[];
@@ -139,17 +118,7 @@ export type IncludeReason =
 
 export interface IncludedFile {
   path: string;
-  scope: Scope;
   reason: IncludeReason;
-}
-
-export interface ExcludedCounts {
-  personalWork: number;
-  teamManagement: number;
-  inbox: number;
-  archiveOrResource: number;
-  ignoredPath: number;
-  bak: number;
 }
 
 export interface SourceRepoStatus {
@@ -364,7 +333,6 @@ export interface ContextPreview {
   outputFileExists: boolean;
   included: IncludedFile[];
   sourceRepo: SourceRepoStatus;
-  excludedCounts: ExcludedCounts;
   warnings: PreviewWarning[];
   /** Runner-agnostic prompt text ready to paste into Zed, Claude Code, Codex,
    *  Cursor, etc. Generated server-side by `preview_context`. */
