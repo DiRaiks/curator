@@ -170,7 +170,6 @@ pub fn scan_vault(root: &Path) -> Result<ScanResult, ScanError> {
                 }
             }
         }
-
     }
 
     markdown_files.sort_by(|a, b| a.path.cmp(&b.path));

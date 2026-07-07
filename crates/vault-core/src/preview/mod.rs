@@ -262,4 +262,3 @@ fn include_reason_order(r: &IncludeReason) -> u8 {
         IncludeReason::ExistingOutputFile => 4,
     }
 }
-

@@ -65,5 +65,4 @@ fn main() {
             println!("    ... and {} more", files.len() - 5);
         }
     }
-
 }
