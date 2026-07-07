@@ -34,8 +34,9 @@ docs/
 
 - **Tauri shell**: desktop window, native dialogs, and the command bridge that
   exposes `vault-core` functions to the frontend. No backend server.
-- **React frontend**: the curation surface: tree browser, CodeMirror editor,
-  the tabbed chat drawer, drafts review, and tracking dashboards.
+- **React frontend**: the curation surface: an activity rail, swappable
+  left panels (including the agent panel), a CodeMirror editor, the
+  always-docked vault file tree, drafts review, and tracking dashboards.
 - **vault-core (Rust)**: scanning, the `notify`-based watcher, the runner
   abstraction, and all vault-rooted file IO. Every write goes through path
   validation here.
@@ -49,7 +50,7 @@ Curator drives a vendored ACP server over JSON-RPC on subprocess stdio:
 
 The vault is forwarded via ACP `additional_directories`; the working directory
 is set to the project repo and validated against a deny-list of sensitive
-paths. A tabbed bottom drawer runs up to three chats concurrently. Each streams
+paths. The agent panel runs up to three chats concurrently. Each streams
 `session/update` events, surfaces an inline card on `session/request_permission`,
 and supports resume by session id.
 
