@@ -1,5 +1,10 @@
 :root {
-  --bg: #131110;
+  /* Base document/window background — kept in sync with shell v2's
+     --bg-deep (shell.css) so the native OS titlebar, which reflects the
+     window background, matches the 34px app header strip below it.
+     The rest of this legacy palette is shadowed inside `.ide` by the
+     bridged tokens; these root values only paint the window chrome. */
+  --bg: #0e0f12;
   --panel: #181614;
   --panel-2: #1d1b18;
   --bg-sub: #0c0b0a;
@@ -33,7 +38,7 @@
 
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #eee7da;
+    --bg: #eceef2;   /* porcelain --bg-deep (shell.css) */
     --panel: #f4ede0;
     --panel-2: #faf3e4;
     --bg-sub: #e0d7c3;

@@ -226,6 +226,18 @@ export function Dashboard({ result, onClose, onRescan }: DashboardProps) {
     window.localStorage.setItem(SHELL_STORAGE_KEY, JSON.stringify(state));
   }, [theme, activePanel, agentWidth, filesWidth]);
 
+  // Drive the document/window background from the *active* shell theme,
+  // not from prefers-color-scheme. The native OS titlebar reflects the
+  // window background; the CSS fallback (styles.css :root) only matches
+  // when the OS theme happens to equal the app theme. Overriding here
+  // keeps the titlebar in sync when the user toggles graphite/porcelain
+  // against an opposite OS appearance. Values mirror shell.css --bg-deep.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.documentElement.style.background =
+      theme === "porcelain" ? "#eceef2" : "#0e0f12";
+  }, [theme]);
+
   // Auto-collapse the left panel when the editor would drop below its
   // minimum width (README resize rules) — narrow window or panels
   // dragged wide.
